@@ -4,6 +4,11 @@ let activeTab = 'timeline';
 let isRunning = false;
 let modelsConfig = { series: [], engineSeriesRules: {} };
 
+// Folder Picker State
+let explorerCurrentPath = '';
+let explorerParentPath = null;
+let explorerSelectedPath = '';
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadModelsConfig();
   initProjects();
@@ -42,44 +47,103 @@ function toggleReqMode(mode) {
   }
 }
 
-// --- FOLDER BROWSER (Native + Fallback) ---
-async function browseWorkspaceFolder() {
-  try {
-    const res = await fetch('/api/browse-folder', { method: 'POST' });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.path) {
-        document.getElementById('workspaceRoot').value = data.path;
-        fetchDiff();
-        fetchStatus();
-        return;
-      }
-      if (data && data.cancelled) {
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('Native folder browser API failed, opening web fallback:', e);
-  }
-
-  // Fallback to web directory picker
-  const picker = document.getElementById('fallbackFolderPicker');
-  if (picker) picker.click();
+// --- WEB DIRECTORY EXPLORER MODAL (100% Guaranteed Reliability) ---
+function openFolderPickerModal() {
+  const currentVal = document.getElementById('workspaceRoot').value.trim();
+  const startPath = currentVal || 'D:\\project';
+  document.getElementById('folderModal').style.display = 'flex';
+  loadDrives();
+  fetchDirectory(startPath);
 }
 
-function onFallbackFolderPicked(e) {
-  const files = e.target.files;
-  if (files && files.length > 0) {
-    // Some browsers provide full path or relative path
-    const firstFile = files[0];
-    if (firstFile.path) {
-      // In Electron / local browser with path
-      const dirPath = firstFile.path.substring(0, firstFile.path.lastIndexOf('\\') || firstFile.path.lastIndexOf('/'));
-      document.getElementById('workspaceRoot').value = dirPath;
-    } else if (firstFile.webkitRelativePath) {
-      const rootName = firstFile.webkitRelativePath.split('/')[0];
-      alert(`已选择目录: "${rootName}"。请确认物理路径是否正确：`);
+function closeFolderPickerModal() {
+  document.getElementById('folderModal').style.display = 'none';
+}
+
+async function loadDrives() {
+  const drivesContainer = document.getElementById('quickDrives');
+  drivesContainer.innerHTML = '';
+  try {
+    const res = await fetch('/api/list-dirs');
+    const data = await res.json();
+    if (data && data.dirs) {
+      data.dirs.forEach(d => {
+        const chip = document.createElement('span');
+        chip.className = 'drive-chip';
+        chip.textContent = d.name;
+        chip.onclick = () => fetchDirectory(d.path);
+        drivesContainer.appendChild(chip);
+      });
     }
+  } catch (e) {
+    console.error('Failed to load drives:', e);
+  }
+}
+
+async function fetchDirectory(targetPath) {
+  const listEl = document.getElementById('folderList');
+  const pathDisplay = document.getElementById('folderCurrentPath');
+  const btnUp = document.getElementById('btnNavUp');
+
+  listEl.innerHTML = '<div class="folder-loading">正在读取目录...</div>';
+  pathDisplay.textContent = targetPath || '根目录';
+
+  try {
+    const url = targetPath ? `/api/list-dirs?path=${encodeURIComponent(targetPath)}` : '/api/list-dirs';
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      listEl.innerHTML = `<div class="folder-empty">⚠️ 无法读取目录: ${data.error || '未知错误'}</div>`;
+      return;
+    }
+
+    explorerCurrentPath = data.currentPath || targetPath;
+    explorerParentPath = data.parentPath;
+    explorerSelectedPath = explorerCurrentPath;
+    pathDisplay.textContent = explorerCurrentPath;
+    btnUp.disabled = !explorerParentPath;
+
+    listEl.innerHTML = '';
+    if (!data.dirs || data.dirs.length === 0) {
+      listEl.innerHTML = '<div class="folder-empty">此目录下无可见子文件夹</div>';
+      return;
+    }
+
+    data.dirs.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'folder-item';
+      row.innerHTML = `
+        <span class="folder-item-icon">${item.isDrive ? '💾' : '📁'}</span>
+        <span class="folder-item-name">${item.name}</span>
+      `;
+      row.onclick = () => {
+        document.querySelectorAll('.folder-item').forEach(el => el.classList.remove('selected'));
+        row.classList.add('selected');
+        explorerSelectedPath = item.path;
+        pathDisplay.textContent = item.path;
+      };
+      row.ondblclick = () => {
+        fetchDirectory(item.path);
+      };
+      listEl.appendChild(row);
+    });
+  } catch (e) {
+    listEl.innerHTML = `<div class="folder-empty">请求异常: ${e.message}</div>`;
+  }
+}
+
+function navigateUpFolder() {
+  if (explorerParentPath) {
+    fetchDirectory(explorerParentPath);
+  }
+}
+
+function confirmSelectedFolder() {
+  const selected = explorerSelectedPath || explorerCurrentPath;
+  if (selected) {
+    document.getElementById('workspaceRoot').value = selected;
+    closeFolderPickerModal();
     fetchDiff();
     fetchStatus();
   }
@@ -169,6 +233,12 @@ function onDevModelChange() {
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   const model = series?.models?.find(m => m.id === modelId);
 
+  // Automatically update the manual custom input box
+  const customInput = document.getElementById('devModelCustom');
+  if (customInput && model) {
+    customInput.value = model.id;
+  }
+
   const effortSelect = document.getElementById('devReasoningEffort');
   effortSelect.innerHTML = '';
 
@@ -236,6 +306,12 @@ function onReviewModelChange() {
   const modelId = document.getElementById('reviewModel').value;
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   const model = series?.models?.find(m => m.id === modelId);
+
+  // Automatically update the manual custom input box
+  const customInput = document.getElementById('reviewModelCustom');
+  if (customInput && model) {
+    customInput.value = model.id;
+  }
 
   const effortSelect = document.getElementById('reviewReasoningEffort');
   effortSelect.innerHTML = '';
@@ -306,6 +382,9 @@ async function startDiscussion() {
     return;
   }
 
+  const effectiveDevModel = document.getElementById('devModelCustom')?.value.trim() || document.getElementById('devModel').value;
+  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value.trim() || document.getElementById('reviewModel').value;
+
   const btn = document.getElementById('btnStartDiscuss');
   btn.disabled = true;
   btn.textContent = '⏳ 双 Agent 正在推演讨论中...';
@@ -324,10 +403,10 @@ async function startDiscussion() {
     workspaceRoot: ws,
     vaguePrompt: vague,
     devProvider: document.getElementById('devProvider').value,
-    devModel: document.getElementById('devModel').value,
+    devModel: effectiveDevModel,
     devReasoningEffort: document.getElementById('devReasoningEffort').value,
     reviewProvider: document.getElementById('reviewProvider').value,
-    reviewModel: document.getElementById('reviewModel').value,
+    reviewModel: effectiveReviewModel,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
     copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined
   };
@@ -351,14 +430,14 @@ async function startDiscussion() {
     container.innerHTML = `
       <div class="discussion-card dev">
         <div class="discussion-card-header">
-          <span>🛠️ 开发方提案 (${payload.devProvider})</span>
+          <span>🛠️ 开发方提案 (${payload.devProvider} / ${payload.devModel})</span>
           <span>方案规划</span>
         </div>
         <div class="discussion-body">${escapeHtml(result.devProposal)}</div>
       </div>
       <div class="discussion-card reviewer">
         <div class="discussion-card-header">
-          <span>🔍 审查方评估与质询 (${payload.reviewProvider})</span>
+          <span>🔍 审查方评估与质询 (${payload.reviewProvider} / ${payload.reviewModel})</span>
           <span>安全与门禁约束</span>
         </div>
         <div class="discussion-body">${escapeHtml(result.reviewerFeedback)}</div>
@@ -595,15 +674,18 @@ async function startLoop() {
     return;
   }
 
+  const effectiveDevModel = document.getElementById('devModelCustom')?.value.trim() || document.getElementById('devModel').value;
+  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value.trim() || document.getElementById('reviewModel').value;
+
   const payload = {
     workspaceRoot: ws,
     taskPrompt: prompt,
     feature: document.getElementById('featureName').value.trim() || undefined,
     devProvider: document.getElementById('devProvider').value,
-    devModel: document.getElementById('devModel').value.trim() || undefined,
+    devModel: effectiveDevModel || undefined,
     devReasoningEffort: document.getElementById('devReasoningEffort').value,
     reviewProvider: document.getElementById('reviewProvider').value,
-    reviewModel: document.getElementById('reviewModel').value.trim() || undefined,
+    reviewModel: effectiveReviewModel || undefined,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
     copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined,
     verifyCommand: document.getElementById('verifyCommand').value.trim() || undefined,

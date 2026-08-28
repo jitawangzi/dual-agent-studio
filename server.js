@@ -67,6 +67,67 @@ function saveModelsConfig(data) {
     fs.writeFileSync(MODELS_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+function listDrivesAndDirs(dirPath) {
+    if (!dirPath) {
+        const drives = [];
+        for (const letter of ['C', 'D', 'E', 'F', 'G', 'Z']) {
+            const drivePath = `${letter}:\\`;
+            try {
+                if (fs.existsSync(drivePath)) {
+                    drives.push({ name: `${letter}: 盘`, path: drivePath, isDrive: true });
+                }
+            } catch {}
+        }
+        return {
+            currentPath: '',
+            parentPath: null,
+            dirs: drives,
+            isRoot: true
+        };
+    }
+
+    const norm = path.resolve(dirPath);
+    if (!fs.existsSync(norm)) {
+        throw new Error(`Directory not found: ${dirPath}`);
+    }
+
+    const parent = path.dirname(norm);
+    const parentPath = (parent !== norm) ? parent : '';
+
+    let entries = [];
+    try {
+        entries = fs.readdirSync(norm, { withFileTypes: true });
+    } catch (e) {
+        return {
+            currentPath: norm,
+            parentPath,
+            dirs: [],
+            error: e.message
+        };
+    }
+
+    const subdirs = [];
+    for (const ent of entries) {
+        try {
+            if (ent.isDirectory() && !ent.name.startsWith('$') && ent.name !== 'node_modules' && ent.name !== '.git') {
+                subdirs.push({
+                    name: ent.name,
+                    path: path.join(norm, ent.name),
+                    isDrive: false
+                });
+            }
+        } catch {}
+    }
+    subdirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    return {
+        currentPath: norm,
+        parentPath,
+        dirs: subdirs,
+        isRoot: false
+    };
+}
+
 function getMailbox(workspaceRoot, customMailboxPath, feature) {
     if (!workspaceRoot) return null;
     let mbPath = customMailboxPath;
@@ -161,7 +222,21 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // 4. REST API: /api/browse-folder (Windows Native Folder Picker)
+    // 4. REST API: /api/list-dirs (Web Directory Explorer)
+    if (pathname === '/api/list-dirs' && req.method === 'GET') {
+        const queryPath = url.searchParams.get('path');
+        try {
+            const data = listDrivesAndDirs(queryPath);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(data));
+        } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+    }
+
+    // 4.1 Native browse-folder fallback
     if (pathname === '/api/browse-folder' && req.method === 'POST') {
         const scriptPath = path.join(__dirname, 'engine', 'browse-folder.ps1');
         const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
