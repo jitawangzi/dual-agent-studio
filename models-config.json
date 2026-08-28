@@ -1,0 +1,212 @@
+{
+  "series": [
+    {
+      "id": "claude",
+      "name": "Claude 系列 (Anthropic)",
+      "models": [
+        {
+          "id": "claude-3-7-sonnet-20250219",
+          "name": "Claude 3.7 Sonnet (Hybrid Reasoning)",
+          "effortType": "thinking_tokens",
+          "defaultEffort": "high",
+          "efforts": [
+            { "id": "high", "label": "High (16,384 Thinking Tokens)", "value": "16384" },
+            { "id": "medium", "label": "Medium (8,192 Thinking Tokens)", "value": "8192" },
+            { "id": "low", "label": "Low (2,048 Thinking Tokens)", "value": "2048" },
+            { "id": "max", "label": "Max (64,000 Thinking Tokens)", "value": "64000" },
+            { "id": "off", "label": "Off (关闭思考 / 0 Tokens)", "value": "0" }
+          ]
+        },
+        {
+          "id": "claude-3-5-sonnet-20241022",
+          "name": "Claude 3.5 Sonnet (v2)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+          ]
+        },
+        {
+          "id": "claude-3-5-haiku-20241022",
+          "name": "Claude 3.5 Haiku",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (标准高速模型)", "value": "" }
+          ]
+        },
+        {
+          "id": "claude-3-opus-20240229",
+          "name": "Claude 3 Opus",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gpt",
+      "name": "GPT / OpenAI o-Series 系列",
+      "models": [
+        {
+          "id": "gpt-5.4",
+          "name": "GPT-5.4 (Next-Gen Flagship)",
+          "effortType": "copilot_effort",
+          "defaultEffort": "high",
+          "efforts": [
+            { "id": "high", "label": "High (高强度推演)", "value": "high" },
+            { "id": "xhigh", "label": "X-High / Max (极致思考)", "value": "xhigh" },
+            { "id": "medium", "label": "Medium (均衡思考)", "value": "medium" },
+            { "id": "low", "label": "Low (轻度思考)", "value": "low" },
+            { "id": "none", "label": "None (直接输出)", "value": "none" }
+          ]
+        },
+        {
+          "id": "o3-mini",
+          "name": "OpenAI o3-mini (High-Speed Reasoning)",
+          "effortType": "reasoning_effort",
+          "defaultEffort": "high",
+          "efforts": [
+            { "id": "high", "label": "High (高深度推理)", "value": "high" },
+            { "id": "medium", "label": "Medium (中等深度)", "value": "medium" },
+            { "id": "low", "label": "Low (快速浅层推理)", "value": "low" }
+          ]
+        },
+        {
+          "id": "o1",
+          "name": "OpenAI o1 (Full Reasoning)",
+          "effortType": "reasoning_effort",
+          "defaultEffort": "high",
+          "efforts": [
+            { "id": "high", "label": "High (完整推理链)", "value": "high" },
+            { "id": "medium", "label": "Medium", "value": "medium" },
+            { "id": "low", "label": "Low", "value": "low" }
+          ]
+        },
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o (Omni 旗舰)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini 系列 (Google)",
+      "models": [
+        {
+          "id": "gemini-2.5-pro",
+          "name": "Gemini 2.5 Pro (Thinking Mode)",
+          "effortType": "gemini_budget",
+          "defaultEffort": "high",
+          "efforts": [
+            { "id": "high", "label": "High (24k Thinking Budget)", "value": "24576" },
+            { "id": "medium", "label": "Medium (8k Thinking Budget)", "value": "8192" },
+            { "id": "low", "label": "Low (2k Thinking Budget)", "value": "2048" },
+            { "id": "off", "label": "Off (关闭思考)", "value": "0" }
+          ]
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "name": "Gemini 2.5 Flash",
+          "effortType": "gemini_budget",
+          "defaultEffort": "medium",
+          "efforts": [
+            { "id": "medium", "label": "Medium (8k Budget)", "value": "8192" },
+            { "id": "low", "label": "Low (2k Budget)", "value": "2048" },
+            { "id": "off", "label": "Off", "value": "0" }
+          ]
+        },
+        {
+          "id": "gemini-2.0-flash",
+          "name": "Gemini 2.0 Flash",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (超快响应)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek 系列 (深度求索)",
+      "models": [
+        {
+          "id": "deepseek-r1",
+          "name": "DeepSeek-R1 (Full CoT Reasoning)",
+          "effortType": "cot_mode",
+          "defaultEffort": "cot_full",
+          "efforts": [
+            { "id": "cot_full", "label": "Full CoT (默认开启完整长思维链)", "value": "full" },
+            { "id": "cot_concise", "label": "Concise CoT (精简思维链)", "value": "concise" }
+          ]
+        },
+        {
+          "id": "deepseek-v3",
+          "name": "DeepSeek-V3 (通用主力)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "grok",
+      "name": "Grok 系列 (xAI)",
+      "models": [
+        {
+          "id": "grok-3",
+          "name": "Grok 3 (Deep Reasoning)",
+          "effortType": "grok_mode",
+          "defaultEffort": "think",
+          "efforts": [
+            { "id": "think", "label": "Deep Think (开启深度思考)", "value": "think" },
+            { "id": "fast", "label": "Fast (快速模式)", "value": "fast" }
+          ]
+        },
+        {
+          "id": "grok-2",
+          "name": "Grok 2",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (标准模式)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "glm",
+      "name": "GLM 系列 (智谱清言)",
+      "models": [
+        {
+          "id": "glm-zero-preview",
+          "name": "GLM-Zero-Preview (原生推理模型)",
+          "effortType": "cot_mode",
+          "defaultEffort": "cot_full",
+          "efforts": [
+            { "id": "cot_full", "label": "Full Reasoning (原生深度推理)", "value": "full" }
+          ]
+        },
+        {
+          "id": "glm-4-plus",
+          "name": "GLM-4-Plus (旗舰通用)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+          ]
+        }
+      ]
+    }
+  ]
+}

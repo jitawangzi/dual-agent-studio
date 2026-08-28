@@ -21,6 +21,7 @@
         </div>
       </div>
       <div class="header-status">
+        <button class="btn btn-sm btn-secondary" onclick="openModelManager()">⚙️ 模型字典管理</button>
         <div id="statusBadge" class="status-badge idle">
           <span class="status-dot"></span>
           <span id="statusText">就绪 (IDLE)</span>
@@ -35,22 +36,44 @@
     <main class="main-content">
       <!-- LEFT: CONFIGURATION PANEL -->
       <aside class="sidebar-panel">
+        <!-- 1. WORKSPACE SELECTOR -->
         <div class="panel-section">
           <h2>📁 目标工作区 (Workspace)</h2>
           <div class="form-group">
             <label for="workspaceRoot">项目根目录物理路径</label>
-            <div class="input-with-recent">
+            <div class="input-with-btn">
               <input type="text" id="workspaceRoot" placeholder="例如 D:\project\agent-sop 或 D:\svn\server_new" value="D:\project\agent-sop">
+              <button class="btn btn-sm btn-secondary" onclick="browseWorkspaceFolder()">📁 浏览...</button>
             </div>
             <div class="recent-projects" id="recentProjects"></div>
           </div>
         </div>
 
+        <!-- 2. REQUIREMENT & DISCUSSION MODE -->
         <div class="panel-section">
-          <h2>📝 开发任务描述 (Task Prompt)</h2>
-          <div class="form-group">
-            <textarea id="taskPrompt" rows="3" placeholder="请输入本轮需要开发或优化的目标需求..."></textarea>
+          <div class="section-header-row">
+            <h2>📝 开发需求与任务规划</h2>
+            <div class="mode-toggle">
+              <label><input type="radio" name="reqMode" value="direct" checked onchange="toggleReqMode('direct')"> ⚡ 确定需求</label>
+              <label><input type="radio" name="reqMode" value="discuss" onchange="toggleReqMode('discuss')"> 💬 需求讨论</label>
+            </div>
           </div>
+
+          <!-- DIRECT MODE -->
+          <div id="directReqBox" class="form-group">
+            <label for="taskPrompt">明确任务描述 (Task Prompt)</label>
+            <textarea id="taskPrompt" rows="3" placeholder="请输入具体需要开发、重构或优化的目标需求..."></textarea>
+          </div>
+
+          <!-- DISCUSSION MODE -->
+          <div id="discussReqBox" class="form-group" style="display: none;">
+            <label for="vaguePrompt">模糊/初步想法 (Vague Idea)</label>
+            <textarea id="vaguePrompt" rows="2" placeholder="例如：我想为当前服务增加一个内存缓存层，提升响应速度，但还没想好具体类和接口..."></textarea>
+            <button id="btnStartDiscuss" class="btn btn-sm btn-secondary" style="width: 100%; margin-top: 6px;" onclick="startDiscussion()">
+              💬 启动双 Agent 需求对齐与方案推演
+            </button>
+          </div>
+
           <div class="form-row">
             <div class="form-group flex-1">
               <label for="featureName">特性名称 (Feature)</label>
@@ -63,69 +86,78 @@
           </div>
         </div>
 
+        <!-- 3. DEV AGENT CONFIG -->
         <div class="panel-section">
           <h2>🛠️ 开发方配置 (Developer Agent)</h2>
           <div class="form-row">
             <div class="form-group flex-1">
               <label for="devProvider">Dev 引擎</label>
               <select id="devProvider">
-                <option value="claude" selected>Claude Code CLI (claude)</option>
-                <option value="copilot">GitHub Copilot CLI (copilot)</option>
-                <option value="aider">Aider CLI (aider)</option>
-                <option value="antigravity">Antigravity (IDE 协同)</option>
+                <option value="claude" selected>Claude Code (claude)</option>
+                <option value="copilot">GitHub Copilot (copilot)</option>
+                <option value="antigravity">Google Antigravity</option>
+                <option value="cursor">Cursor (cursor)</option>
+                <option value="codex">OpenAI Codex</option>
+                <option value="pi">Inflection Pi</option>
+                <option value="aider">Aider (aider)</option>
                 <option value="mock">Mock (仿真测试)</option>
               </select>
             </div>
             <div class="form-group flex-1">
-              <label for="devModel">Dev 模型 (可选)</label>
-              <input type="text" id="devModel" placeholder="claude-3-7-sonnet-20250219" value="claude-3-7-sonnet-20250219">
+              <label for="devSeries">模型系列</label>
+              <select id="devSeries" onchange="onDevSeriesChange()"></select>
             </div>
           </div>
-          <div class="form-group">
-            <label for="devReasoningEffort">思考强度 (Reasoning Effort)</label>
-            <select id="devReasoningEffort">
-              <option value="high" selected>High (16k Thinking Tokens)</option>
-              <option value="medium">Medium (8k Thinking Tokens)</option>
-              <option value="low">Low (4k Thinking Tokens)</option>
-              <option value="none">None (关闭思考)</option>
-            </select>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="devModel">具体模型</label>
+              <select id="devModel" onchange="onDevModelChange()"></select>
+            </div>
+            <div class="form-group flex-1">
+              <label for="devReasoningEffort">思考强度 (Reasoning)</label>
+              <select id="devReasoningEffort"></select>
+            </div>
           </div>
         </div>
 
+        <!-- 4. REVIEWER AGENT CONFIG -->
         <div class="panel-section">
           <h2>🔍 审查方配置 (Reviewer Agent)</h2>
           <div class="form-row">
             <div class="form-group flex-1">
               <label for="reviewProvider">Reviewer 引擎</label>
               <select id="reviewProvider">
-                <option value="copilot" selected>GitHub Copilot CLI (copilot)</option>
-                <option value="claude">Claude Code CLI (claude)</option>
+                <option value="copilot" selected>GitHub Copilot (copilot)</option>
+                <option value="claude">Claude Code (claude)</option>
+                <option value="antigravity">Google Antigravity</option>
+                <option value="cursor">Cursor (cursor)</option>
+                <option value="codex">OpenAI Codex</option>
+                <option value="pi">Inflection Pi</option>
                 <option value="mock">Mock (仿真测试)</option>
               </select>
             </div>
             <div class="form-group flex-1">
-              <label for="reviewModel">审查模型</label>
-              <input type="text" id="reviewModel" placeholder="gpt-5.4 / claude-3.7-sonnet / o3-mini" value="gpt-5.4">
+              <label for="reviewSeries">模型系列</label>
+              <select id="reviewSeries" onchange="onReviewSeriesChange()"></select>
             </div>
           </div>
           <div class="form-row">
             <div class="form-group flex-1">
-              <label for="reviewReasoningEffort">审查思考强度</label>
-              <select id="reviewReasoningEffort">
-                <option value="high" selected>High (高强度架构推演)</option>
-                <option value="xhigh">X-High / Max</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-                <option value="none">None</option>
-              </select>
+              <label for="reviewModel">具体模型</label>
+              <select id="reviewModel" onchange="onReviewModelChange()"></select>
             </div>
             <div class="form-group flex-1">
-              <label for="copilotSessionId">Copilot 会话 ID</label>
-              <input type="text" id="copilotSessionId" placeholder="9fa43261-d96c-430b-ac43-20e3035ec1bf" value="9fa43261-d96c-430b-ac43-20e3035ec1bf">
+              <label for="reviewReasoningEffort">审查思考强度</label>
+              <select id="reviewReasoningEffort"></select>
             </div>
+          </div>
+          <div class="form-group">
+            <label for="copilotSessionId">Copilot 会话 ID (保持连续审查)</label>
+            <input type="text" id="copilotSessionId" placeholder="例如 9fa43261-d96c-430b-ac43-20e3035ec1bf" value="9fa43261-d96c-430b-ac43-20e3035ec1bf">
           </div>
         </div>
 
+        <!-- 5. TEST GATE & CONTROL -->
         <div class="panel-section">
           <h2>🚦 测试门禁与控制</h2>
           <div class="form-group">
@@ -148,10 +180,11 @@
         </div>
       </aside>
 
-      <!-- RIGHT: COCKPIT, TIMELINE, DIFF & LOGS -->
+      <!-- RIGHT: COCKPIT, TIMELINE, DISCUSSION, DIFF & LOGS -->
       <section class="cockpit-panel">
         <div class="tab-header">
           <button class="tab-btn active" onclick="switchTab('timeline')">📊 轮次流转 (Timeline)</button>
+          <button class="tab-btn" id="tabBtnDiscuss" onclick="switchTab('discussion')">💬 需求讨论区 (Discussion)</button>
           <button class="tab-btn" onclick="switchTab('diff')">🔍 代码变更 (Git Diff)</button>
           <button class="tab-btn" onclick="switchTab('logs')">💻 实时终端日志 (Live Logs)</button>
         </div>
@@ -167,7 +200,37 @@
           </div>
         </div>
 
-        <!-- TAB 2: GIT DIFF -->
+        <!-- TAB 2: DISCUSSION & HUMAN APPROVAL GATE -->
+        <div id="tab-discussion" class="tab-content">
+          <div class="discussion-container">
+            <div class="discussion-header">
+              <h3>💬 双 Agent 需求对齐与方案推演</h3>
+              <p class="text-muted">开发方拟定架构与子任务，审查方补充安全约束与测试门禁，综合生成可执行方案供人工判定。</p>
+            </div>
+            <div id="discussionMessages" class="discussion-messages">
+              <div class="empty-state">
+                <p>在左侧选择【💬 需求讨论】模式并输入模糊想法后，点击【启动双 Agent 需求对齐】即可在此查看讨论。</p>
+              </div>
+            </div>
+
+            <!-- HUMAN DECISION GATE -->
+            <div id="humanDecisionGate" class="human-decision-gate" style="display: none;">
+              <div class="gate-header">
+                <h4>🎯 人工判定与任务确认 (Human Approval Gate)</h4>
+                <span class="gate-badge">待人工确认</span>
+              </div>
+              <p style="font-size: 12px; color: #cbd5e1; margin-bottom: 8px;">以下是双方讨论后提炼的最终执行方案。您可以在下方直接编辑、调整清单后点击确认：</p>
+              <textarea id="finalPlanEditor" rows="8" class="plan-editor"></textarea>
+              <div class="gate-actions">
+                <button class="btn btn-primary" onclick="approvePlanAndStart()">
+                  ✅ 确认方案并开始执行 (Approve & Launch)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: GIT DIFF -->
         <div id="tab-diff" class="tab-content">
           <div class="diff-toolbar">
             <button class="btn btn-sm btn-secondary" onclick="fetchDiff()">🔄 刷新 Diff</button>
@@ -178,7 +241,7 @@
           </div>
         </div>
 
-        <!-- TAB 3: LIVE LOGS -->
+        <!-- TAB 4: LIVE LOGS -->
         <div id="tab-logs" class="tab-content">
           <div class="logs-toolbar">
             <button class="btn btn-sm btn-secondary" onclick="clearLogs()">🧹 清屏</button>
@@ -190,6 +253,24 @@
         </div>
       </section>
     </main>
+
+    <!-- MODEL MANAGER MODAL -->
+    <div id="modelModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>⚙️ 模型字典与思考强度维护</h3>
+          <button class="modal-close" onclick="closeModelManager()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-tip">您可以直接在此维护支持的模型系列（Claude/GPT/Gemini/DeepSeek/GLM/Grok 等）、具体模型 ID 及关联的思考强度档位：</p>
+          <textarea id="modelsJsonEditor" rows="16" class="json-editor"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" onclick="closeModelManager()">取消</button>
+          <button class="btn btn-sm btn-primary" onclick="saveModelsManager()">💾 保存模型配置</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

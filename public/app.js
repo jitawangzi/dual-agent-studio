@@ -1,15 +1,18 @@
-// Dual-Agent Studio Frontend Controller
+// Dual-Agent Studio Frontend Controller (Multi-Engine, Cascading Models & Discussion Support)
 
 let activeTab = 'timeline';
 let isRunning = false;
+let modelsConfig = { series: [] };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadModelsConfig();
   initProjects();
   initSSE();
   fetchStatus();
   setInterval(fetchStatus, 3000);
 });
 
+// --- TAB SWITCHING ---
 function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -26,6 +29,35 @@ function switchTab(tab) {
   }
 }
 
+// --- REQUIREMENT MODE TOGGLE ---
+function toggleReqMode(mode) {
+  const directBox = document.getElementById('directReqBox');
+  const discussBox = document.getElementById('discussReqBox');
+  if (mode === 'direct') {
+    directBox.style.display = 'block';
+    discussBox.style.display = 'none';
+  } else {
+    directBox.style.display = 'none';
+    discussBox.style.display = 'block';
+  }
+}
+
+// --- FOLDER BROWSER ---
+async function browseWorkspaceFolder() {
+  try {
+    const res = await fetch('/api/browse-folder', { method: 'POST' });
+    const data = await res.json();
+    if (data && data.path) {
+      document.getElementById('workspaceRoot').value = data.path;
+      fetchDiff();
+      fetchStatus();
+    }
+  } catch (e) {
+    alert('打开目录选择对话框失败: ' + e.message);
+  }
+}
+
+// --- RECENT PROJECTS ---
 async function initProjects() {
   try {
     const res = await fetch('/api/projects');
@@ -49,6 +81,270 @@ async function initProjects() {
   }
 }
 
+// --- TWO-TIER CASCADING MODEL CONFIG ---
+async function loadModelsConfig() {
+  try {
+    const res = await fetch('/api/models');
+    modelsConfig = await res.json();
+    populateSeriesDropdowns();
+  } catch (e) {
+    console.error('Failed to load models config:', e);
+  }
+}
+
+function populateSeriesDropdowns() {
+  const devSeries = document.getElementById('devSeries');
+  const reviewSeries = document.getElementById('reviewSeries');
+
+  devSeries.innerHTML = '';
+  reviewSeries.innerHTML = '';
+
+  (modelsConfig.series || []).forEach(s => {
+    const opt1 = document.createElement('option');
+    opt1.value = s.id;
+    opt1.textContent = s.name;
+    devSeries.appendChild(opt1);
+
+    const opt2 = document.createElement('option');
+    opt2.value = s.id;
+    opt2.textContent = s.name;
+    reviewSeries.appendChild(opt2);
+  });
+
+  // Set defaults: Dev -> Claude, Reviewer -> GPT / Copilot
+  if (devSeries.querySelector('option[value="claude"]')) {
+    devSeries.value = 'claude';
+  }
+  if (reviewSeries.querySelector('option[value="gpt"]')) {
+    reviewSeries.value = 'gpt';
+  }
+
+  onDevSeriesChange();
+  onReviewSeriesChange();
+}
+
+function onDevSeriesChange() {
+  const seriesId = document.getElementById('devSeries').value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const devModel = document.getElementById('devModel');
+  devModel.innerHTML = '';
+
+  if (series && series.models) {
+    series.models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name;
+      devModel.appendChild(opt);
+    });
+  }
+  onDevModelChange();
+}
+
+function onDevModelChange() {
+  const seriesId = document.getElementById('devSeries').value;
+  const modelId = document.getElementById('devModel').value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const model = series?.models?.find(m => m.id === modelId);
+
+  const effortSelect = document.getElementById('devReasoningEffort');
+  effortSelect.innerHTML = '';
+
+  if (model && model.efforts && model.efforts.length > 0) {
+    model.efforts.forEach(eff => {
+      const opt = document.createElement('option');
+      opt.value = eff.value || eff.id;
+      opt.textContent = eff.label;
+      if (eff.id === model.defaultEffort) opt.selected = true;
+      effortSelect.appendChild(opt);
+    });
+  } else {
+    const opt = document.createElement('option');
+    opt.value = 'none';
+    opt.textContent = 'N/A (非思考模型)';
+    effortSelect.appendChild(opt);
+  }
+}
+
+function onReviewSeriesChange() {
+  const seriesId = document.getElementById('reviewSeries').value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const reviewModel = document.getElementById('reviewModel');
+  reviewModel.innerHTML = '';
+
+  if (series && series.models) {
+    series.models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name;
+      reviewModel.appendChild(opt);
+    });
+  }
+  onReviewModelChange();
+}
+
+function onReviewModelChange() {
+  const seriesId = document.getElementById('reviewSeries').value;
+  const modelId = document.getElementById('reviewModel').value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const model = series?.models?.find(m => m.id === modelId);
+
+  const effortSelect = document.getElementById('reviewReasoningEffort');
+  effortSelect.innerHTML = '';
+
+  if (model && model.efforts && model.efforts.length > 0) {
+    model.efforts.forEach(eff => {
+      const opt = document.createElement('option');
+      opt.value = eff.value || eff.id;
+      opt.textContent = eff.label;
+      if (eff.id === model.defaultEffort) opt.selected = true;
+      effortSelect.appendChild(opt);
+    });
+  } else {
+    const opt = document.createElement('option');
+    opt.value = 'none';
+    opt.textContent = 'N/A (非思考模型)';
+    effortSelect.appendChild(opt);
+  }
+}
+
+// --- MODEL MANAGER MODAL ---
+function openModelManager() {
+  document.getElementById('modelsJsonEditor').value = JSON.stringify(modelsConfig, null, 2);
+  document.getElementById('modelModal').style.display = 'flex';
+}
+
+function closeModelManager() {
+  document.getElementById('modelModal').style.display = 'none';
+}
+
+async function saveModelsManager() {
+  try {
+    const raw = document.getElementById('modelsJsonEditor').value;
+    const parsed = JSON.parse(raw);
+    const res = await fetch('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsed)
+    });
+    if (res.ok) {
+      modelsConfig = parsed;
+      populateSeriesDropdowns();
+      closeModelManager();
+      alert('模型配置已成功保存并实时生效！');
+    } else {
+      const err = await res.json();
+      alert('保存失败: ' + err.error);
+    }
+  } catch (e) {
+    alert('JSON 格式有误: ' + e.message);
+  }
+}
+
+// --- REQUIREMENT DISCUSSION PHASE ---
+async function startDiscussion() {
+  const ws = document.getElementById('workspaceRoot').value.trim();
+  const vague = document.getElementById('vaguePrompt').value.trim();
+
+  if (!ws) {
+    alert('请填写项目物理根目录路径！');
+    return;
+  }
+  if (!vague) {
+    alert('请输入您的初步需求或想法！');
+    return;
+  }
+
+  const btn = document.getElementById('btnStartDiscuss');
+  btn.disabled = true;
+  btn.textContent = '⏳ 双 Agent 正在推演讨论中...';
+
+  switchTab('discussion');
+  const container = document.getElementById('discussionMessages');
+  container.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">💭</div>
+      <p>正在由开发方 (${document.getElementById('devProvider').value}) 与审查方 (${document.getElementById('reviewProvider').value}) 展开需求与架构对齐讨论...</p>
+    </div>
+  `;
+  document.getElementById('humanDecisionGate').style.display = 'none';
+
+  const payload = {
+    workspaceRoot: ws,
+    vaguePrompt: vague,
+    devProvider: document.getElementById('devProvider').value,
+    devModel: document.getElementById('devModel').value,
+    devReasoningEffort: document.getElementById('devReasoningEffort').value,
+    reviewProvider: document.getElementById('reviewProvider').value,
+    reviewModel: document.getElementById('reviewModel').value,
+    reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
+    copilotSessionId: document.getElementById('copilotSessionId').value.trim() || undefined
+  };
+
+  try {
+    const res = await fetch('/api/discuss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await res.json();
+    btn.disabled = false;
+    btn.textContent = '💬 启动双 Agent 需求对齐与方案推演';
+
+    if (!res.ok) {
+      alert('需求讨论失败: ' + result.error);
+      return;
+    }
+
+    // Render Discussion Cards
+    container.innerHTML = `
+      <div class="discussion-card dev">
+        <div class="discussion-card-header">
+          <span>🛠️ 开发方提案 (${payload.devProvider})</span>
+          <span>方案规划</span>
+        </div>
+        <div class="discussion-body">${escapeHtml(result.devProposal)}</div>
+      </div>
+      <div class="discussion-card reviewer">
+        <div class="discussion-card-header">
+          <span>🔍 审查方评估与质询 (${payload.reviewProvider})</span>
+          <span>安全与门禁约束</span>
+        </div>
+        <div class="discussion-body">${escapeHtml(result.reviewerFeedback)}</div>
+      </div>
+    `;
+
+    // Show Human Decision Gate
+    const gate = document.getElementById('humanDecisionGate');
+    const editor = document.getElementById('finalPlanEditor');
+    editor.value = result.finalPlan;
+    if (result.suggestedFeature && !document.getElementById('featureName').value) {
+      document.getElementById('featureName').value = result.suggestedFeature;
+    }
+    gate.style.display = 'block';
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '💬 启动双 Agent 需求对齐与方案推演';
+    alert('请求异常: ' + e.message);
+  }
+}
+
+function approvePlanAndStart() {
+  const finalPlan = document.getElementById('finalPlanEditor').value.trim();
+  if (!finalPlan) {
+    alert('执行方案不能为空！');
+    return;
+  }
+
+  // Populate into taskPrompt and switch to direct mode execution
+  document.getElementById('taskPrompt').value = finalPlan;
+  toggleReqMode('direct');
+  const directRadio = document.querySelector('input[name="reqMode"][value="direct"]');
+  if (directRadio) directRadio.checked = true;
+
+  startLoop();
+}
+
+// --- SSE EVENT HANDLING ---
 function initSSE() {
   const eventSource = new EventSource('/api/events');
 
@@ -233,6 +529,7 @@ function renderTimeline(mb) {
   });
 }
 
+// --- LAUNCH & CONTROL LOOP ---
 async function startLoop() {
   const ws = document.getElementById('workspaceRoot').value.trim();
   const prompt = document.getElementById('taskPrompt').value.trim();
@@ -291,6 +588,7 @@ async function stopLoop() {
   }
 }
 
+// --- GIT DIFF VIEWER ---
 async function fetchDiff() {
   const ws = document.getElementById('workspaceRoot').value.trim();
   if (!ws) return;
@@ -336,6 +634,7 @@ async function fetchDiff() {
 }
 
 function escapeHtml(str) {
+  if (!str) return '';
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

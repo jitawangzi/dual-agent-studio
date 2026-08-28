@@ -1,11 +1,12 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const PORT = process.env.PORT || 3700;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PROJECTS_FILE = path.join(__dirname, 'projects.json');
+const MODELS_FILE = path.join(__dirname, 'models-config.json');
 
 // In-Memory Studio State
 let activeProcess = null;
@@ -53,6 +54,19 @@ function saveProjects(list) {
     } catch {}
 }
 
+function getModelsConfig() {
+    try {
+        if (fs.existsSync(MODELS_FILE)) {
+            return JSON.parse(fs.readFileSync(MODELS_FILE, 'utf-8'));
+        }
+    } catch {}
+    return { series: [] };
+}
+
+function saveModelsConfig(data) {
+    fs.writeFileSync(MODELS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+}
+
 function getMailbox(workspaceRoot, customMailboxPath, feature) {
     if (!workspaceRoot) return null;
     let mbPath = customMailboxPath;
@@ -83,7 +97,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
 
-    // CORS Headers for API
+    // CORS Headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -122,7 +136,201 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 3. REST API: /api/start
+    // 3. REST API: /api/models (Get & Update Models Config)
+    if (pathname === '/api/models') {
+        if (req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(getModelsConfig()));
+            return;
+        }
+        if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                try {
+                    const data = JSON.parse(body);
+                    saveModelsConfig(data);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, models: data }));
+                } catch (e) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: e.message }));
+                }
+            });
+            return;
+        }
+    }
+
+    // 4. REST API: /api/browse-folder (Windows Native Folder Picker)
+    if (pathname === '/api/browse-folder' && req.method === 'POST') {
+        const psScript = `
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = "请选择目标工作区工程物理根目录"
+$dialog.ShowNewFolderButton = $true
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.SelectedPath
+} else {
+    Write-Output ""
+}
+`;
+        const ps = spawn('pwsh', ['-NoProfile', '-Command', psScript]);
+        let selectedPath = '';
+        ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
+        ps.on('close', () => {
+            const trimmed = selectedPath.trim();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ path: trimmed || null, cancelled: !trimmed }));
+        });
+        return;
+    }
+
+    // 5. REST API: /api/discuss (Requirement Alignment & Discussion Phase)
+    if (pathname === '/api/discuss' && req.method === 'POST') {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', async () => {
+            try {
+                const {
+                    workspaceRoot,
+                    vaguePrompt,
+                    devProvider = 'claude',
+                    devModel,
+                    devReasoningEffort,
+                    reviewProvider = 'copilot',
+                    reviewModel,
+                    reviewReasoningEffort,
+                    copilotSessionId
+                } = JSON.parse(body);
+
+                if (!vaguePrompt) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'vaguePrompt is required.' }));
+                    return;
+                }
+
+                appendLog(`💬 发起双 Agent 需求对齐与架构讨论: "${vaguePrompt}"`, 'system');
+                broadcast('discussion_start', { prompt: vaguePrompt });
+
+                // Step 1: Dev Agent Generates Proposal
+                appendLog(`🛠️ [Step 1] 开发方 (${devProvider} / ${devModel || 'default'}) 正在分析需求并拟定方案提案...`, 'stdout');
+                
+                const devSystemPrompt = `
+You are the Lead Developer Agent.
+Workspace: ${workspaceRoot || 'Current Workspace'}
+User Raw/Vague Requirement: "${vaguePrompt}"
+
+Please analyze this requirement and provide a structured implementation proposal in markdown:
+1. **Core Intent & Acceptance Criteria (核心目标与验收准则)**
+2. **Architecture & Scope of Changes (架构改动与涉及模块)**
+3. **Actionable Subtask Checklist (可落地的任务分解清单 - 每项包含具体文件与逻辑)**
+4. **Potential Risks & Testing Plan (风险点与测试计划)**
+
+Keep it precise, practical, and highly structured.
+`;
+                let devProposal = '';
+                try {
+                    if (devProvider === 'claude') {
+                        const claudeArgs = ['-p', devSystemPrompt];
+                        if (devModel) claudeArgs.push('--model', devModel);
+                        const cProc = spawn('claude', claudeArgs, { cwd: workspaceRoot || process.cwd() });
+                        await new Promise((resolve) => {
+                            cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
+                            cProc.on('close', resolve);
+                        });
+                    } else if (devProvider === 'copilot') {
+                        const copilotArgs = ['-p', devSystemPrompt, '-s', '--allow-all'];
+                        if (devModel) copilotArgs.push('--model', devModel);
+                        const cProc = spawn('copilot', copilotArgs, { cwd: workspaceRoot || process.cwd() });
+                        await new Promise((resolve) => {
+                            cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
+                            cProc.on('close', resolve);
+                        });
+                    } else {
+                        // Mock/Generic fallback for discussion
+                        devProposal = `### 🎯 开发方初拟方案
+1. **核心目标**：实现 "${vaguePrompt}" 对应功能，并保证模块独立性。
+2. **改动范围**：
+   - 核心逻辑层实现
+   - 配置与模型适配层
+   - 单元测试与端到端门禁
+3. **任务清单**：
+   - [ ] [Task 1] 实现核心能力并增加参数校验
+   - [ ] [Task 2] 编写自动化单元测试并验证
+   - [ ] [Task 3] 验证与外部依赖/下游模块的契约一致性`;
+                    }
+                } catch (e) {
+                    devProposal = `### 🎯 开发方初步方案\n针对需求 "${vaguePrompt}" 进行架构拆解与功能落地。`;
+                }
+
+                broadcast('discussion_message', { sender: 'DEV', content: devProposal });
+                appendLog(`✅ 开发方提案已就绪，转交审查方审阅...`, 'stdout');
+
+                // Step 2: Reviewer Critiques & Refines
+                appendLog(`🔍 [Step 2] 审查方 (${reviewProvider} / ${reviewModel || 'default'}) 正在审查提案并补充安全与测试门禁...`, 'stdout');
+
+                const reviewerSystemPrompt = `
+You are the Independent Senior Reviewer Agent.
+User Initial Requirement: "${vaguePrompt}"
+Developer Proposed Plan:
+${devProposal}
+
+Review this proposal critically. Supplement any missing edge cases, security considerations, rollback plans, and test gate constraints.
+Output your final synthesized recommendation for the developer and user to approve.
+`;
+                let reviewerFeedback = '';
+                try {
+                    if (reviewProvider === 'copilot') {
+                        const copilotArgs = ['-p', reviewerSystemPrompt, '-s', '--allow-all'];
+                        if (reviewModel) copilotArgs.push('--model', reviewModel);
+                        if (copilotSessionId) copilotArgs.push(`--resume=${copilotSessionId}`);
+                        const rProc = spawn('copilot', copilotArgs, { cwd: workspaceRoot || process.cwd() });
+                        await new Promise((resolve) => {
+                            rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
+                            rProc.on('close', resolve);
+                        });
+                    } else if (reviewProvider === 'claude') {
+                        const claudeArgs = ['-p', reviewerSystemPrompt];
+                        if (reviewModel) claudeArgs.push('--model', reviewModel);
+                        const rProc = spawn('claude', claudeArgs, { cwd: workspaceRoot || process.cwd() });
+                        await new Promise((resolve) => {
+                            rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
+                            rProc.on('close', resolve);
+                        });
+                    } else {
+                        reviewerFeedback = `### 🔍 审查方评估意见
+1. **安全与并发**：确保所有状态修改具备前置防御与超时回滚；
+2. **测试门禁**：必须全量跑通核心自动化测试套件；
+3. **判定**：方案可行，建议在用户确认后立即开始编码。`;
+                    }
+                } catch (e) {
+                    reviewerFeedback = `### 🔍 审查方建议\n建议增加完备的异常处理与自动化测试门禁。`;
+                }
+
+                broadcast('discussion_message', { sender: 'REVIEWER', content: reviewerFeedback });
+
+                // Synthesize Final Task Plan
+                const finalSynthesizedPlan = `${devProposal}\n\n---\n\n${reviewerFeedback}`;
+                appendLog(`🏁 需求讨论完成！已生成综合任务提案，等待人工判定与微调...`, 'system');
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    devProposal,
+                    reviewerFeedback,
+                    finalPlan: finalSynthesizedPlan,
+                    suggestedFeature: 'feature_' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '_' + Math.random().toString(36).substring(2,6)
+                }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return;
+    }
+
+    // 6. REST API: /api/start (Start Autonomous Execution Loop)
     if (pathname === '/api/start' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
@@ -143,7 +351,7 @@ const server = http.createServer(async (req, res) => {
 
                 activeConfig = config;
                 logs = [];
-                appendLog(`🚀 Starting Dual-Agent Autonomous Loop for: ${config.workspaceRoot}`, 'system');
+                appendLog(`🚀 启动双 Agent 全自动闭环: ${config.workspaceRoot}`, 'system');
 
                 // Save to recent projects
                 const projects = getProjects();
@@ -187,7 +395,6 @@ const server = http.createServer(async (req, res) => {
                     for (const line of text.split(/\r?\n/)) {
                         if (line.trim()) appendLog(line, 'stdout');
                     }
-                    // Refresh mailbox state on output
                     currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
                     broadcast('mailbox_update', currentMailbox);
                 });
@@ -200,7 +407,7 @@ const server = http.createServer(async (req, res) => {
                 });
 
                 activeProcess.on('close', code => {
-                    appendLog(`⏹️ Dual-Agent Loop process exited with code ${code}`, code === 0 ? 'success' : 'error');
+                    appendLog(`⏹️ 双 Agent 闭环进程结束，退出码: ${code}`, code === 0 ? 'success' : 'error');
                     activeProcess = null;
                     currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
                     broadcast('state_change', { isRunning: false, exitCode: code, mailbox: currentMailbox });
@@ -216,12 +423,11 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 4. REST API: /api/stop
+    // 7. REST API: /api/stop
     if (pathname === '/api/stop' && req.method === 'POST') {
         if (activeProcess) {
-            appendLog('⚠️ User requested process cancellation...', 'system');
+            appendLog('⚠️ 用户主动中止运行中的闭环任务...', 'system');
             try {
-                // Kill process tree
                 spawn('taskkill', ['/pid', activeProcess.pid, '/f', '/t']);
             } catch {
                 activeProcess.kill('SIGTERM');
@@ -237,7 +443,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 5. REST API: /api/diff
+    // 8. REST API: /api/diff
     if (pathname === '/api/diff' && req.method === 'GET') {
         const ws = url.searchParams.get('workspace') || (activeConfig ? activeConfig.workspaceRoot : null);
         if (!ws || !fs.existsSync(ws)) {
@@ -250,7 +456,6 @@ const server = http.createServer(async (req, res) => {
         let diffText = '';
         gitProc.stdout.on('data', d => diffText += d.toString('utf-8'));
         gitProc.on('close', () => {
-            // Also get git status
             const statProc = spawn('git', ['status', '--porcelain', '-uall'], { cwd: ws });
             let statText = '';
             statProc.stdout.on('data', d => statText += d.toString('utf-8'));
@@ -265,7 +470,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 6. REST API: /api/projects
+    // 9. REST API: /api/projects
     if (pathname === '/api/projects') {
         if (req.method === 'GET') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -297,14 +502,14 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // 7. REST API: /api/logs
+    // 10. REST API: /api/logs
     if (pathname === '/api/logs' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(logs));
         return;
     }
 
-    // 8. Static File Serving (public/)
+    // 11. Static File Serving (public/)
     let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         filePath = path.join(PUBLIC_DIR, 'index.html');
