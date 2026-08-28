@@ -1,0 +1,4 @@
+node_modules/
+review-mailbox.json*
+*.tmp_*
+projects.json
