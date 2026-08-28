@@ -207,7 +207,7 @@ function Invoke-DevTurn {
                 if ($copilotCmd) {
                     $argsList = @("--allow-all")
                     if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
-                        $argsList += "--resume=$SessionId"
+                        $argsList += "--session-id=$SessionId"
                     }
                     if (-not [string]::IsNullOrWhiteSpace($Model)) {
                         $argsList += @("--model", $Model)
@@ -400,7 +400,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                 }
                 $argsList = @("-s", "--allow-all")
                 if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
-                    $argsList += "--resume=$SessionId"
+                    $argsList += "--session-id=$SessionId"
                 }
                 if (-not [string]::IsNullOrWhiteSpace($Model)) {
                     $argsList += @("--model", $Model)

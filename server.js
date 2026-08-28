@@ -385,7 +385,9 @@ const server = http.createServer(async (req, res) => {
                 // Default / copilot / gpt / grok / gemini
                 psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
                 if (model) psCmd += ` --model '${model}'`;
-                if (sessionId) psCmd += ` --resume='${sessionId}'`;
+                const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                const validSession = (sessionId && UUID_REGEX.test(sessionId.trim())) ? sessionId.trim() : crypto.randomUUID();
+                psCmd += ` --session-id='${validSession}'`;
                 const safeEffort = sanitizeCopilotEffort(reasoningEffort);
                 if (safeEffort && safeEffort !== 'none') {
                     psCmd += ` --reasoning-effort '${safeEffort}'`;
