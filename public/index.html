@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dual-Agent Studio | 通用双 Agent 研发协同与审查驾驶舱</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+  <div id="app" class="app-layout">
+    <!-- TOP HEADER -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon">🚀</div>
+        <div class="logo-text">
+          <h1>Dual-Agent Studio</h1>
+          <span class="tagline">通用双 Agent 研发协同与审查驾驶舱</span>
+        </div>
+      </div>
+      <div class="header-status">
+        <div id="statusBadge" class="status-badge idle">
+          <span class="status-dot"></span>
+          <span id="statusText">就绪 (IDLE)</span>
+        </div>
+        <div class="round-badge" id="roundBadge" style="display: none;">
+          轮次: <span id="currentRoundText">1</span> / <span id="maxRoundText">4</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN WORKSPACE -->
+    <main class="main-content">
+      <!-- LEFT: CONFIGURATION PANEL -->
+      <aside class="sidebar-panel">
+        <div class="panel-section">
+          <h2>📁 目标工作区 (Workspace)</h2>
+          <div class="form-group">
+            <label for="workspaceRoot">项目根目录物理路径</label>
+            <div class="input-with-recent">
+              <input type="text" id="workspaceRoot" placeholder="例如 D:\project\agent-sop 或 D:\svn\server_new" value="D:\project\agent-sop">
+            </div>
+            <div class="recent-projects" id="recentProjects"></div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2>📝 开发任务描述 (Task Prompt)</h2>
+          <div class="form-group">
+            <textarea id="taskPrompt" rows="3" placeholder="请输入本轮需要开发或优化的目标需求..."></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="featureName">特性名称 (Feature)</label>
+              <input type="text" id="featureName" placeholder="例如 feature-cache-opt">
+            </div>
+            <div class="form-group flex-1">
+              <label for="maxRounds">最大轮次 (Max Rounds)</label>
+              <input type="number" id="maxRounds" min="1" max="10" value="4">
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2>🛠️ 开发方配置 (Developer Agent)</h2>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="devProvider">Dev 引擎</label>
+              <select id="devProvider">
+                <option value="claude" selected>Claude Code CLI (claude)</option>
+                <option value="copilot">GitHub Copilot CLI (copilot)</option>
+                <option value="aider">Aider CLI (aider)</option>
+                <option value="antigravity">Antigravity (IDE 协同)</option>
+                <option value="mock">Mock (仿真测试)</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label for="devModel">Dev 模型 (可选)</label>
+              <input type="text" id="devModel" placeholder="claude-3-7-sonnet-20250219" value="claude-3-7-sonnet-20250219">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="devReasoningEffort">思考强度 (Reasoning Effort)</label>
+            <select id="devReasoningEffort">
+              <option value="high" selected>High (16k Thinking Tokens)</option>
+              <option value="medium">Medium (8k Thinking Tokens)</option>
+              <option value="low">Low (4k Thinking Tokens)</option>
+              <option value="none">None (关闭思考)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2>🔍 审查方配置 (Reviewer Agent)</h2>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="reviewProvider">Reviewer 引擎</label>
+              <select id="reviewProvider">
+                <option value="copilot" selected>GitHub Copilot CLI (copilot)</option>
+                <option value="claude">Claude Code CLI (claude)</option>
+                <option value="mock">Mock (仿真测试)</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label for="reviewModel">审查模型</label>
+              <input type="text" id="reviewModel" placeholder="gpt-5.4 / claude-3.7-sonnet / o3-mini" value="gpt-5.4">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="reviewReasoningEffort">审查思考强度</label>
+              <select id="reviewReasoningEffort">
+                <option value="high" selected>High (高强度架构推演)</option>
+                <option value="xhigh">X-High / Max</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+                <option value="none">None</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label for="copilotSessionId">Copilot 会话 ID</label>
+              <input type="text" id="copilotSessionId" placeholder="9fa43261-d96c-430b-ac43-20e3035ec1bf" value="9fa43261-d96c-430b-ac43-20e3035ec1bf">
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2>🚦 测试门禁与控制</h2>
+          <div class="form-group">
+            <label for="verifyCommand">自动化测试验证命令 (Verify Command)</label>
+            <input type="text" id="verifyCommand" placeholder="pwsh -NoProfile -File ./scripts/run-all-tests.ps1" value="pwsh -NoProfile -File ./scripts/run-all-tests.ps1">
+          </div>
+          <div class="form-checkbox">
+            <input type="checkbox" id="autoCommit" checked>
+            <label for="autoCommit">审查通过 (APPROVED) 后自动创建 Git Commit</label>
+          </div>
+        </div>
+
+        <div class="action-buttons">
+          <button id="btnStart" class="btn btn-primary" onclick="startLoop()">
+            <span class="icon">▶</span> 启动全自动闭环
+          </button>
+          <button id="btnStop" class="btn btn-danger" onclick="stopLoop()" disabled>
+            <span class="icon">⏹</span> 停止运行
+          </button>
+        </div>
+      </aside>
+
+      <!-- RIGHT: COCKPIT, TIMELINE, DIFF & LOGS -->
+      <section class="cockpit-panel">
+        <div class="tab-header">
+          <button class="tab-btn active" onclick="switchTab('timeline')">📊 轮次流转 (Timeline)</button>
+          <button class="tab-btn" onclick="switchTab('diff')">🔍 代码变更 (Git Diff)</button>
+          <button class="tab-btn" onclick="switchTab('logs')">💻 实时终端日志 (Live Logs)</button>
+        </div>
+
+        <!-- TAB 1: TIMELINE -->
+        <div id="tab-timeline" class="tab-content active">
+          <div id="timelineContainer" class="timeline-container">
+            <div class="empty-state" id="emptyTimeline">
+              <div class="empty-icon">☕</div>
+              <p>暂无运行记录。在左侧配置任务并点击【启动全自动闭环】开始双 Agent 迭代。</p>
+            </div>
+            <div id="roundsList" class="rounds-list"></div>
+          </div>
+        </div>
+
+        <!-- TAB 2: GIT DIFF -->
+        <div id="tab-diff" class="tab-content">
+          <div class="diff-toolbar">
+            <button class="btn btn-sm btn-secondary" onclick="fetchDiff()">🔄 刷新 Diff</button>
+            <span id="diffStats" class="diff-stats"></span>
+          </div>
+          <div id="diffViewer" class="diff-viewer">
+            <pre><code id="diffCode">等待加载变更...</code></pre>
+          </div>
+        </div>
+
+        <!-- TAB 3: LIVE LOGS -->
+        <div id="tab-logs" class="tab-content">
+          <div class="logs-toolbar">
+            <button class="btn btn-sm btn-secondary" onclick="clearLogs()">🧹 清屏</button>
+            <label class="auto-scroll-toggle">
+              <input type="checkbox" id="autoScroll" checked> 自动滚屏
+            </label>
+          </div>
+          <div id="logsConsole" class="logs-console"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

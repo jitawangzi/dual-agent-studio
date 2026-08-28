@@ -1,0 +1,21 @@
+{
+  "name": "dual-agent-studio",
+  "version": "1.0.0",
+  "description": "Universal 100% Autonomous Dual-Agent Orchestration Studio and Web Cockpit",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "pwsh -NoProfile -File ./tests/orchestrator.tests.ps1"
+  },
+  "keywords": [
+    "ai",
+    "dual-agent",
+    "autonomous-loop",
+    "claude-code",
+    "github-copilot",
+    "code-review",
+    "orchestrator"
+  ],
+  "author": "shuyongqiang",
+  "license": "MIT"
+}
