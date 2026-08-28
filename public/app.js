@@ -14,6 +14,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   initProjects();
   initSSE();
   fetchStatus();
+  const initWs = document.getElementById('workspaceRoot')?.value;
+  if (initWs) autoDetectWorkspace(initWs);
   setInterval(fetchStatus, 3000);
 });
 
@@ -139,11 +141,32 @@ function navigateUpFolder() {
   }
 }
 
+// --- AUTO DETECT WORKSPACE TEST COMMAND ---
+async function autoDetectWorkspace(wsPath) {
+  if (!wsPath) return;
+  try {
+    const res = await fetch('/api/detect-workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceRoot: wsPath })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.verifyCommand) {
+        document.getElementById('verifyCommand').value = data.verifyCommand;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to auto detect workspace:', e);
+  }
+}
+
 function confirmSelectedFolder() {
   const selected = explorerSelectedPath || explorerCurrentPath;
   if (selected) {
     document.getElementById('workspaceRoot').value = selected;
     closeFolderPickerModal();
+    autoDetectWorkspace(selected);
     fetchDiff();
     fetchStatus();
   }
@@ -163,6 +186,7 @@ async function initProjects() {
       badge.title = p.path;
       badge.onclick = () => {
         document.getElementById('workspaceRoot').value = p.path;
+        autoDetectWorkspace(p.path);
         fetchDiff();
         fetchStatus();
       };

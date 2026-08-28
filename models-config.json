@@ -1,14 +1,63 @@
 {
   "engineSeriesRules": {
-    "antigravity": ["gemini", "custom"],
-    "claude": ["claude", "custom"],
-    "copilot": ["gpt", "claude", "gemini", "custom"],
-    "codex": ["gpt", "custom"],
-    "cursor": ["claude", "gpt", "gemini", "deepseek", "custom"],
-    "pi": ["custom", "gpt", "claude"],
-    "aider": ["claude", "gpt", "deepseek", "gemini", "qwen", "custom"],
-    "mock": ["claude", "gpt", "gemini", "deepseek", "grok", "glm", "qwen", "custom"],
-    "custom": ["claude", "gpt", "gemini", "deepseek", "grok", "glm", "qwen", "custom"]
+    "antigravity": [
+      "gemini",
+      "custom"
+    ],
+    "claude": [
+      "claude",
+      "custom"
+    ],
+    "copilot": [
+      "grok",
+      "gpt",
+      "claude",
+      "gemini"
+    ],
+    "codex": [
+      "gpt",
+      "custom"
+    ],
+    "cursor": [
+      "claude",
+      "gpt",
+      "gemini",
+      "deepseek",
+      "custom"
+    ],
+    "pi": [
+      "custom",
+      "gpt",
+      "claude"
+    ],
+    "aider": [
+      "claude",
+      "gpt",
+      "deepseek",
+      "gemini",
+      "qwen",
+      "custom"
+    ],
+    "mock": [
+      "claude",
+      "gpt",
+      "gemini",
+      "deepseek",
+      "grok",
+      "glm",
+      "qwen",
+      "custom"
+    ],
+    "custom": [
+      "claude",
+      "gpt",
+      "gemini",
+      "deepseek",
+      "grok",
+      "glm",
+      "qwen",
+      "custom"
+    ]
   },
   "series": [
     {
@@ -22,11 +71,31 @@
           "effortType": "thinking_tokens",
           "defaultEffort": "16384",
           "efforts": [
-            { "id": "16384", "label": "High (16,384 Thinking Tokens - 深度架构与复杂推演)", "value": "16384" },
-            { "id": "8192", "label": "Medium (8,192 Thinking Tokens - 均衡编码自愈)", "value": "8192" },
-            { "id": "2048", "label": "Low (2,048 Thinking Tokens - 快速轻量思考)", "value": "2048" },
-            { "id": "64000", "label": "Max (64,000 Thinking Tokens - 极致长程逻辑规划)", "value": "64000" },
-            { "id": "0", "label": "Off (0 Tokens - 关闭思考，直接响应)", "value": "0" }
+            {
+              "id": "16384",
+              "label": "High (16,384 Thinking Tokens - 深度架构与复杂推演)",
+              "value": "16384"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8,192 Thinking Tokens - 均衡编码自愈)",
+              "value": "8192"
+            },
+            {
+              "id": "2048",
+              "label": "Low (2,048 Thinking Tokens - 快速轻量思考)",
+              "value": "2048"
+            },
+            {
+              "id": "64000",
+              "label": "Max (64,000 Thinking Tokens - 极致长程逻辑规划)",
+              "value": "64000"
+            },
+            {
+              "id": "0",
+              "label": "Off (0 Tokens - 关闭思考，直接响应)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -35,10 +104,26 @@
           "effortType": "thinking_tokens",
           "defaultEffort": "32768",
           "efforts": [
-            { "id": "32768", "label": "High (32,768 Thinking Tokens - 全局架构推演)", "value": "32768" },
-            { "id": "16384", "label": "Medium (16,384 Thinking Tokens)", "value": "16384" },
-            { "id": "64000", "label": "Max (64,000 Thinking Tokens)", "value": "64000" },
-            { "id": "0", "label": "Off (关闭思考)", "value": "0" }
+            {
+              "id": "32768",
+              "label": "High (32,768 Thinking Tokens - 全局架构推演)",
+              "value": "32768"
+            },
+            {
+              "id": "16384",
+              "label": "Medium (16,384 Thinking Tokens)",
+              "value": "16384"
+            },
+            {
+              "id": "64000",
+              "label": "Max (64,000 Thinking Tokens)",
+              "value": "64000"
+            },
+            {
+              "id": "0",
+              "label": "Off (关闭思考)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -47,9 +132,21 @@
           "effortType": "thinking_tokens",
           "defaultEffort": "16384",
           "efforts": [
-            { "id": "16384", "label": "High (16k Tokens)", "value": "16384" },
-            { "id": "8192", "label": "Medium (8k Tokens)", "value": "8192" },
-            { "id": "0", "label": "Off (直接执行)", "value": "0" }
+            {
+              "id": "16384",
+              "label": "High (16k Tokens)",
+              "value": "16384"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8k Tokens)",
+              "value": "8192"
+            },
+            {
+              "id": "0",
+              "label": "Off (直接执行)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -58,10 +155,26 @@
           "effortType": "thinking_tokens",
           "defaultEffort": "16384",
           "efforts": [
-            { "id": "16384", "label": "High (16k Tokens)", "value": "16384" },
-            { "id": "8192", "label": "Medium (8k Tokens)", "value": "8192" },
-            { "id": "2048", "label": "Low (2k Tokens)", "value": "2048" },
-            { "id": "0", "label": "Off (0 Tokens)", "value": "0" }
+            {
+              "id": "16384",
+              "label": "High (16k Tokens)",
+              "value": "16384"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8k Tokens)",
+              "value": "8192"
+            },
+            {
+              "id": "2048",
+              "label": "Low (2k Tokens)",
+              "value": "2048"
+            },
+            {
+              "id": "0",
+              "label": "Off (0 Tokens)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -70,7 +183,11 @@
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型，直接输出代码)", "value": "" }
+            {
+              "id": "none",
+              "label": "N/A (非思考模型，直接输出代码)",
+              "value": ""
+            }
           ]
         }
       ]
@@ -86,11 +203,31 @@
           "effortType": "copilot_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高强度推演 - 适合严格代码审计与边界检测)", "value": "high" },
-            { "id": "xhigh", "label": "X-High / Max (极致深度思考 - 复杂高并发/分布式逻辑)", "value": "xhigh" },
-            { "id": "medium", "label": "Medium (均衡思考 - 推荐常规开发)", "value": "medium" },
-            { "id": "low", "label": "Low (轻度思考 - 快速轻量检查)", "value": "low" },
-            { "id": "none", "label": "None (直接输出 - 关闭推演)", "value": "none" }
+            {
+              "id": "high",
+              "label": "High (高强度推演 - 适合严格代码审计与边界检测)",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "label": "X-High / Max (极致深度思考 - 复杂高并发/分布式逻辑)",
+              "value": "xhigh"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (均衡思考 - 推荐常规开发)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (轻度思考 - 快速轻量检查)",
+              "value": "low"
+            },
+            {
+              "id": "none",
+              "label": "None (直接输出 - 关闭推演)",
+              "value": "none"
+            }
           ]
         },
         {
@@ -99,9 +236,21 @@
           "effortType": "copilot_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高强度)", "value": "high" },
-            { "id": "medium", "label": "Medium (标准)", "value": "medium" },
-            { "id": "low", "label": "Low (快速)", "value": "low" }
+            {
+              "id": "high",
+              "label": "High (高强度)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (标准)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (快速)",
+              "value": "low"
+            }
           ]
         },
         {
@@ -110,11 +259,31 @@
           "effortType": "copilot_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高强度推演)", "value": "high" },
-            { "id": "xhigh", "label": "X-High / Max (极致深度思考)", "value": "xhigh" },
-            { "id": "medium", "label": "Medium (均衡思考)", "value": "medium" },
-            { "id": "low", "label": "Low (轻度思考)", "value": "low" },
-            { "id": "none", "label": "None (直接输出)", "value": "none" }
+            {
+              "id": "high",
+              "label": "High (高强度推演)",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "label": "X-High / Max (极致深度思考)",
+              "value": "xhigh"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (均衡思考)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (轻度思考)",
+              "value": "low"
+            },
+            {
+              "id": "none",
+              "label": "None (直接输出)",
+              "value": "none"
+            }
           ]
         },
         {
@@ -123,9 +292,21 @@
           "effortType": "reasoning_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高深度推理 - 严谨算法与边界推演)", "value": "high" },
-            { "id": "medium", "label": "Medium (中等深度 - 快速自愈迭代)", "value": "medium" },
-            { "id": "low", "label": "Low (快速浅层推理)", "value": "low" }
+            {
+              "id": "high",
+              "label": "High (高深度推理 - 严谨算法与边界推演)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (中等深度 - 快速自愈迭代)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (快速浅层推理)",
+              "value": "low"
+            }
           ]
         },
         {
@@ -134,9 +315,21 @@
           "effortType": "reasoning_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (完整推理链)", "value": "high" },
-            { "id": "medium", "label": "Medium (标准推理链)", "value": "medium" },
-            { "id": "low", "label": "Low (精简推理链)", "value": "low" }
+            {
+              "id": "high",
+              "label": "High (完整推理链)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (标准推理链)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (精简推理链)",
+              "value": "low"
+            }
           ]
         },
         {
@@ -145,7 +338,11 @@
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+            {
+              "id": "none",
+              "label": "N/A (非思考模型，直接响应)",
+              "value": ""
+            }
           ]
         }
       ]
@@ -161,10 +358,26 @@
           "effortType": "gemini_budget",
           "defaultEffort": "24576",
           "efforts": [
-            { "id": "24576", "label": "High (24k Thinking Budget - 深度架构推演)", "value": "24576" },
-            { "id": "8192", "label": "Medium (8k Thinking Budget - 推荐日常编码)", "value": "8192" },
-            { "id": "2048", "label": "Low (2k Thinking Budget - 快速响应)", "value": "2048" },
-            { "id": "0", "label": "Off (关闭思考)", "value": "0" }
+            {
+              "id": "24576",
+              "label": "High (24k Thinking Budget - 深度架构推演)",
+              "value": "24576"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8k Thinking Budget - 推荐日常编码)",
+              "value": "8192"
+            },
+            {
+              "id": "2048",
+              "label": "Low (2k Thinking Budget - 快速响应)",
+              "value": "2048"
+            },
+            {
+              "id": "0",
+              "label": "Off (关闭思考)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -173,10 +386,26 @@
           "effortType": "gemini_budget",
           "defaultEffort": "32768",
           "efforts": [
-            { "id": "32768", "label": "High (32k Thinking Budget - 全局代码拓扑审计)", "value": "32768" },
-            { "id": "16384", "label": "Medium (16k Thinking Budget)", "value": "16384" },
-            { "id": "4096", "label": "Low (4k Thinking Budget)", "value": "4096" },
-            { "id": "0", "label": "Off (关闭思考)", "value": "0" }
+            {
+              "id": "32768",
+              "label": "High (32k Thinking Budget - 全局代码拓扑审计)",
+              "value": "32768"
+            },
+            {
+              "id": "16384",
+              "label": "Medium (16k Thinking Budget)",
+              "value": "16384"
+            },
+            {
+              "id": "4096",
+              "label": "Low (4k Thinking Budget)",
+              "value": "4096"
+            },
+            {
+              "id": "0",
+              "label": "Off (关闭思考)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -185,9 +414,21 @@
           "effortType": "gemini_budget",
           "defaultEffort": "24576",
           "efforts": [
-            { "id": "24576", "label": "High (24k Budget)", "value": "24576" },
-            { "id": "8192", "label": "Medium (8k Budget)", "value": "8192" },
-            { "id": "0", "label": "Off (直接执行)", "value": "0" }
+            {
+              "id": "24576",
+              "label": "High (24k Budget)",
+              "value": "24576"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8k Budget)",
+              "value": "8192"
+            },
+            {
+              "id": "0",
+              "label": "Off (直接执行)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -196,9 +437,21 @@
           "effortType": "gemini_budget",
           "defaultEffort": "24576",
           "efforts": [
-            { "id": "24576", "label": "High (24k Budget)", "value": "24576" },
-            { "id": "8192", "label": "Medium (8k Budget)", "value": "8192" },
-            { "id": "0", "label": "Off (关闭思考)", "value": "0" }
+            {
+              "id": "24576",
+              "label": "High (24k Budget)",
+              "value": "24576"
+            },
+            {
+              "id": "8192",
+              "label": "Medium (8k Budget)",
+              "value": "8192"
+            },
+            {
+              "id": "0",
+              "label": "Off (关闭思考)",
+              "value": "0"
+            }
           ]
         },
         {
@@ -207,9 +460,21 @@
           "effortType": "gemini_budget",
           "defaultEffort": "8192",
           "efforts": [
-            { "id": "8192", "label": "Medium (8k Budget)", "value": "8192" },
-            { "id": "2048", "label": "Low (2k Budget)", "value": "2048" },
-            { "id": "0", "label": "Off", "value": "0" }
+            {
+              "id": "8192",
+              "label": "Medium (8k Budget)",
+              "value": "8192"
+            },
+            {
+              "id": "2048",
+              "label": "Low (2k Budget)",
+              "value": "2048"
+            },
+            {
+              "id": "0",
+              "label": "Off",
+              "value": "0"
+            }
           ]
         }
       ]
@@ -225,9 +490,21 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT (默认开启原生完整长思维链 - 严密纠错)", "value": "full" },
-            { "id": "concise", "label": "Concise CoT (精简思维链 - 降低延迟)", "value": "concise" },
-            { "id": "direct", "label": "Direct (直接代码输出)", "value": "direct" }
+            {
+              "id": "full",
+              "label": "Full CoT (默认开启原生完整长思维链 - 严密纠错)",
+              "value": "full"
+            },
+            {
+              "id": "concise",
+              "label": "Concise CoT (精简思维链 - 降低延迟)",
+              "value": "concise"
+            },
+            {
+              "id": "direct",
+              "label": "Direct (直接代码输出)",
+              "value": "direct"
+            }
           ]
         },
         {
@@ -236,8 +513,16 @@
           "effortType": "cot_mode",
           "defaultEffort": "concise",
           "efforts": [
-            { "id": "concise", "label": "Concise CoT (精简思维链)", "value": "concise" },
-            { "id": "direct", "label": "Direct (直接代码输出)", "value": "direct" }
+            {
+              "id": "concise",
+              "label": "Concise CoT (精简思维链)",
+              "value": "concise"
+            },
+            {
+              "id": "direct",
+              "label": "Direct (直接代码输出)",
+              "value": "direct"
+            }
           ]
         },
         {
@@ -246,8 +531,16 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT (长思维链深度推导)", "value": "full" },
-            { "id": "concise", "label": "Concise CoT (精简思维链)", "value": "concise" }
+            {
+              "id": "full",
+              "label": "Full CoT (长思维链深度推导)",
+              "value": "full"
+            },
+            {
+              "id": "concise",
+              "label": "Concise CoT (精简思维链)",
+              "value": "concise"
+            }
           ]
         },
         {
@@ -256,7 +549,11 @@
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型，直接输出代码)", "value": "" }
+            {
+              "id": "none",
+              "label": "N/A (非思考模型，直接输出代码)",
+              "value": ""
+            }
           ]
         }
       ]
@@ -272,8 +569,16 @@
           "effortType": "grok_mode",
           "defaultEffort": "think",
           "efforts": [
-            { "id": "think", "label": "Deep Think (开启深度推理模式 - 严密代码审查)", "value": "think" },
-            { "id": "fast", "label": "Fast (常规快速模式)", "value": "fast" }
+            {
+              "id": "think",
+              "label": "Deep Think (开启深度推理模式 - 严密代码审查)",
+              "value": "think"
+            },
+            {
+              "id": "fast",
+              "label": "Fast (常规快速模式)",
+              "value": "fast"
+            }
           ]
         },
         {
@@ -282,8 +587,16 @@
           "effortType": "grok_mode",
           "defaultEffort": "think",
           "efforts": [
-            { "id": "think", "label": "Deep Think (深度思考)", "value": "think" },
-            { "id": "fast", "label": "Fast (快速模式)", "value": "fast" }
+            {
+              "id": "think",
+              "label": "Deep Think (深度思考)",
+              "value": "think"
+            },
+            {
+              "id": "fast",
+              "label": "Fast (快速模式)",
+              "value": "fast"
+            }
           ]
         },
         {
@@ -292,8 +605,16 @@
           "effortType": "grok_mode",
           "defaultEffort": "think",
           "efforts": [
-            { "id": "think", "label": "Deep Think", "value": "think" },
-            { "id": "fast", "label": "Fast", "value": "fast" }
+            {
+              "id": "think",
+              "label": "Deep Think",
+              "value": "think"
+            },
+            {
+              "id": "fast",
+              "label": "Fast",
+              "value": "fast"
+            }
           ]
         }
       ]
@@ -309,9 +630,21 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full Reasoning (原生深度思维链 - 复杂逻辑验证)", "value": "full" },
-            { "id": "concise", "label": "Concise (精炼思考模式)", "value": "concise" },
-            { "id": "direct", "label": "Direct (直接输出)", "value": "direct" }
+            {
+              "id": "full",
+              "label": "Full Reasoning (原生深度思维链 - 复杂逻辑验证)",
+              "value": "full"
+            },
+            {
+              "id": "concise",
+              "label": "Concise (精炼思考模式)",
+              "value": "concise"
+            },
+            {
+              "id": "direct",
+              "label": "Direct (直接输出)",
+              "value": "direct"
+            }
           ]
         },
         {
@@ -320,8 +653,16 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full Reasoning", "value": "full" },
-            { "id": "direct", "label": "Direct", "value": "direct" }
+            {
+              "id": "full",
+              "label": "Full Reasoning",
+              "value": "full"
+            },
+            {
+              "id": "direct",
+              "label": "Direct",
+              "value": "direct"
+            }
           ]
         },
         {
@@ -330,7 +671,11 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full Reasoning", "value": "full" }
+            {
+              "id": "full",
+              "label": "Full Reasoning",
+              "value": "full"
+            }
           ]
         }
       ]
@@ -346,8 +691,16 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT (完整原生思维链推导)", "value": "full" },
-            { "id": "concise", "label": "Concise CoT (精简推理)", "value": "concise" }
+            {
+              "id": "full",
+              "label": "Full CoT (完整原生思维链推导)",
+              "value": "full"
+            },
+            {
+              "id": "concise",
+              "label": "Concise CoT (精简推理)",
+              "value": "concise"
+            }
           ]
         },
         {
@@ -356,8 +709,16 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT", "value": "full" },
-            { "id": "direct", "label": "Direct", "value": "direct" }
+            {
+              "id": "full",
+              "label": "Full CoT",
+              "value": "full"
+            },
+            {
+              "id": "direct",
+              "label": "Direct",
+              "value": "direct"
+            }
           ]
         },
         {
@@ -366,7 +727,11 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT", "value": "full" }
+            {
+              "id": "full",
+              "label": "Full CoT",
+              "value": "full"
+            }
           ]
         },
         {
@@ -375,7 +740,11 @@
           "effortType": "cot_mode",
           "defaultEffort": "full",
           "efforts": [
-            { "id": "full", "label": "Full CoT", "value": "full" }
+            {
+              "id": "full",
+              "label": "Full CoT",
+              "value": "full"
+            }
           ]
         },
         {
@@ -384,7 +753,11 @@
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (专注精准代码生成与补齐)", "value": "" }
+            {
+              "id": "none",
+              "label": "N/A (专注精准代码生成与补齐)",
+              "value": ""
+            }
           ]
         }
       ]
@@ -400,10 +773,26 @@
           "effortType": "reasoning_effort",
           "defaultEffort": "medium",
           "efforts": [
-            { "id": "high", "label": "High (高深度)", "value": "high" },
-            { "id": "medium", "label": "Medium (中等)", "value": "medium" },
-            { "id": "low", "label": "Low (低深度)", "value": "low" },
-            { "id": "none", "label": "None (直接输出)", "value": "none" }
+            {
+              "id": "high",
+              "label": "High (高深度)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (中等)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (低深度)",
+              "value": "low"
+            },
+            {
+              "id": "none",
+              "label": "None (直接输出)",
+              "value": "none"
+            }
           ]
         },
         {
@@ -412,7 +801,11 @@
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (直接生成)", "value": "" }
+            {
+              "id": "none",
+              "label": "N/A (直接生成)",
+              "value": ""
+            }
           ]
         }
       ]

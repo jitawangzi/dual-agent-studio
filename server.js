@@ -236,7 +236,58 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 4.1 Native browse-folder fallback
+    // 4.1 REST API: /api/detect-workspace (Auto detect test framework & recommended command)
+    if (pathname === '/api/detect-workspace' && req.method === 'POST') {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => {
+            try {
+                const { workspaceRoot } = JSON.parse(body);
+                if (!workspaceRoot || !fs.existsSync(workspaceRoot)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Workspace path does not exist.' }));
+                    return;
+                }
+
+                let recommendedCommand = 'exit 0';
+                let framework = 'Generic';
+
+                if (fs.existsSync(path.join(workspaceRoot, 'scripts', 'run-all-tests.ps1'))) {
+                    recommendedCommand = 'pwsh -NoProfile -File ./scripts/run-all-tests.ps1';
+                    framework = 'PowerShell SOP Suite';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'tests', 'orchestrator.tests.ps1'))) {
+                    recommendedCommand = 'pwsh -NoProfile -File ./tests/orchestrator.tests.ps1';
+                    framework = 'PowerShell Orchestrator Suite';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'gradlew.bat')) || fs.existsSync(path.join(workspaceRoot, 'gradlew'))) {
+                    recommendedCommand = '.\\gradlew test';
+                    framework = 'Gradle (Java / Spring)';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'pom.xml'))) {
+                    recommendedCommand = 'mvn test';
+                    framework = 'Maven (Java / Spring)';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'package.json'))) {
+                    recommendedCommand = 'npm test';
+                    framework = 'Node.js (npm)';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'pytest.ini')) || fs.existsSync(path.join(workspaceRoot, 'setup.py'))) {
+                    recommendedCommand = 'pytest';
+                    framework = 'Python (pytest)';
+                }
+
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({
+                    success: true,
+                    workspaceRoot,
+                    verifyCommand: recommendedCommand,
+                    framework
+                }));
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // 4.2 Native browse-folder fallback
     if (pathname === '/api/browse-folder' && req.method === 'POST') {
         const scriptPath = path.join(__dirname, 'engine', 'browse-folder.ps1');
         const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]);

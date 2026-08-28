@@ -42,7 +42,7 @@
           <div class="form-group">
             <label for="workspaceRoot">项目根目录物理路径</label>
             <div class="input-with-btn">
-              <input type="text" id="workspaceRoot" placeholder="例如 D:\project\agent-sop 或 D:\svn\server_new" value="D:\project\agent-sop">
+              <input type="text" id="workspaceRoot" placeholder="例如 D:\project\agent-sop 或 D:\svn\server_new" value="D:\project\agent-sop" onchange="autoDetectWorkspace(this.value)">
               <button class="btn btn-sm btn-secondary" onclick="openFolderPickerModal()">📁 浏览...</button>
             </div>
             <div class="recent-projects" id="recentProjects"></div>
