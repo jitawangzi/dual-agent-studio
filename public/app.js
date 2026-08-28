@@ -14,11 +14,16 @@ const PREF_KEY = 'dual_agent_studio_prefs';
 document.addEventListener('DOMContentLoaded', async () => {
   await loadModelsConfig();
   loadUserPreferences();
-  initProjects();
+  await initProjects();
   initSSE();
+  
+  const currentWs = document.getElementById('workspaceRoot')?.value;
+  if (currentWs) {
+    updateRecentBadgesHighlight(currentWs);
+    autoDetectWorkspace(currentWs);
+    fetchDiff();
+  }
   fetchStatus();
-  const initWs = document.getElementById('workspaceRoot')?.value;
-  if (initWs) autoDetectWorkspace(initWs);
   setInterval(fetchStatus, 3000);
 
   // Auto-save preferences on input changes
@@ -271,37 +276,94 @@ async function autoDetectWorkspace(wsPath) {
   }
 }
 
+function setWorkspace(wsPath, updateServerProjects = true) {
+  if (!wsPath) return;
+  const input = document.getElementById('workspaceRoot');
+  if (input) input.value = wsPath;
+
+  // Update active highlight in recent projects badges
+  updateRecentBadgesHighlight(wsPath);
+
+  // Save to localStorage immediately
+  saveUserPreferences();
+
+  // Auto detect framework & test command
+  autoDetectWorkspace(wsPath);
+
+  // Refresh git diff & mailbox status for this workspace
+  fetchDiff();
+  fetchStatus();
+
+  // Register in recent projects on backend
+  if (updateServerProjects) {
+    fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: wsPath })
+    }).then(res => res.json()).then(data => {
+      if (data.projects) {
+        renderRecentProjects(data.projects);
+      }
+    }).catch(() => {});
+  }
+}
+
+function updateRecentBadgesHighlight(wsPath) {
+  const norm = (wsPath || '').trim().toLowerCase().replace(/\\/g, '/');
+  document.querySelectorAll('#recentProjects .recent-badge').forEach(badge => {
+    const badgePath = (badge.title || '').trim().toLowerCase().replace(/\\/g, '/');
+    if (badgePath && badgePath === norm) {
+      badge.classList.add('active');
+    } else {
+      badge.classList.remove('active');
+    }
+  });
+}
+
 function confirmSelectedFolder() {
   const selected = explorerSelectedPath || explorerCurrentPath;
   if (selected) {
-    document.getElementById('workspaceRoot').value = selected;
     closeFolderPickerModal();
-    autoDetectWorkspace(selected);
-    fetchDiff();
-    fetchStatus();
+    setWorkspace(selected, true);
   }
 }
 
 // --- RECENT PROJECTS ---
+function renderRecentProjects(projects) {
+  const container = document.getElementById('recentProjects');
+  if (!container) return;
+  container.innerHTML = '';
+  const currentWs = document.getElementById('workspaceRoot')?.value;
+
+  projects.forEach(p => {
+    const badge = document.createElement('span');
+    badge.className = 'recent-badge';
+    badge.textContent = `📁 ${p.name}`;
+    badge.title = p.path;
+    badge.onclick = () => {
+      setWorkspace(p.path, true);
+    };
+    container.appendChild(badge);
+  });
+
+  if (currentWs) {
+    updateRecentBadgesHighlight(currentWs);
+  }
+}
+
 async function initProjects() {
   try {
     const res = await fetch('/api/projects');
     const projects = await res.json();
-    const container = document.getElementById('recentProjects');
-    container.innerHTML = '';
-    projects.forEach(p => {
-      const badge = document.createElement('span');
-      badge.className = 'recent-badge';
-      badge.textContent = `📁 ${p.name}`;
-      badge.title = p.path;
-      badge.onclick = () => {
-        document.getElementById('workspaceRoot').value = p.path;
-        autoDetectWorkspace(p.path);
-        fetchDiff();
-        fetchStatus();
-      };
-      container.appendChild(badge);
-    });
+    const currentWs = document.getElementById('workspaceRoot')?.value;
+
+    renderRecentProjects(projects);
+
+    if (currentWs) {
+      updateRecentBadgesHighlight(currentWs);
+    } else if (projects.length > 0) {
+      setWorkspace(projects[0].path, false);
+    }
   } catch (e) {
     console.error('Failed to load projects:', e);
   }
@@ -719,7 +781,8 @@ function clearLogs() {
 
 async function fetchStatus() {
   try {
-    const res = await fetch('/api/status');
+    const ws = document.getElementById('workspaceRoot')?.value.trim() || '';
+    const res = await fetch(`/api/status${ws ? `?workspace=${encodeURIComponent(ws)}` : ''}`);
     const data = await res.json();
     updateRunningState(data.isRunning);
     if (data.mailbox) {

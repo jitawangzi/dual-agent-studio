@@ -184,14 +184,17 @@ const server = http.createServer(async (req, res) => {
 
     // 2. REST API: /api/status
     if (pathname === '/api/status' && req.method === 'GET') {
-        if (activeConfig && activeConfig.workspaceRoot) {
-            currentMailbox = getMailbox(activeConfig.workspaceRoot, activeConfig.mailboxPath, activeConfig.feature);
+        const queryWs = url.searchParams.get('workspace');
+        const targetWs = (activeConfig && activeConfig.workspaceRoot) || queryWs;
+        let mb = currentMailbox;
+        if (targetWs) {
+            mb = getMailbox(targetWs, activeConfig ? activeConfig.mailboxPath : null, activeConfig ? activeConfig.feature : null);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             isRunning: activeProcess !== null,
             config: activeConfig,
-            mailbox: currentMailbox,
+            mailbox: mb,
             logsCount: logs.length
         }));
         return;
