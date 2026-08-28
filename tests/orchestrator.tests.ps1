@@ -8,6 +8,9 @@ $ErrorActionPreference = "Stop"
 $StudioRoot = Split-Path -Parent $PSScriptRoot
 $OrchestratorScript = Join-Path $StudioRoot "engine\orchestrator.ps1"
 
+$OrchestratorLib = Join-Path $StudioRoot "engine\orchestrator-lib.ps1"
+. $OrchestratorLib
+
 $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("studio-orchestrator-tests-" + [guid]::NewGuid().ToString("N"))
 [System.IO.Directory]::CreateDirectory($TestRoot) | Out-Null
 
@@ -26,7 +29,96 @@ function Assert-Equal {
 }
 
 try {
-    Write-Host "Running Dual-Agent Studio Standalone Orchestrator Tests..." -ForegroundColor Cyan
+    Write-Host "Running Dual-Agent Studio Standalone Orchestrator & Library Tests..." -ForegroundColor Cyan
+
+    # --- Section A: Direct Unit Tests for orchestrator-lib.ps1 ---
+    Write-Host "Verifying orchestrator-lib.ps1 unit functions..." -ForegroundColor Cyan
+
+    # A1. Format-CopilotReasoningEffort
+    Assert-Equal (Format-CopilotReasoningEffort "high") "high" "Copilot high effort"
+    Assert-Equal (Format-CopilotReasoningEffort "64000") "max" "Copilot max effort mapping"
+    Assert-Equal (Format-CopilotReasoningEffort "off") "none" "Copilot off effort mapping"
+    Assert-Equal (Format-CopilotReasoningEffort $null) $null "Copilot null effort"
+
+    # A2. Format-AgyReasoningEffort
+    Assert-Equal (Format-AgyReasoningEffort "high") "high" "Agy high effort"
+    Assert-Equal (Format-AgyReasoningEffort "max") "high" "Agy max mapped to high"
+    Assert-Equal (Format-AgyReasoningEffort "off") "" "Agy off mapped to empty"
+
+    # A3. Extract-TestFailureSummary (8192 chars limit & keyword matching)
+    $longLog = (1..500 | ForEach-Object { "Normal line $_" }) -join "`n"
+    $longLog += "`nFAILED: AssertionError in module TestA line 42`n"
+    $longLog += (501..1000 | ForEach-Object { "Normal line $_" }) -join "`n"
+    $failureSummary = Extract-TestFailureSummary -TestOutput $longLog -MaxChars 8192
+    Assert-True ($failureSummary.Length -le 8250) "Extract-TestFailureSummary should not exceed max characters"
+    Assert-True ($failureSummary.Contains("FAILED: AssertionError in module TestA")) "Extract-TestFailureSummary must capture failed assertion line"
+
+    # A4. Extract-JsonFromText
+    $fencedJson = @(
+        'Here is review:',
+        '```json',
+        '{',
+        '  "verdict": "APPROVED",',
+        '  "highestSeverity": "NONE",',
+        '  "summary": "Looks great"',
+        '}',
+        '```'
+    ) -join "`n"
+    $parsedFenced = Extract-JsonFromText -Text $fencedJson
+    $actualVerdict = [string]$parsedFenced.verdict
+    Assert-Equal $actualVerdict "APPROVED" "Extract-JsonFromText markdown fenced json"
+
+    # A5. Write-MailboxState and Read-MailboxState (explicit -MailboxPath)
+    $testMbPath = Join-Path $TestRoot "direct_mb.json"
+    $directMbObj = [ordered]@{ round = 1; status = "INITIALIZED"; devSessionId = "session-test" }
+    Write-MailboxState -MailboxPath $testMbPath -StateObj $directMbObj
+    $readDirectMb = Read-MailboxState -MailboxPath $testMbPath
+    Assert-Equal $readDirectMb.status "INITIALIZED" "Direct Read-MailboxState must match written state"
+    Assert-Equal $readDirectMb.devSessionId "session-test" "Direct Read-MailboxState must preserve session ID"
+
+    # A6. Get-SafeWorkspaceDiff on a temporary git repository (256KB limits & 64,000 char budget)
+    $gitRepoPath = Join-Path $TestRoot "git-repo-test"
+    [System.IO.Directory]::CreateDirectory($gitRepoPath) | Out-Null
+    Push-Location $gitRepoPath
+    try {
+        git init -q
+        git config user.name "TestBot"
+        git config user.email "testbot@example.com"
+
+        # Commit an initial file and a large file (> 256KB)
+        [System.IO.File]::WriteAllText((Join-Path $gitRepoPath "init.txt"), "Initial content`n", [System.Text.Encoding]::UTF8)
+        $largeInitialContent = "A" * 300000
+        [System.IO.File]::WriteAllText((Join-Path $gitRepoPath "large-to-delete.txt"), $largeInitialContent, [System.Text.Encoding]::UTF8)
+        git add -A
+        git commit -m "initial commit" -q
+
+        # Modify init.txt
+        [System.IO.File]::AppendAllText((Join-Path $gitRepoPath "init.txt"), "Modified line`n", [System.Text.Encoding]::UTF8)
+
+        # Delete large file from working directory (git cat-file -s HEAD should detect >256KB and skip)
+        Remove-Item (Join-Path $gitRepoPath "large-to-delete.txt") -Force
+
+        # Create an untracked large file (>256KB)
+        [System.IO.File]::WriteAllText((Join-Path $gitRepoPath "untracked-large.txt"), ("B" * 300000), [System.Text.Encoding]::UTF8)
+
+        # Create an untracked small file
+        [System.IO.File]::WriteAllText((Join-Path $gitRepoPath "untracked-small.txt"), "Small untracked content", [System.Text.Encoding]::UTF8)
+
+        $diffRes = Get-SafeWorkspaceDiff -WorkspacePath $gitRepoPath -MaxTotalChars 64000 -MaxFileBytes 262144
+
+        Assert-True ($diffRes.Contains("init.txt")) "Diff must include tracked modified file init.txt"
+        Assert-True ($diffRes.Contains("Exceeded 256KB limit, diff skipped")) "Diff must skip deleted large file based on git cat-file -s check"
+        Assert-True ($diffRes.Contains("untracked-large.txt (Size:") -and $diffRes.Contains("Exceeded 256KB limit, skipped")) "Diff must skip untracked large file"
+        Assert-True ($diffRes.Contains("untracked-small.txt") -and $diffRes.Contains("Small untracked content")) "Diff must include small untracked file"
+        Assert-True ($diffRes.Length -le 65000) "Diff length must strictly honor 64000 limit"
+    } finally {
+        Pop-Location
+    }
+
+    Write-Host "✅ Direct unit tests for orchestrator-lib.ps1 passed!" -ForegroundColor Green
+
+    # --- Section B: Integration Loop Tests ---
+    Write-Host "Verifying autonomous loop integration flows..." -ForegroundColor Cyan
 
     # 1. Test Single Round Approval
     $mb1 = Join-Path $TestRoot "mb1.json"
@@ -154,19 +246,18 @@ try {
     $mb5 = Join-Path $TestRoot "mb5.json"
     $markdownReviewerHook = {
         param($OriginalTask, $GitDiff, $Round)
-        $rawMarkdownOutput = @"
-Here is my review output for round $($Round):
-```json
-{
-  "verdict": "APPROVED",
-  "highestSeverity": "NONE",
-  "summary": "Verified all constraints in markdown wrapper.",
-  "issues": [],
-  "nextPromptForDev": ""
-}
-```
-All clear!
-"@
+        $rawMarkdownOutput = @(
+            "Here is my review output for round $Round :",
+            '```json',
+            '{',
+            '  "verdict": "APPROVED",',
+            '  "highestSeverity": "NONE",',
+            '  "summary": "Verified all constraints in markdown wrapper.",',
+            '  "issues": [],',
+            '  "nextPromptForDev": ""',
+            '}',
+            '```'
+        ) -join "`n"
         return (Extract-JsonFromText -Text $rawMarkdownOutput)
     }
 

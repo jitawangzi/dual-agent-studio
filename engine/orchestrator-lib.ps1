@@ -92,6 +92,14 @@ function Invoke-CliWithTimeout {
                 $process.Kill($true)
             }
         } catch {}
+
+        try {
+            [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)
+        } catch {}
+        try { $stdoutTask.Dispose() } catch {}
+        try { $stderrTask.Dispose() } catch {}
+        try { $process.Dispose() } catch {}
+
         throw "EXECUTION_TIMEOUT: $RoleName CLI timed out after $TimeoutSeconds seconds."
     }
 
@@ -99,6 +107,9 @@ function Invoke-CliWithTimeout {
     $exitCode = $process.ExitCode
     $stdoutStr = $stdoutTask.Result
     $stderrStr = $stderrTask.Result
+    try { $stdoutTask.Dispose() } catch {}
+    try { $stderrTask.Dispose() } catch {}
+    try { $process.Dispose() } catch {}
 
     if (-not [string]::IsNullOrEmpty($stdoutStr)) {
         Write-Host $stdoutStr.TrimEnd() -ForegroundColor Gray
@@ -453,9 +464,9 @@ function Invoke-DevTurn {
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", "$Prompt")
+            $argsList += @("--print")
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
         }
         "cursor" {
@@ -589,74 +600,49 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
         }
         "antigravity" {
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($agyCmd) {
-                $argsList = @("--dangerously-skip-permissions")
-                if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-                $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-                if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-                $argsList += @("--print", "$systemInstruction")
+            if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
+            
+            $argsList = @("--dangerously-skip-permissions")
+            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+            $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+            if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
+            $argsList += @("--print")
 
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
-                if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-                throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
-            }
-            return [ordered]@{
-                verdict = "APPROVED"
-                highestSeverity = "NONE"
-                summary = "[Antigravity] Review passed with full test gates verified."
-                issues = @()
-                nextPromptForDev = ""
-            }
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+            $jsonObj = Extract-JsonFromText -Text $res.Combined
+            if ($null -ne $jsonObj) { return $jsonObj }
+            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
+            throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
         }
         "cursor" {
-            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($cursorCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
-            }
-            Write-Host "Cursor Reviewer assessing diff in $WorkspaceRoot..." -ForegroundColor Gray
-            return [ordered]@{
-                verdict = "APPROVED"
-                highestSeverity = "NONE"
-                summary = "[Cursor] Code conforms to project conventions."
-                issues = @()
-                nextPromptForDev = ""
-            }
+            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1", "cursor.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cursorCmd) { throw "PROVIDER_UNAVAILABLE: Cursor CLI is not found in PATH." }
+
+            $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
+            $jsonObj = Extract-JsonFromText -Text $res.Combined
+            if ($null -ne $jsonObj) { return $jsonObj }
+            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Cursor CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
+            throw "PROVIDER_OUTPUT_INVALID: Cursor CLI returned non-JSON review output: $($res.Combined)"
         }
         "codex" {
-            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($codexCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
-            }
-            Write-Host "Codex Reviewer evaluating logic..." -ForegroundColor Gray
-            return [ordered]@{
-                verdict = "APPROVED"
-                highestSeverity = "NONE"
-                summary = "[Codex] Evaluated logic cleanly."
-                issues = @()
-                nextPromptForDev = ""
-            }
+            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1", "codex.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $codexCmd) { throw "PROVIDER_UNAVAILABLE: Codex CLI is not found in PATH." }
+
+            $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
+            $jsonObj = Extract-JsonFromText -Text $res.Combined
+            if ($null -ne $jsonObj) { return $jsonObj }
+            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Codex CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
+            throw "PROVIDER_OUTPUT_INVALID: Codex CLI returned non-JSON review output: $($res.Combined)"
         }
         "pi" {
-            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($piCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
-            }
-            Write-Host "Pi Reviewer analyzing code..." -ForegroundColor Gray
-            return [ordered]@{
-                verdict = "APPROVED"
-                highestSeverity = "NONE"
-                summary = "[Pi] Review completed."
-                issues = @()
-                nextPromptForDev = ""
-            }
+            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1", "pi.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $piCmd) { throw "PROVIDER_UNAVAILABLE: Pi CLI is not found in PATH." }
+
+            $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
+            $jsonObj = Extract-JsonFromText -Text $res.Combined
+            if ($null -ne $jsonObj) { return $jsonObj }
+            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Pi CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
+            throw "PROVIDER_OUTPUT_INVALID: Pi CLI returned non-JSON review output: $($res.Combined)"
         }
         default {
             throw "UNSUPPORTED_REVIEWER_PROVIDER: Provider '$Provider' is not configured for automatic review execution. Provide -ReviewerCustomHook or use -ReviewProvider 'mock'."

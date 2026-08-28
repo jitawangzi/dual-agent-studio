@@ -25,7 +25,7 @@ let activeDiscussionProcess = null;   // Active discussion agent child process
 let activeConfig = null;
 let currentMailbox = null;
 let isDiscussing = false;
-let discussionAborted = false;
+let discussionGeneration = 0;         // Incremented per discussion or on abort to invalidate stale discussions
 let logs = [];
 const sseClients = new Set();
 
@@ -152,15 +152,36 @@ function getMailbox(workspaceRoot, customMailboxPath, feature) {
         }
         if (!mbPath) {
             const sopMb = path.join(workspaceRoot, '.ai-sop', 'review-mailbox.json');
-            if (fs.existsSync(sopMb)) mbPath = sopMb;
-            else mbPath = path.join(workspaceRoot, 'review-mailbox.json');
+            if (fs.existsSync(sopMb)) {
+                mbPath = sopMb;
+            } else {
+                const rootMb = path.join(workspaceRoot, 'review-mailbox.json');
+                if (fs.existsSync(rootMb)) {
+                    mbPath = rootMb;
+                } else {
+                    // Check latest feature in .ai-workspace/specs/features/
+                    const featBase = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features');
+                    if (fs.existsSync(featBase)) {
+                        try {
+                            const subdirs = fs.readdirSync(featBase, { withFileTypes: true })
+                                .filter(d => d.isDirectory())
+                                .map(d => path.join(featBase, d.name, 'review-mailbox.json'))
+                                .filter(p => fs.existsSync(p))
+                                .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+                            if (subdirs.length > 0) {
+                                mbPath = subdirs[0];
+                            }
+                        } catch {}
+                    }
+                }
+            }
         }
     } else if (!path.isAbsolute(mbPath)) {
         mbPath = path.join(workspaceRoot, mbPath);
     }
 
     try {
-        if (fs.existsSync(mbPath)) {
+        if (mbPath && fs.existsSync(mbPath)) {
             const raw = fs.readFileSync(mbPath, 'utf-8');
             return JSON.parse(raw);
         }
@@ -184,7 +205,11 @@ function sanitizeCopilotEffort(effort) {
 }
 
 // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation with 600s watchdog
-async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600 }) {
+async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token }) {
+    if (token !== undefined && token !== discussionGeneration) {
+        return '';
+    }
+
     let output = '';
     const tmpFile = path.join(os.tmpdir(), `discuss_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
     
@@ -235,6 +260,10 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             }
         }
 
+        if (token !== undefined && token !== discussionGeneration) {
+            return '';
+        }
+
         if (psCmd) {
             await new Promise((resolve) => {
                 try {
@@ -260,7 +289,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
 
                     proc.on('error', (err) => {
                         clearTimeout(watchdogTimer);
-                        activeDiscussionProcess = null;
+                        if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
                         appendLog(`[${role} ${provider}] 调度提示: ${err.message}`, 'info');
                         resolve();
                     });
@@ -279,11 +308,11 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
 
                     proc.on('close', () => {
                         clearTimeout(watchdogTimer);
-                        activeDiscussionProcess = null;
+                        if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
                         resolve();
                     });
                 } catch (e) {
-                    activeDiscussionProcess = null;
+                    if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
                     appendLog(`[${role} ${provider}] 异常: ${e.message}`, 'info');
                     resolve();
                 }
@@ -300,7 +329,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
     return output.trim();
 }
 
-async function runBackgroundDiscussion(params) {
+async function runBackgroundDiscussion(params, token) {
     try {
         const {
             workspaceRoot,
@@ -336,8 +365,8 @@ async function runBackgroundDiscussion(params) {
         let consensusReached = false;
 
         for (let r = 1; r <= totalRounds; r++) {
-            // Check abort signal at the start of each round
-            if (discussionAborted || !isDiscussing) {
+            // Check abort signal via scoped token at the start of each round
+            if (token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮被中止。`, 'system');
                 return;
             }
@@ -390,11 +419,12 @@ Address the Reviewer's feedback in a rigorous, constructive engineering dialogue
                 prompt: devPrompt,
                 workspaceRoot,
                 role: `Dev-R${r}`,
-                timeoutSeconds: 600
+                timeoutSeconds: 600,
+                token
             });
 
             // Check abort after dev turn
-            if (discussionAborted || !isDiscussing) {
+            if (token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮开发方响应后被中止。`, 'system');
                 return;
             }
@@ -442,11 +472,12 @@ Conclude with your verdict:
                 prompt: reviewerPrompt,
                 workspaceRoot,
                 role: `Reviewer-R${r}`,
-                timeoutSeconds: 600
+                timeoutSeconds: 600,
+                token
             });
 
             // Check abort after reviewer turn
-            if (discussionAborted || !isDiscussing) {
+            if (token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮审查方响应后被中止。`, 'system');
                 return;
             }
@@ -476,6 +507,10 @@ Conclude with your verdict:
                 appendLog(`🎉 [Round ${r}] 双 Agent 在需求与架构方案上达成共识！`, 'stdout');
                 break;
             }
+        }
+
+        if (token !== discussionGeneration || !isDiscussing) {
+            return;
         }
 
         // Final Blueprint
@@ -522,13 +557,19 @@ Conclude with your verdict:
             console.error('Failed to persist discussion plan:', e);
         }
 
-        broadcast('discussion_complete', responseData);
+        if (token === discussionGeneration) {
+            broadcast('discussion_complete', responseData);
+        }
     } catch (err) {
-        appendLog(`❌ 需求讨论异常: ${err.message}`, 'stderr');
-        broadcast('discussion_error', { error: err.message });
+        if (token === discussionGeneration) {
+            appendLog(`❌ 需求讨论异常: ${err.message}`, 'stderr');
+            broadcast('discussion_error', { error: err.message });
+        }
     } finally {
-        isDiscussing = false;
-        activeDiscussionProcess = null;
+        if (token === discussionGeneration) {
+            isDiscussing = false;
+            activeDiscussionProcess = null;
+        }
     }
 }
 
@@ -563,10 +604,11 @@ const server = http.createServer(async (req, res) => {
     // 2. REST API: /api/status
     if (pathname === '/api/status' && req.method === 'GET') {
         const queryWs = url.searchParams.get('workspace');
+        const queryFeature = url.searchParams.get('feature');
         const targetWs = (activeConfig && activeConfig.workspaceRoot) || queryWs;
         let mb = currentMailbox;
         if (targetWs) {
-            mb = getMailbox(targetWs, activeConfig ? activeConfig.mailboxPath : null, activeConfig ? activeConfig.feature : null);
+            mb = getMailbox(targetWs, activeConfig ? activeConfig.mailboxPath : null, (activeConfig ? activeConfig.feature : null) || queryFeature);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -723,13 +765,13 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 isDiscussing = true;
-                discussionAborted = false;
+                const token = ++discussionGeneration;
 
                 res.writeHead(202, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, message: 'Discussion initiated in background.' }));
+                res.end(JSON.stringify({ success: true, message: 'Discussion initiated in background.', discussionToken: token }));
 
-                // Run background discussion asynchronously
-                runBackgroundDiscussion(params);
+                // Run background discussion asynchronously with generation token
+                runBackgroundDiscussion(params, token);
             } catch (err) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
@@ -888,7 +930,7 @@ const server = http.createServer(async (req, res) => {
 
         if (activeDiscussionProcess || isDiscussing) {
             appendLog('⚠️ 用户主动中止运行中的需求推演与讨论...', 'system');
-            discussionAborted = true;
+            discussionGeneration++;
             isDiscussing = false;
             if (activeDiscussionProcess) {
                 const dPid = activeDiscussionProcess.pid;
