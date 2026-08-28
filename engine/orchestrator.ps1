@@ -136,6 +136,10 @@ function Invoke-DevTurn {
         switch ($Provider.ToLowerInvariant()) {
             "claude" {
                 Write-Host "Running Claude Code CLI in $wsPhysical..." -ForegroundColor Gray
+                $claudeCmd = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $claudeCmd) {
+                    throw "PROVIDER_UNAVAILABLE: Claude Code CLI ('claude') is not found in PATH."
+                }
                 $claudeArgs = @("-p", "$Prompt")
                 if (-not [string]::IsNullOrWhiteSpace($Model)) {
                     $claudeArgs += @("--model", $Model)
@@ -150,7 +154,10 @@ function Invoke-DevTurn {
                         default { $ReasoningEffort }
                     }
                 }
-                & claude @claudeArgs
+                & $claudeCmd.Source @claudeArgs
+                if ($LASTEXITCODE -ne 0) {
+                    throw "DEV_AGENT_EXECUTION_FAILED: Claude Code CLI exited with error code $LASTEXITCODE. Please check terminal output above."
+                }
             }
             "copilot" {
                 Write-Host "Running GitHub Copilot CLI in $wsPhysical..." -ForegroundColor Gray
@@ -167,32 +174,48 @@ function Invoke-DevTurn {
                         $argsList += @("--reasoning-effort", $ReasoningEffort)
                     }
                     & $copilotCmd.Source @argsList
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "DEV_AGENT_EXECUTION_FAILED: GitHub Copilot CLI exited with error code $LASTEXITCODE. Please check terminal output above."
+                    }
                 } else {
                     throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI ('copilot') is not found in PATH."
                 }
             }
             "aider" {
                 Write-Host "Running Aider CLI in $wsPhysical..." -ForegroundColor Gray
+                $aiderCmd = Get-Command "aider", "aider.cmd", "aider.ps1", "aider.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $aiderCmd) {
+                    throw "PROVIDER_UNAVAILABLE: Aider CLI ('aider') is not found in PATH."
+                }
                 $aiderArgs = @("--message", "$Prompt", "--yes-always")
                 if (-not [string]::IsNullOrWhiteSpace($Model)) {
                     $aiderArgs += @("--model", $Model)
                 }
-                & aider @aiderArgs
+                & $aiderCmd.Source @aiderArgs
+                if ($LASTEXITCODE -ne 0) {
+                    throw "DEV_AGENT_EXECUTION_FAILED: Aider CLI exited with error code $LASTEXITCODE."
+                }
             }
             "cursor" {
                 Write-Host "Running Cursor CLI / Composer in $wsPhysical..." -ForegroundColor Gray
-                $cursorCmd = Get-Command "cursor" -ErrorAction SilentlyContinue
+                $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($cursorCmd) {
-                    & cursor @("-p", "$Prompt")
+                    & $cursorCmd.Source @("-p", "$Prompt")
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "DEV_AGENT_EXECUTION_FAILED: Cursor CLI exited with error code $LASTEXITCODE."
+                    }
                 } else {
                     Write-Host "[CURSOR] Dispatched instruction to Cursor editor: $Prompt" -ForegroundColor Gray
                 }
             }
             "codex" {
                 Write-Host "Running OpenAI Codex CLI in $wsPhysical..." -ForegroundColor Gray
-                $codexCmd = Get-Command "codex" -ErrorAction SilentlyContinue
+                $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($codexCmd) {
-                    & codex @("-p", "$Prompt")
+                    & $codexCmd.Source @("-p", "$Prompt")
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "DEV_AGENT_EXECUTION_FAILED: Codex CLI exited with error code $LASTEXITCODE."
+                    }
                 } else {
                     Write-Host "[CODEX] Executing prompt: $Prompt" -ForegroundColor Gray
                 }
@@ -325,14 +348,18 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                     $argsList += @("--reasoning-effort", $ReasoningEffort)
                 }
                 $res = & $copilotCmd.Source @argsList 2>&1 | Out-String
+                $copilotExit = $LASTEXITCODE
                 $jsonObj = Extract-JsonFromText -Text $res
                 if ($null -ne $jsonObj) {
                     return $jsonObj
                 }
+                if ($copilotExit -ne 0) {
+                    throw "REVIEWER_EXECUTION_FAILED: GitHub Copilot CLI failed with exit code $($copilotExit): $res"
+                }
                 throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $res"
             }
             { $_ -in @("claude", "claude_code") } {
-                $claudeExe = Get-Command "claude" -ErrorAction SilentlyContinue
+                $claudeExe = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($claudeExe) {
                     $claudeArgs = @("-p", $systemInstruction)
                     if (-not [string]::IsNullOrWhiteSpace($Model)) {
@@ -349,9 +376,13 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                         }
                     }
                     $res = & $claudeExe.Source @claudeArgs 2>&1 | Out-String
+                    $claudeExit = $LASTEXITCODE
                     $jsonObj = Extract-JsonFromText -Text $res
                     if ($null -ne $jsonObj) {
                         return $jsonObj
+                    }
+                    if ($claudeExit -ne 0) {
+                        throw "REVIEWER_EXECUTION_FAILED: Claude CLI failed with exit code $($claudeExit): $res"
                     }
                     throw "PROVIDER_OUTPUT_INVALID: Claude CLI returned non-JSON review output: $res"
                 }
@@ -480,6 +511,7 @@ if ($targetMailboxScript) {
         round = 1
         maxRounds = $MaxRounds
         status = "INITIALIZED"
+        error = ""
         devAgent = $mappedDev
         reviewerAgent = $mappedRev
         devSessionId = $effectiveDevSessionId
@@ -496,244 +528,264 @@ if ($targetMailboxScript) {
 $currentPrompt = $TaskPrompt
 $selfHealAttempts = 0
 
-while ($true) {
-    $mailbox = Read-MailboxState
-    if ($null -eq $mailbox) {
-        throw "MAILBOX_READ_FAILED: Cannot read mailbox state at $effectiveMailboxPath"
-    }
-    $round = [int]$mailbox.round
-
-    Write-Host "`n====================== [ ROUND $round / $MaxRounds - DEV PHASE ] ======================" -ForegroundColor Yellow
-
-    # Phase 1: Dev Turn
-    Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $effectiveDevSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook
-
-    # Phase 2: Dev Submit & Test Gate Verification
-    Write-Host "`n⚙️ Running test gate in ${wsPhysical}: $VerifyCommand..." -ForegroundColor Gray
-    
-    $testOut = ""
-    $testStatus = "PASS"
-    if (-not [string]::IsNullOrWhiteSpace($VerifyCommand) -and $VerifyCommand -ne "exit 0") {
-        Push-Location $wsPhysical
-        try {
-            $testProcOut = pwsh -NoProfile -Command $VerifyCommand 2>&1 | Out-String
-            $testExit = $LASTEXITCODE
-            $testOut = $testProcOut
-            if ($testExit -ne 0) {
-                $testStatus = "FAIL"
-            }
-        } catch {
-            $testStatus = "FAIL"
-            $testOut = $_.Exception.ToString()
-        } finally {
-            Pop-Location
-        }
-    }
-
-    if ($targetMailboxScript) {
-        $devSubmitParams = @{
-            Operation = "DevSubmit"
-            MailboxPath = $effectiveMailboxPath
-            Summary = "Round $round code modifications completed."
-            TestGateStatus = $testStatus
-            TestOutput = $testOut
-            ProjectRoot = $wsPhysical
-        }
-        & $targetMailboxScript @devSubmitParams | Out-Null
-    } else {
+try {
+    while ($true) {
         $mailbox = Read-MailboxState
-        $mailbox.status = if ($testStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }
-        $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
-        $mailbox.currentDevSubmission = [ordered]@{
-            submittedAt = [DateTimeOffset]::UtcNow.ToString("o")
-            summary = "Round $round code modifications completed."
-            changedFiles = @()
-            testGateStatus = $testStatus
-            testOutput = $testOut
-            gitDiffDigest = ""
+        if ($null -eq $mailbox) {
+            throw "MAILBOX_READ_FAILED: Cannot read mailbox state at $effectiveMailboxPath"
         }
-        Write-MailboxState -StateObj $mailbox
-    }
+        $round = [int]$mailbox.round
 
-    # Re-read mailbox after DevSubmit
-    $mailbox = Read-MailboxState
+        Write-Host "`n====================== [ ROUND $round / $MaxRounds - DEV PHASE ] ======================" -ForegroundColor Yellow
 
-    if ($mailbox.currentDevSubmission.testGateStatus -ne "PASS") {
-        $selfHealAttempts++
-        if ($selfHealAttempts -ge $MaxSelfHealAttempts) {
-            throw "TEST_GATE_SELF_HEAL_EXCEEDED: Test verification failed $selfHealAttempts consecutive attempts in round $round. Halting loop to prevent infinite retry."
-        }
-        Write-Host "❌ Test Gate Verification did not pass (status: $($mailbox.currentDevSubmission.testGateStatus), attempt $selfHealAttempts/$MaxSelfHealAttempts). Self-healing triggered..." -ForegroundColor Red
-        $currentPrompt = "Your recent changes did not pass automated verification (status: $($mailbox.currentDevSubmission.testGateStatus)). Please inspect the test error output below and fix the implementation:`n`n" + $mailbox.currentDevSubmission.testOutput
-        continue
-    }
+        # Phase 1: Dev Turn
+        Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $effectiveDevSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook
 
-    $selfHealAttempts = 0
-    Write-Host "✅ Test Gate Verification PASSED!" -ForegroundColor Green
-
-    # Phase 3: Reviewer Turn
-    Write-Host "`n====================== [ ROUND $round / $MaxRounds - REVIEW PHASE ] ======================" -ForegroundColor Magenta
-    
-    $gitDiff = ""
-    Push-Location $wsPhysical
-    try {
-        $diffStr = git diff HEAD 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0) {
-            $untrackedStat = git status --porcelain -uall 2>&1
-            if ($untrackedStat) {
-                $untrackedDiffs = [System.Collections.Generic.List[string]]::new()
-                $ignorePatterns = @('.git/', 'node_modules/', '.tmp_', '.lock', 'review-mailbox.json', 'projects.json', 'package-lock.json')
-                foreach ($uLine in ($untrackedStat | Out-String -Stream)) {
-                    if ($uLine.Trim() -match '^\?\?\s+(.*)$') {
-                        $uPath = $Matches[1].Trim()
-                        $normalizedUPath = $uPath.Replace('\', '/')
-                        $isIgnored = $false
-                        foreach ($p in $ignorePatterns) {
-                            if ($normalizedUPath.Contains($p)) {
-                                $isIgnored = $true
-                                break
-                            }
-                        }
-                        if (-not $isIgnored -and (Test-Path -LiteralPath $uPath -PathType Leaf)) {
-                            $fileItem = Get-Item -LiteralPath $uPath
-                            if ($fileItem.Length -le 2097152) { # Max 2MB per untracked file to prevent memory choke
-                                try {
-                                    $content = [System.IO.File]::ReadAllText($uPath, [System.Text.Encoding]::UTF8)
-                                    $untrackedDiffs.Add("=== Untracked File: $uPath ===`n$content")
-                                } catch {}
-                            }
-                        }
-                    }
-                }
-                if ($untrackedDiffs.Count -gt 0) {
-                    $diffStr += "`n`n" + ($untrackedDiffs -join "`n`n")
-                }
-            }
-            $gitDiff = $diffStr
-        }
-    } catch {} finally {
-        Pop-Location
-    }
-
-    $reviewResult = Invoke-ReviewerTurn `
-        -Provider $ReviewProvider `
-        -OriginalTask $TaskPrompt `
-        -GitDiff $gitDiff `
-        -Round $round `
-        -SessionId $effectiveReviewSessionId `
-        -Model $ReviewModel `
-        -ReasoningEffort $ReviewReasoningEffort `
-        -CustomHook $ReviewerCustomHook
-
-    # Submit Review Verdict
-    $issuesJsonStr = if ($reviewResult.issues) {
-        $reviewResult.issues | ConvertTo-Json -Depth 10 -Compress
-    } else {
-        "[]"
-    }
-
-    if ($targetMailboxScript) {
-        $reviewSubmitParams = @{
-            Operation = "ReviewSubmit"
-            MailboxPath = $effectiveMailboxPath
-            Verdict = [string]$reviewResult.verdict
-            HighestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
-            Summary = [string]$reviewResult.summary
-            IssuesJson = $issuesJsonStr
-            NextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
-            ExpectedRound = $round
-            ExpectedSubmittedAt = if ($mailbox.currentDevSubmission.submittedAt -is [System.DateTime]) { $mailbox.currentDevSubmission.submittedAt.ToString("o") } else { [string]$mailbox.currentDevSubmission.submittedAt }
-            ReviewerIdentity = $mappedRev
-            ProjectRoot = $wsPhysical
-        }
-        & $targetMailboxScript @reviewSubmitParams | Out-Null
-    } else {
-        $mailbox = Read-MailboxState
-        $verdict = [string]$reviewResult.verdict
-        $isApproved = ($verdict -eq "APPROVED")
-        $isMax = ($round -ge $MaxRounds)
+        # Phase 2: Dev Submit & Test Gate Verification
+        Write-Host "`n⚙️ Running test gate in $($wsPhysical): $VerifyCommand..." -ForegroundColor Gray
         
-        $newStatus = if ($isApproved) {
-            "APPROVED"
-        } elseif ($isMax) {
-            "REJECTED_MAX_ROUNDS"
-        } else {
-            "WAITING_DEV"
-        }
-
-        $verdictObj = [ordered]@{
-            reviewedAt = [DateTimeOffset]::UtcNow.ToString("o")
-            verdict = $verdict
-            highestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
-            summary = [string]$reviewResult.summary
-            issues = if ($reviewResult.issues) { @($reviewResult.issues) } else { @() }
-            nextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
-        }
-
-        $historyEntry = [ordered]@{
-            round = $round
-            devSubmission = $mailbox.currentDevSubmission
-            reviewVerdict = $verdictObj
-        }
-
-        $mailbox.status = $newStatus
-        $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
-        $mailbox.currentReviewVerdict = $verdictObj
-        $mailbox.history = @($mailbox.history) + @($historyEntry)
-        if (-not $isApproved -and -not $isMax) {
-            $mailbox.round = $round + 1
-            $mailbox.currentDevSubmission = $null
-            $mailbox.currentReviewVerdict = $null
-        }
-        Write-MailboxState -StateObj $mailbox
-    }
-
-    # Check terminal conditions
-    $mailbox = Read-MailboxState
-
-    if ($mailbox.status -eq "APPROVED") {
-        Write-Host "`n================================================================================" -ForegroundColor Green
-        Write-Host " 🏆 DUAL-AGENT LOOP COMPLETED SUCCESSFULLY (APPROVED at Round $round)!" -ForegroundColor Green
-        Write-Host " Summary: $($mailbox.history[-1].reviewVerdict.summary)" -ForegroundColor Cyan
-        Write-Host "================================================================================" -ForegroundColor Green
-
-        if ($AutoCommit) {
-            Write-Host "📦 Creating automatic git commit in $wsPhysical..." -ForegroundColor Gray
+        $testOut = ""
+        $testStatus = "PASS"
+        if (-not [string]::IsNullOrWhiteSpace($VerifyCommand) -and $VerifyCommand -ne "exit 0") {
             Push-Location $wsPhysical
             try {
-                git add -A
-                $staged = git status --porcelain 2>&1 | Out-String
-                if (-not [string]::IsNullOrWhiteSpace($staged)) {
-                    $commitOut = git commit -m "feat($effectiveFeature): completed via dual-agent loop (round $round)" 2>&1 | Out-String
-                    Write-Host "✅ Committed successfully: $commitOut" -ForegroundColor Green
-                } else {
-                    Write-Host "ℹ️ Working tree clean, no staged changes to commit." -ForegroundColor Gray
+                $testProcOut = pwsh -NoProfile -Command $VerifyCommand 2>&1 | Out-String
+                $testExit = $LASTEXITCODE
+                $testOut = $testProcOut
+                if ($testExit -ne 0) {
+                    $testStatus = "FAIL"
                 }
             } catch {
-                Write-Warning "Auto-commit failed: $_"
+                $testStatus = "FAIL"
+                $testOut = $_.Exception.ToString()
             } finally {
                 Pop-Location
             }
         }
 
-        if ($PassThru) { return $mailbox }
-        break
-    }
+        if ($targetMailboxScript) {
+            $devSubmitParams = @{
+                Operation = "DevSubmit"
+                MailboxPath = $effectiveMailboxPath
+                Summary = "Round $round code modifications completed."
+                TestGateStatus = $testStatus
+                TestOutput = $testOut
+                ProjectRoot = $wsPhysical
+            }
+            & $targetMailboxScript @devSubmitParams | Out-Null
+        } else {
+            $mailbox = Read-MailboxState
+            $mailbox.status = if ($testStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }
+            $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            $mailbox.currentDevSubmission = [ordered]@{
+                submittedAt = [DateTimeOffset]::UtcNow.ToString("o")
+                summary = "Round $round code modifications completed."
+                changedFiles = @()
+                testGateStatus = $testStatus
+                testOutput = $testOut
+                gitDiffDigest = ""
+            }
+            Write-MailboxState -StateObj $mailbox
+        }
 
-    if ($mailbox.status -eq "REJECTED_MAX_ROUNDS") {
-        Write-Host "`n================================================================================" -ForegroundColor Red
-        Write-Host " 🚫 DUAL-AGENT LOOP HALTED: Max rounds ($MaxRounds) reached without approval." -ForegroundColor Red
-        Write-Host " Latest Review Feedback:" -ForegroundColor Yellow
-        Write-Host " $($mailbox.history[-1].reviewVerdict.summary)"
-        Write-Host "================================================================================" -ForegroundColor Red
-        if ($PassThru) { return $mailbox }
-        exit 2
-    }
+        # Re-read mailbox after DevSubmit
+        $mailbox = Read-MailboxState
 
-    # If WAITING_DEV, prepare next round prompt
-    if ($mailbox.status -eq "WAITING_DEV") {
-        $lastReview = $mailbox.history[-1].reviewVerdict
-        $currentPrompt = "Round $round Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"
-        Write-Host "⚠️ Issues detected. Auto-advancing to Round $($mailbox.round)..." -ForegroundColor Yellow
+        if ($mailbox.currentDevSubmission.testGateStatus -ne "PASS") {
+            $selfHealAttempts++
+            if ($selfHealAttempts -ge $MaxSelfHealAttempts) {
+                throw "TEST_GATE_SELF_HEAL_EXCEEDED: Test verification failed $selfHealAttempts consecutive attempts in round $round. Halting loop to prevent infinite retry."
+            }
+            Write-Host "❌ Test Gate Verification did not pass (status: $($mailbox.currentDevSubmission.testGateStatus), attempt $selfHealAttempts/$MaxSelfHealAttempts). Self-healing triggered..." -ForegroundColor Red
+            $currentPrompt = "Your recent changes did not pass automated verification (status: $($mailbox.currentDevSubmission.testGateStatus)). Please inspect the test error output below and fix the implementation:`n`n" + $mailbox.currentDevSubmission.testOutput
+            continue
+        }
+
+        $selfHealAttempts = 0
+        Write-Host "✅ Test Gate Verification PASSED!" -ForegroundColor Green
+
+        # Phase 3: Reviewer Turn
+        Write-Host "`n====================== [ ROUND $round / $MaxRounds - REVIEW PHASE ] ======================" -ForegroundColor Magenta
+        
+        $gitDiff = ""
+        Push-Location $wsPhysical
+        try {
+            $diffStr = git diff HEAD 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                $untrackedStat = git status --porcelain -uall 2>&1
+                if ($untrackedStat) {
+                    $untrackedDiffs = [System.Collections.Generic.List[string]]::new()
+                    $ignorePatterns = @('.git/', 'node_modules/', '.tmp_', '.lock', 'review-mailbox.json', 'projects.json', 'package-lock.json')
+                    foreach ($uLine in ($untrackedStat | Out-String -Stream)) {
+                        if ($uLine.Trim() -match '^\?\?\s+(.*)$') {
+                            $uPath = $Matches[1].Trim()
+                            $normalizedUPath = $uPath.Replace('\', '/')
+                            $isIgnored = $false
+                            foreach ($p in $ignorePatterns) {
+                                if ($normalizedUPath.Contains($p)) {
+                                    $isIgnored = $true
+                                    break
+                                }
+                            }
+                            if (-not $isIgnored -and (Test-Path -LiteralPath $uPath -PathType Leaf)) {
+                                $fileItem = Get-Item -LiteralPath $uPath
+                                if ($fileItem.Length -le 2097152) { # Max 2MB per untracked file to prevent memory choke
+                                    try {
+                                        $content = [System.IO.File]::ReadAllText($uPath, [System.Text.Encoding]::UTF8)
+                                        $untrackedDiffs.Add("=== Untracked File: $uPath ===`n$content")
+                                    } catch {}
+                                }
+                            }
+                        }
+                    }
+                    if ($untrackedDiffs.Count -gt 0) {
+                        $diffStr += "`n`n" + ($untrackedDiffs -join "`n`n")
+                    }
+                }
+                $gitDiff = $diffStr
+            }
+        } catch {} finally {
+            Pop-Location
+        }
+
+        $reviewResult = Invoke-ReviewerTurn `
+            -Provider $ReviewProvider `
+            -OriginalTask $TaskPrompt `
+            -GitDiff $gitDiff `
+            -Round $round `
+            -SessionId $effectiveReviewSessionId `
+            -Model $ReviewModel `
+            -ReasoningEffort $ReviewReasoningEffort `
+            -CustomHook $ReviewerCustomHook
+
+        # Submit Review Verdict
+        $issuesJsonStr = if ($reviewResult.issues) {
+            $reviewResult.issues | ConvertTo-Json -Depth 10 -Compress
+        } else {
+            "[]"
+        }
+
+        if ($targetMailboxScript) {
+            $reviewSubmitParams = @{
+                Operation = "ReviewSubmit"
+                MailboxPath = $effectiveMailboxPath
+                Verdict = [string]$reviewResult.verdict
+                HighestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
+                Summary = [string]$reviewResult.summary
+                IssuesJson = $issuesJsonStr
+                NextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
+                ExpectedRound = $round
+                ExpectedSubmittedAt = if ($mailbox.currentDevSubmission.submittedAt -is [System.DateTime]) { $mailbox.currentDevSubmission.submittedAt.ToString("o") } else { [string]$mailbox.currentDevSubmission.submittedAt }
+                ReviewerIdentity = $mappedRev
+                ProjectRoot = $wsPhysical
+            }
+            & $targetMailboxScript @reviewSubmitParams | Out-Null
+        } else {
+            $mailbox = Read-MailboxState
+            $verdict = [string]$reviewResult.verdict
+            $isApproved = ($verdict -eq "APPROVED")
+            $isMax = ($round -ge $MaxRounds)
+            
+            $newStatus = if ($isApproved) {
+                "APPROVED"
+            } elseif ($isMax) {
+                "REJECTED_MAX_ROUNDS"
+            } else {
+                "WAITING_DEV"
+            }
+
+            $verdictObj = [ordered]@{
+                reviewedAt = [DateTimeOffset]::UtcNow.ToString("o")
+                verdict = $verdict
+                highestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
+                summary = [string]$reviewResult.summary
+                issues = if ($reviewResult.issues) { @($reviewResult.issues) } else { @() }
+                nextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
+            }
+
+            $historyEntry = [ordered]@{
+                round = $round
+                devSubmission = $mailbox.currentDevSubmission
+                reviewVerdict = $verdictObj
+            }
+
+            $mailbox.status = $newStatus
+            $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            $mailbox.currentReviewVerdict = $verdictObj
+            $mailbox.history = @($mailbox.history) + @($historyEntry)
+            if (-not $isApproved -and -not $isMax) {
+                $mailbox.round = $round + 1
+                $mailbox.currentDevSubmission = $null
+                $mailbox.currentReviewVerdict = $null
+            }
+            Write-MailboxState -StateObj $mailbox
+        }
+
+        # Check terminal conditions
+        $mailbox = Read-MailboxState
+
+        if ($mailbox.status -eq "APPROVED") {
+            Write-Host "`n================================================================================" -ForegroundColor Green
+            Write-Host " 🏆 DUAL-AGENT LOOP COMPLETED SUCCESSFULLY (APPROVED at Round $round)!" -ForegroundColor Green
+            Write-Host " Summary: $($mailbox.history[-1].reviewVerdict.summary)" -ForegroundColor Cyan
+            Write-Host "================================================================================" -ForegroundColor Green
+
+            if ($AutoCommit) {
+                Write-Host "📦 Creating automatic git commit in $wsPhysical..." -ForegroundColor Gray
+                Push-Location $wsPhysical
+                try {
+                    git add -A
+                    $staged = git status --porcelain 2>&1 | Out-String
+                    if (-not [string]::IsNullOrWhiteSpace($staged)) {
+                        $commitOut = git commit -m "feat($effectiveFeature): completed via dual-agent loop (round $round)" 2>&1 | Out-String
+                        Write-Host "✅ Committed successfully: $commitOut" -ForegroundColor Green
+                    } else {
+                        Write-Host "ℹ️ Working tree clean, no staged changes to commit." -ForegroundColor Gray
+                    }
+                } catch {
+                    Write-Warning "Auto-commit failed: $_"
+                } finally {
+                    Pop-Location
+                }
+            }
+
+            if ($PassThru) { return $mailbox }
+            break
+        }
+
+        if ($mailbox.status -eq "REJECTED_MAX_ROUNDS") {
+            Write-Host "`n================================================================================" -ForegroundColor Red
+            Write-Host " 🚫 DUAL-AGENT LOOP HALTED: Max rounds ($MaxRounds) reached without approval." -ForegroundColor Red
+            Write-Host " Latest Review Feedback:" -ForegroundColor Yellow
+            Write-Host " $($mailbox.history[-1].reviewVerdict.summary)"
+            Write-Host "================================================================================" -ForegroundColor Red
+            if ($PassThru) { return $mailbox }
+            exit 2
+        }
+
+        # If WAITING_DEV, prepare next round prompt
+        if ($mailbox.status -eq "WAITING_DEV") {
+            $lastReview = $mailbox.history[-1].reviewVerdict
+            $currentPrompt = "Round $round Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"
+            Write-Host "⚠️ Issues detected. Auto-advancing to Round $($mailbox.round)..." -ForegroundColor Yellow
+        }
     }
+} catch {
+    $errMessage = $_.Exception.Message
+    Write-Host "`n================================================================================" -ForegroundColor Red
+    Write-Host " 🚫 DUAL-AGENT LOOP FAILED: $errMessage" -ForegroundColor Red
+    Write-Host "================================================================================" -ForegroundColor Red
+    
+    try {
+        $mailbox = Read-MailboxState
+        if ($null -ne $mailbox) {
+            $mailbox | Add-Member -NotePropertyName "status" -NotePropertyValue "FAILED" -Force
+            $mailbox | Add-Member -NotePropertyName "error" -NotePropertyValue "$errMessage" -Force
+            $mailbox | Add-Member -NotePropertyName "updatedAt" -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString("o")) -Force
+            Write-MailboxState -StateObj $mailbox
+        }
+    } catch {}
+
+    if ($PassThru) { return $mailbox }
+    throw $_
 }

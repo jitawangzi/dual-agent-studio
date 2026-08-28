@@ -155,7 +155,7 @@ try {
     $markdownReviewerHook = {
         param($OriginalTask, $GitDiff, $Round)
         $rawMarkdownOutput = @"
-Here is my review output for round ${Round}:
+Here is my review output for round $($Round):
 ```json
 {
   "verdict": "APPROVED",
@@ -202,6 +202,35 @@ All clear!
 
     Assert-Equal $res6.devSessionId "dev-custom-session-123" "Dev session ID should preserve custom input"
     Assert-Equal $res6.reviewSessionId "review-custom-session-456" "Review session ID should preserve custom input"
+
+    # 7. Test Dev Agent Execution Failure (Should Halt & Mark FAILED)
+    $mb7 = Join-Path $TestRoot "mb7.json"
+    $devFailHook = {
+        param($Prompt, $Round)
+        throw 'SIMULATED_DEV_FAILURE: Authentication expired or CLI crash'
+    }
+
+    $failedCaught = $false
+    try {
+        & $OrchestratorScript `
+            -WorkspaceRoot $TestRoot `
+            -TaskPrompt "Failing Dev Task" `
+            -Feature "FeatureDevFail" `
+            -DevProvider "mock" `
+            -DevCustomHook $devFailHook `
+            -ReviewProvider "mock" `
+            -VerifyCommand "exit 0" `
+            -MaxRounds 2 `
+            -MailboxPath $mb7 | Out-Null
+    } catch {
+        $failedCaught = $true
+    }
+
+    Assert-True $failedCaught "Dev agent execution failure must halt loop and throw"
+    $raw7 = [System.IO.File]::ReadAllText($mb7, [System.Text.Encoding]::UTF8)
+    $data7 = ConvertFrom-Json $raw7
+    Assert-Equal $data7.status "FAILED" "Mailbox status must be set to FAILED upon dev agent crash"
+    Assert-True ($data7.error -match "SIMULATED_DEV_FAILURE") "Mailbox error property must record the failure message"
 
     Write-Host "All Dual-Agent Studio orchestrator tests passed successfully." -ForegroundColor Green
 }

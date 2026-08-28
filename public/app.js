@@ -832,10 +832,34 @@ function renderTimeline(mb) {
   } else if (mb.status === 'REJECTED_MAX_ROUNDS') {
     statusBadge.className = 'status-badge rejected';
     statusText.textContent = '达到最大轮次 (REJECTED)';
+  } else if (mb.status === 'FAILED' || mb.status === 'ERROR') {
+    statusBadge.className = 'status-badge rejected';
+    statusText.textContent = '任务执行失败 (FAILED)';
+  } else if (mb.status === 'WAITING_DEV') {
+    statusBadge.className = 'status-badge waiting';
+    statusText.textContent = '等待开发方调整 (WAITING_DEV)';
+  } else if (mb.status === 'WAITING_REVIEW') {
+    statusBadge.className = 'status-badge waiting';
+    statusText.textContent = '等待审查方评估 (WAITING_REVIEW)';
   }
 
   emptyState.style.display = 'none';
   roundsList.innerHTML = '';
+
+  if (mb.status === 'FAILED' || mb.status === 'ERROR' || mb.error) {
+    const errCard = document.createElement('div');
+    errCard.className = 'round-card error-card';
+    errCard.innerHTML = `
+      <div class="round-card-header" style="background: rgba(239, 68, 68, 0.15); border-left: 4px solid #ef4444; padding: 10px 14px;">
+        <span class="round-title" style="color: #f87171; font-weight: 700;">❌ 执行异常中断 (FAILED)</span>
+      </div>
+      <div class="round-card-body" style="padding: 12px 16px;">
+        <p style="color: #fca5a5; margin: 0 0 8px 0; font-size: 13px; font-weight: 600;">${escapeHtml(mb.error || '执行过程中发生未捕获异常，已停止闭环推进。')}</p>
+        <p style="color: #94a3b8; font-size: 11.5px; margin: 0;">建议：请查看下方【终端实时日志】查看详细报错输出，修复配置或环境后重新启动。</p>
+      </div>
+    `;
+    roundsList.appendChild(errCard);
+  }
 
   if (mb.devSessionId && document.getElementById('devSessionId')) {
     document.getElementById('devSessionId').value = mb.devSessionId;
