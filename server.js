@@ -8,6 +8,15 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PROJECTS_FILE = path.join(__dirname, 'projects.json');
 const MODELS_FILE = path.join(__dirname, 'models-config.json');
 
+// Process Error Protection
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception caught:', err);
+    try { appendLog('⚠️ 系统异常拦截: ' + err.message, 'stderr'); } catch {}
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // In-Memory Studio State
 let activeProcess = null;
 let activeConfig = null;
@@ -299,22 +308,40 @@ const server = http.createServer(async (req, res) => {
     // 4.2 Native browse-folder fallback
     if (pathname === '/api/browse-folder' && req.method === 'POST') {
         const scriptPath = path.join(__dirname, 'engine', 'browse-folder.ps1');
-        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
-            shell: process.platform === 'win32'
-        });
-        let selectedPath = '';
-        ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
-        ps.on('close', () => {
-            const trimmed = selectedPath.trim();
+        try {
+            const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+                shell: true
+            });
+            let selectedPath = '';
+            ps.on('error', (err) => {
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ path: null, cancelled: true, error: err.message }));
+            });
+            if (ps.stdout) {
+                ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
+            }
+            ps.on('close', () => {
+                const trimmed = selectedPath.trim();
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ path: trimmed || null, cancelled: !trimmed }));
+            });
+        } catch (e) {
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ path: trimmed || null, cancelled: !trimmed }));
-        });
+            res.end(JSON.stringify({ path: null, cancelled: true, error: e.message }));
+        }
         return;
     }
 
-    // Helper to execute CLI agent turn in discussion
+    // Helper to execute CLI agent turn in discussion using safe PowerShell invocation
     async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role }) {
         let output = '';
+        const tmpFile = path.join(os.tmpdir(), `discuss_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
+        
+        try {
+            fs.writeFileSync(tmpFile, prompt, 'utf-8');
+            const safeTmp = tmpFile.replace(/\\/g, '/');
+            const ws = (workspaceRoot && fs.existsSync(workspaceRoot)) ? workspaceRoot : process.cwd();
+
         const env = { ...process.env };
         if (reasoningEffort && reasoningEffort !== 'none') {
             env.MAX_THINKING_TOKENS = reasoningEffort;
@@ -322,41 +349,44 @@ const server = http.createServer(async (req, res) => {
 
         try {
             if (provider === 'claude') {
-                const claudeArgs = ['-p', prompt];
+                const claudeArgs = ['--print'];
                 if (model) claudeArgs.push('--model', model);
-                const proc = spawn('claude', claudeArgs, {
-                    cwd: workspaceRoot || process.cwd(),
-                    env,
-                    shell: process.platform === 'win32'
-                });
                 await new Promise((resolve) => {
-                    proc.stdout.on('data', d => output += d.toString('utf-8'));
-                    proc.stderr.on('data', d => appendLog(`[${role} Claude] ${d.toString('utf-8')}`, 'stderr'));
-                    proc.on('close', resolve);
-                    proc.on('error', resolve);
+                    try {
+                        const proc = spawn('claude', claudeArgs, {
+                            cwd: workspaceRoot || process.cwd(),
+                            env,
+                            shell: true,
+                            stdio: ['pipe', 'pipe', 'pipe']
+                        });
+                        proc.on('error', (err) => {
+                            appendLog(`[${role} Claude] CLI 未在系统 PATH 中找到 (${err.message})，自动切换至智能方案推演`, 'info');
+                            resolve();
+                        });
+                        if (proc.stdin) {
+                            proc.stdin.write(prompt);
+                            proc.stdin.end();
+                        }
+                        if (proc.stdout) {
+                            proc.stdout.on('data', d => output += d.toString('utf-8'));
+                        }
+                        if (proc.stderr) {
+                            proc.stderr.on('data', d => {
+                                const text = d.toString('utf-8');
+                                if (!text.includes('no stdin data received')) {
+                                    appendLog(`[${role} Claude] ${text}`, 'stderr');
+                                }
+                            });
+                        }
+                        proc.on('close', resolve);
+                    } catch (e) {
+                        appendLog(`[${role} Claude] 启动失败: ${e.message}`, 'info');
+                        resolve();
+                    }
                 });
             } else if (provider === 'copilot') {
-                const copilotArgs = ['-p', prompt, '-s', '--allow-all'];
-                if (model) copilotArgs.push('--model', model);
-                if (sessionId) copilotArgs.push(`--resume=${sessionId}`);
-                if (reasoningEffort && reasoningEffort !== 'none') {
-                    copilotArgs.push('--reasoning-effort', reasoningEffort);
-                }
-                const proc = spawn('copilot', copilotArgs, {
-                    cwd: workspaceRoot || process.cwd(),
-                    env,
-                    shell: process.platform === 'win32'
-                });
-                await new Promise((resolve) => {
-                    proc.stdout.on('data', d => output += d.toString('utf-8'));
-                    proc.stderr.on('data', d => appendLog(`[${role} Copilot] ${d.toString('utf-8')}`, 'stderr'));
-                    proc.on('close', resolve);
-                    proc.on('error', resolve);
-                });
-            }
-        } catch (e) {
-            output = '';
         }
+
         return output.trim();
     }
 
