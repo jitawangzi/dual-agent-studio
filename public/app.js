@@ -454,6 +454,16 @@ function getEffortsForEngineAndModel(engine, model) {
     ];
   }
 
+  // If engine is Antigravity / AGY CLI, it accepts low | medium | high
+  if (engine === 'antigravity' || engine === 'agy') {
+    return [
+      { value: 'high', label: 'High (深度推理 / 复杂架构规划 - 推荐)', default: true },
+      { value: 'medium', label: 'Medium (均衡推理 / 日常编码)', default: false },
+      { value: 'low', label: 'Low (快速轻量响应)', default: false },
+      { value: 'none', label: 'Default / None (默认模式)', default: false }
+    ];
+  }
+
   // For other engines / models, use model's defined efforts if present
   if (model && model.efforts && model.efforts.length > 0) {
     return model.efforts.map(eff => ({

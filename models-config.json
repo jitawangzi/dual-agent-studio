@@ -355,125 +355,92 @@
         {
           "id": "gemini-3.7-flash",
           "name": "Gemini 3.7 Flash (2026 最新前沿极速 Agent 旗舰)",
-          "effortType": "gemini_budget",
-          "defaultEffort": "24576",
+          "effortType": "agy_effort",
+          "defaultEffort": "high",
           "efforts": [
             {
-              "id": "24576",
-              "label": "High (24k Thinking Budget - 深度架构推演)",
-              "value": "24576"
+              "id": "high",
+              "label": "High (深度推理 / 架构推演 - 推荐)",
+              "value": "high"
             },
             {
-              "id": "8192",
-              "label": "Medium (8k Thinking Budget - 推荐日常编码)",
-              "value": "8192"
+              "id": "medium",
+              "label": "Medium (均衡推理 / 日常编码)",
+              "value": "medium"
             },
             {
-              "id": "2048",
-              "label": "Low (2k Thinking Budget - 快速响应)",
-              "value": "2048"
+              "id": "low",
+              "label": "Low (快速轻量响应)",
+              "value": "low"
             },
             {
-              "id": "0",
-              "label": "Off (关闭思考)",
-              "value": "0"
+              "id": "none",
+              "label": "Default / None (默认模式)",
+              "value": "none"
+            }
+          ]
+        },
+        {
+          "id": "gemini-3.6-flash",
+          "name": "Gemini 3.6 Flash (高吞吐敏捷推理)",
+          "effortType": "agy_effort",
+          "defaultEffort": "high",
+          "efforts": [
+            {
+              "id": "high",
+              "label": "High (深度推理)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (均衡推理)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (快速响应)",
+              "value": "low"
+            }
+          ]
+        },
+        {
+          "id": "gemini-3.5-flash",
+          "name": "Gemini 3.5 Flash",
+          "effortType": "agy_effort",
+          "defaultEffort": "medium",
+          "efforts": [
+            {
+              "id": "high",
+              "label": "High (深度推理)",
+              "value": "high"
+            },
+            {
+              "id": "medium",
+              "label": "Medium (均衡推理)",
+              "value": "medium"
+            },
+            {
+              "id": "low",
+              "label": "Low (快速响应)",
+              "value": "low"
             }
           ]
         },
         {
           "id": "gemini-3.1-pro",
-          "name": "Gemini 3.1 Pro (2026 深度推理与超长上下文旗舰)",
-          "effortType": "gemini_budget",
-          "defaultEffort": "32768",
+          "name": "Gemini 3.1 Pro (深度推理与超长上下文旗舰)",
+          "effortType": "agy_effort",
+          "defaultEffort": "high",
           "efforts": [
             {
-              "id": "32768",
-              "label": "High (32k Thinking Budget - 全局代码拓扑审计)",
-              "value": "32768"
+              "id": "high",
+              "label": "High (深度推理 - 全局代码拓扑审计)",
+              "value": "high"
             },
             {
-              "id": "16384",
-              "label": "Medium (16k Thinking Budget)",
-              "value": "16384"
-            },
-            {
-              "id": "4096",
-              "label": "Low (4k Thinking Budget)",
-              "value": "4096"
-            },
-            {
-              "id": "0",
-              "label": "Off (关闭思考)",
-              "value": "0"
-            }
-          ]
-        },
-        {
-          "id": "gemini-spark",
-          "name": "Gemini Spark (24/7 自主 Agent 专用执行引擎)",
-          "effortType": "gemini_budget",
-          "defaultEffort": "24576",
-          "efforts": [
-            {
-              "id": "24576",
-              "label": "High (24k Budget)",
-              "value": "24576"
-            },
-            {
-              "id": "8192",
-              "label": "Medium (8k Budget)",
-              "value": "8192"
-            },
-            {
-              "id": "0",
-              "label": "Off (直接执行)",
-              "value": "0"
-            }
-          ]
-        },
-        {
-          "id": "gemini-2.5-pro",
-          "name": "Gemini 2.5 Pro (思考增强版)",
-          "effortType": "gemini_budget",
-          "defaultEffort": "24576",
-          "efforts": [
-            {
-              "id": "24576",
-              "label": "High (24k Budget)",
-              "value": "24576"
-            },
-            {
-              "id": "8192",
-              "label": "Medium (8k Budget)",
-              "value": "8192"
-            },
-            {
-              "id": "0",
-              "label": "Off (关闭思考)",
-              "value": "0"
-            }
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash",
-          "name": "Gemini 2.5 Flash",
-          "effortType": "gemini_budget",
-          "defaultEffort": "8192",
-          "efforts": [
-            {
-              "id": "8192",
-              "label": "Medium (8k Budget)",
-              "value": "8192"
-            },
-            {
-              "id": "2048",
-              "label": "Low (2k Budget)",
-              "value": "2048"
-            },
-            {
-              "id": "0",
-              "label": "Off",
-              "value": "0"
+              "id": "low",
+              "label": "Low (快速推理)",
+              "value": "low"
             }
           ]
         }

@@ -53,6 +53,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Auto-configure local proxy if not set
+if (-not $env:http_proxy) { $env:http_proxy = "http://127.0.0.1:10809" }
+if (-not $env:https_proxy) { $env:https_proxy = "http://127.0.0.1:10809" }
+if (-not $env:HTTP_PROXY) { $env:HTTP_PROXY = "http://127.0.0.1:10809" }
+if (-not $env:HTTPS_PROXY) { $env:HTTPS_PROXY = "http://127.0.0.1:10809" }
+if (-not $env:ALL_PROXY) { $env:ALL_PROXY = "http://127.0.0.1:10809" }
+
 if (-not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
     throw "WORKSPACE_NOT_FOUND: Target workspace path '$WorkspaceRoot' does not exist."
 }
@@ -98,8 +105,8 @@ foreach ($cand in $candidateScripts) {
 function Write-MailboxState {
     param([object]$StateObj)
     $parent = Split-Path -Parent $effectiveMailboxPath
-    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
-        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
     $json = $StateObj | ConvertTo-Json -Depth 100
     $tmp = $effectiveMailboxPath + ".tmp_" + [guid]::NewGuid().ToString("N")
@@ -128,6 +135,21 @@ function Format-CopilotReasoningEffort([string]$effort) {
             if ($lower -in @("none", "minimal", "low", "medium", "high", "xhigh", "max")) {
                 return $lower
             }
+            return "high"
+        }
+    }
+}
+
+function Format-AgyReasoningEffort([string]$effort) {
+    if ([string]::IsNullOrWhiteSpace($effort)) { return "" }
+    $lower = $effort.Trim().ToLowerInvariant()
+    switch ($lower) {
+        { $_ -in @("none", "off", "disable", "disabled", "false", "0") } { return "" }
+        { $_ -in @("low", "minimal", "min", "fast", "2048", "4096") } { return "low" }
+        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
+        { $_ -in @("high", "max", "xhigh", "think", "deepthink", "24576", "32768", "64000", "65536") } { return "high" }
+        default {
+            if ($lower -in @("low", "medium", "high")) { return $lower }
             return "high"
         }
     }
@@ -253,8 +275,9 @@ function Invoke-DevTurn {
                     if (-not [string]::IsNullOrWhiteSpace($Model)) {
                         $agyArgs += @("--model", $Model)
                     }
-                    if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
-                        $agyArgs += @("--effort", $ReasoningEffort)
+                    $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+                    if (-not [string]::IsNullOrWhiteSpace($agyEffort)) {
+                        $agyArgs += @("--effort", $agyEffort)
                     }
                     $agyArgs += @("--print", "$Prompt")
                     & $agyCmd.Source @agyArgs
@@ -429,6 +452,28 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             }
             "antigravity" {
                 Write-Host "Antigravity Reviewer Agent assessing code changes in $wsPhysical..." -ForegroundColor Gray
+                $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($agyCmd) {
+                    $agyArgs = @("--dangerously-skip-permissions")
+                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+                        $agyArgs += @("--model", $Model)
+                    }
+                    $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+                    if (-not [string]::IsNullOrWhiteSpace($agyEffort)) {
+                        $agyArgs += @("--effort", $agyEffort)
+                    }
+                    $agyArgs += @("--print", "$systemInstruction")
+                    $res = & $agyCmd.Source @agyArgs 2>&1 | Out-String
+                    $agyExit = $LASTEXITCODE
+                    $jsonObj = Extract-JsonFromText -Text $res
+                    if ($null -ne $jsonObj) {
+                        return $jsonObj
+                    }
+                    if ($agyExit -ne 0) {
+                        throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($agyExit): $res"
+                    }
+                    throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $res"
+                }
                 return [ordered]@{
                     verdict = "APPROVED"
                     highestSeverity = "NONE"

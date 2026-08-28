@@ -684,9 +684,17 @@ Conclude with your verdict:
                 if (config.autoCommit) psArgs.push('-AutoCommit');
                 if (config.mailboxPath) psArgs.push('-MailboxPath', config.mailboxPath);
 
+                const procEnv = { ...process.env };
+                if (!procEnv.http_proxy) procEnv.http_proxy = 'http://127.0.0.1:10809';
+                if (!procEnv.https_proxy) procEnv.https_proxy = 'http://127.0.0.1:10809';
+                if (!procEnv.HTTP_PROXY) procEnv.HTTP_PROXY = 'http://127.0.0.1:10809';
+                if (!procEnv.HTTPS_PROXY) procEnv.HTTPS_PROXY = 'http://127.0.0.1:10809';
+                if (!procEnv.all_proxy) procEnv.all_proxy = 'http://127.0.0.1:10809';
+                if (!procEnv.ALL_PROXY) procEnv.ALL_PROXY = 'http://127.0.0.1:10809';
+
                 activeProcess = spawn('pwsh', psArgs, {
                     cwd: config.workspaceRoot,
-                    env: process.env,
+                    env: procEnv,
                     shell: false
                 });
 
