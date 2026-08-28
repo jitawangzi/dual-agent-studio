@@ -258,16 +258,22 @@ const server = http.createServer(async (req, res) => {
                 } else if (fs.existsSync(path.join(workspaceRoot, 'tests', 'orchestrator.tests.ps1'))) {
                     recommendedCommand = 'pwsh -NoProfile -File ./tests/orchestrator.tests.ps1';
                     framework = 'PowerShell Orchestrator Suite';
-                } else if (fs.existsSync(path.join(workspaceRoot, 'gradlew.bat')) || fs.existsSync(path.join(workspaceRoot, 'gradlew'))) {
+                } else if (fs.existsSync(path.join(workspaceRoot, 'gradlew.bat')) || fs.existsSync(path.join(workspaceRoot, 'gradlew')) || fs.existsSync(path.join(workspaceRoot, 'build.gradle')) || fs.existsSync(path.join(workspaceRoot, 'build.gradle.kts'))) {
                     recommendedCommand = '.\\gradlew test';
-                    framework = 'Gradle (Java / Spring)';
+                    framework = 'Gradle (Java / Kotlin / Spring)';
                 } else if (fs.existsSync(path.join(workspaceRoot, 'pom.xml'))) {
                     recommendedCommand = 'mvn test';
                     framework = 'Maven (Java / Spring)';
                 } else if (fs.existsSync(path.join(workspaceRoot, 'package.json'))) {
                     recommendedCommand = 'npm test';
                     framework = 'Node.js (npm)';
-                } else if (fs.existsSync(path.join(workspaceRoot, 'pytest.ini')) || fs.existsSync(path.join(workspaceRoot, 'setup.py'))) {
+                } else if (fs.existsSync(path.join(workspaceRoot, 'Cargo.toml'))) {
+                    recommendedCommand = 'cargo test';
+                    framework = 'Rust (Cargo)';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'go.mod'))) {
+                    recommendedCommand = 'go test ./...';
+                    framework = 'Go (go test)';
+                } else if (fs.existsSync(path.join(workspaceRoot, 'pytest.ini')) || fs.existsSync(path.join(workspaceRoot, 'setup.py')) || fs.existsSync(path.join(workspaceRoot, 'pyproject.toml'))) {
                     recommendedCommand = 'pytest';
                     framework = 'Python (pytest)';
                 }
@@ -290,7 +296,9 @@ const server = http.createServer(async (req, res) => {
     // 4.2 Native browse-folder fallback
     if (pathname === '/api/browse-folder' && req.method === 'POST') {
         const scriptPath = path.join(__dirname, 'engine', 'browse-folder.ps1');
-        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
+        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+            shell: process.platform === 'win32'
+        });
         let selectedPath = '';
         ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
         ps.on('close', () => {
@@ -346,37 +354,61 @@ Keep it precise, practical, and highly structured.
 `;
                 let devProposal = '';
                 try {
+                    const devEnv = { ...process.env };
+                    if (devReasoningEffort && devReasoningEffort !== 'none') {
+                        devEnv.MAX_THINKING_TOKENS = devReasoningEffort;
+                    }
+
                     if (devProvider === 'claude') {
                         const claudeArgs = ['-p', devSystemPrompt];
                         if (devModel) claudeArgs.push('--model', devModel);
-                        const cProc = spawn('claude', claudeArgs, { cwd: workspaceRoot || process.cwd() });
+                        const cProc = spawn('claude', claudeArgs, {
+                            cwd: workspaceRoot || process.cwd(),
+                            env: devEnv,
+                            shell: process.platform === 'win32'
+                        });
                         await new Promise((resolve) => {
                             cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
+                            cProc.stderr.on('data', d => appendLog(`[Claude Dev Error] ${d.toString('utf-8')}`, 'stderr'));
                             cProc.on('close', resolve);
+                            cProc.on('error', resolve);
                         });
                     } else if (devProvider === 'copilot') {
                         const copilotArgs = ['-p', devSystemPrompt, '-s', '--allow-all'];
                         if (devModel) copilotArgs.push('--model', devModel);
-                        const cProc = spawn('copilot', copilotArgs, { cwd: workspaceRoot || process.cwd() });
+                        if (devReasoningEffort && devReasoningEffort !== 'none') {
+                            copilotArgs.push('--reasoning-effort', devReasoningEffort);
+                        }
+                        const cProc = spawn('copilot', copilotArgs, {
+                            cwd: workspaceRoot || process.cwd(),
+                            env: devEnv,
+                            shell: process.platform === 'win32'
+                        });
                         await new Promise((resolve) => {
                             cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
+                            cProc.stderr.on('data', d => appendLog(`[Copilot Dev Error] ${d.toString('utf-8')}`, 'stderr'));
                             cProc.on('close', resolve);
+                            cProc.on('error', resolve);
                         });
                     } else {
                         // Mock/Generic fallback for discussion
-                        devProposal = `### 🎯 开发方初拟方案
-1. **核心目标**：实现 "${vaguePrompt}" 对应功能，并保证模块独立性。
+                        devProposal = `### 🎯 开发方初拟方案 (Dev Proposal)
+1. **核心目标**：针对 "${vaguePrompt}" 建立高效健壮的功能实现与模块隔离。
 2. **改动范围**：
-   - 核心逻辑层实现
-   - 配置与模型适配层
-   - 单元测试与端到端门禁
+   - 核心业务层与调度状态管理
+   - 外部调用配置与思考强度参数透传
+   - 自动化门禁测试与端到端闭环验证
 3. **任务清单**：
-   - [ ] [Task 1] 实现核心能力并增加参数校验
-   - [ ] [Task 2] 编写自动化单元测试并验证
-   - [ ] [Task 3] 验证与外部依赖/下游模块的契约一致性`;
+   - [ ] [Task 1] 实现核心能力并增加前置参数与边界校验
+   - [ ] [Task 2] 编写针对性单元测试与回归门禁验证
+   - [ ] [Task 3] 验证与外部依赖模块契约一致性`;
                     }
                 } catch (e) {
                     devProposal = `### 🎯 开发方初步方案\n针对需求 "${vaguePrompt}" 进行架构拆解与功能落地。`;
+                }
+
+                if (!devProposal || devProposal.trim().length === 0) {
+                    devProposal = `### 🎯 开发方初拟方案 (Dev Proposal)\n针对需求 "${vaguePrompt}" 进行架构拆解与子任务规划。`;
                 }
 
                 broadcast('discussion_message', { sender: 'DEV', content: devProposal });
@@ -396,31 +428,55 @@ Output your final synthesized recommendation for the developer and user to appro
 `;
                 let reviewerFeedback = '';
                 try {
+                    const reviewEnv = { ...process.env };
+                    if (reviewReasoningEffort && reviewReasoningEffort !== 'none') {
+                        reviewEnv.MAX_THINKING_TOKENS = reviewReasoningEffort;
+                    }
+
                     if (reviewProvider === 'copilot') {
                         const copilotArgs = ['-p', reviewerSystemPrompt, '-s', '--allow-all'];
                         if (reviewModel) copilotArgs.push('--model', reviewModel);
                         if (copilotSessionId) copilotArgs.push(`--resume=${copilotSessionId}`);
-                        const rProc = spawn('copilot', copilotArgs, { cwd: workspaceRoot || process.cwd() });
+                        if (reviewReasoningEffort && reviewReasoningEffort !== 'none') {
+                            copilotArgs.push('--reasoning-effort', reviewReasoningEffort);
+                        }
+                        const rProc = spawn('copilot', copilotArgs, {
+                            cwd: workspaceRoot || process.cwd(),
+                            env: reviewEnv,
+                            shell: process.platform === 'win32'
+                        });
                         await new Promise((resolve) => {
                             rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
+                            rProc.stderr.on('data', d => appendLog(`[Copilot Reviewer Error] ${d.toString('utf-8')}`, 'stderr'));
                             rProc.on('close', resolve);
+                            rProc.on('error', resolve);
                         });
                     } else if (reviewProvider === 'claude') {
                         const claudeArgs = ['-p', reviewerSystemPrompt];
                         if (reviewModel) claudeArgs.push('--model', reviewModel);
-                        const rProc = spawn('claude', claudeArgs, { cwd: workspaceRoot || process.cwd() });
+                        const rProc = spawn('claude', claudeArgs, {
+                            cwd: workspaceRoot || process.cwd(),
+                            env: reviewEnv,
+                            shell: process.platform === 'win32'
+                        });
                         await new Promise((resolve) => {
                             rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
+                            rProc.stderr.on('data', d => appendLog(`[Claude Reviewer Error] ${d.toString('utf-8')}`, 'stderr'));
                             rProc.on('close', resolve);
+                            rProc.on('error', resolve);
                         });
                     } else {
-                        reviewerFeedback = `### 🔍 审查方评估意见
-1. **安全与并发**：确保所有状态修改具备前置防御与超时回滚；
-2. **测试门禁**：必须全量跑通核心自动化测试套件；
-3. **判定**：方案可行，建议在用户确认后立即开始编码。`;
+                        reviewerFeedback = `### 🔍 审查方评估意见 (Reviewer Critique)
+1. **安全与并发防御**：确保所有状态修改具备前置防御、异常捕获与超时回滚；
+2. **测试门禁约束**：必须跑通工程测试套件并通过代码质量检查；
+3. **判定**：方案架构合理，风险可控，确认无误后可进入全自动迭代执行。`;
                     }
                 } catch (e) {
                     reviewerFeedback = `### 🔍 审查方建议\n建议增加完备的异常处理与自动化测试门禁。`;
+                }
+
+                if (!reviewerFeedback || reviewerFeedback.trim().length === 0) {
+                    reviewerFeedback = `### 🔍 审查方评估意见\n方案架构合理，建议补充完整测试门禁并执行。`;
                 }
 
                 broadcast('discussion_message', { sender: 'REVIEWER', content: reviewerFeedback });
@@ -542,10 +598,15 @@ Output your final synthesized recommendation for the developer and user to appro
     if (pathname === '/api/stop' && req.method === 'POST') {
         if (activeProcess) {
             appendLog('⚠️ 用户主动中止运行中的闭环任务...', 'system');
+            const pid = activeProcess.pid;
             try {
-                spawn('taskkill', ['/pid', activeProcess.pid, '/f', '/t']);
-            } catch {
-                activeProcess.kill('SIGTERM');
+                if (process.platform === 'win32') {
+                    spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { shell: true });
+                } else {
+                    activeProcess.kill('SIGTERM');
+                }
+            } catch (err) {
+                try { activeProcess.kill('SIGKILL'); } catch {}
             }
             activeProcess = null;
             broadcast('state_change', { isRunning: false, stoppedByUser: true });
@@ -567,11 +628,11 @@ Output your final synthesized recommendation for the developer and user to appro
             return;
         }
 
-        const gitProc = spawn('git', ['diff', 'HEAD'], { cwd: ws });
+        const gitProc = spawn('git', ['diff', 'HEAD'], { cwd: ws, shell: process.platform === 'win32' });
         let diffText = '';
         gitProc.stdout.on('data', d => diffText += d.toString('utf-8'));
         gitProc.on('close', () => {
-            const statProc = spawn('git', ['status', '--porcelain', '-uall'], { cwd: ws });
+            const statProc = spawn('git', ['status', '--porcelain', '-uall'], { cwd: ws, shell: process.platform === 'win32' });
             let statText = '';
             statProc.stdout.on('data', d => statText += d.toString('utf-8'));
             statProc.on('close', () => {
@@ -625,8 +686,9 @@ Output your final synthesized recommendation for the developer and user to appro
     }
 
     // 11. Static File Serving (public/)
-    let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    const safePath = path.normalize(pathname === '/' ? 'index.html' : pathname).replace(/^(\.\.[\/\\])+/, '');
+    let filePath = path.join(PUBLIC_DIR, safePath);
+    if (!filePath.startsWith(PUBLIC_DIR) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         filePath = path.join(PUBLIC_DIR, 'index.html');
     }
 

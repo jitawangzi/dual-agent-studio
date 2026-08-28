@@ -214,6 +214,41 @@ function Invoke-DevTurn {
     }
 }
 
+function Extract-JsonFromText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+
+    # 1. Try markdown code block extraction ```json ... ```
+    if ($Text -match '(?ms)```(?:json)?\s*(\{\s*".*?"\s*:.*?\})\s*```') {
+        try {
+            $parsed = $Matches[1] | ConvertFrom-Json
+            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
+                return $parsed
+            }
+        } catch {}
+    }
+
+    # 2. Try outer { ... } extraction
+    if ($Text -match '(?ms)(\{.*\})') {
+        try {
+            $parsed = $Matches[1] | ConvertFrom-Json
+            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
+                return $parsed
+            }
+        } catch {}
+    }
+
+    # 3. Direct JSON parse
+    try {
+        $parsed = $Text | ConvertFrom-Json
+        if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
+            return $parsed
+        }
+    } catch {}
+
+    return $null
+}
+
 function Invoke-ReviewerTurn {
     param(
         [string]$Provider,
@@ -288,13 +323,10 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                     $argsList += @("--reasoning-effort", $ReasoningEffort)
                 }
                 $res = & $copilotCmd.Source @argsList 2>&1 | Out-String
-                try {
-                    $jsonStr = if ($res -match '(?ms)\{.*\}') { $Matches[0] } else { $res }
-                    $jsonObj = $jsonStr | ConvertFrom-Json
-                    if ($null -ne $jsonObj -and -not [string]::IsNullOrWhiteSpace($jsonObj.verdict)) {
-                        return $jsonObj
-                    }
-                } catch {}
+                $jsonObj = Extract-JsonFromText -Text $res
+                if ($null -ne $jsonObj) {
+                    return $jsonObj
+                }
                 throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $res"
             }
             { $_ -in @("claude", "claude_code") } {
@@ -315,13 +347,10 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                         }
                     }
                     $res = & $claudeExe.Source @claudeArgs 2>&1 | Out-String
-                    try {
-                        $jsonStr = if ($res -match '(?ms)\{.*\}') { $Matches[0] } else { $res }
-                        $jsonObj = $jsonStr | ConvertFrom-Json
-                        if ($null -ne $jsonObj -and -not [string]::IsNullOrWhiteSpace($jsonObj.verdict)) {
-                            return $jsonObj
-                        }
-                    } catch {}
+                    $jsonObj = Extract-JsonFromText -Text $res
+                    if ($null -ne $jsonObj) {
+                        return $jsonObj
+                    }
                     throw "PROVIDER_OUTPUT_INVALID: Claude CLI returned non-JSON review output: $res"
                 }
                 throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH."
@@ -527,12 +556,26 @@ while ($true) {
             $untrackedStat = git status --porcelain -uall 2>&1
             if ($untrackedStat) {
                 $untrackedDiffs = [System.Collections.Generic.List[string]]::new()
+                $ignorePatterns = @('.git/', 'node_modules/', '.tmp_', '.lock', 'review-mailbox.json', 'projects.json', 'package-lock.json')
                 foreach ($uLine in ($untrackedStat | Out-String -Stream)) {
                     if ($uLine.Trim() -match '^\?\?\s+(.*)$') {
                         $uPath = $Matches[1].Trim()
-                        if (Test-Path -LiteralPath $uPath -PathType Leaf) {
-                            $content = [System.IO.File]::ReadAllText($uPath)
-                            $untrackedDiffs.Add("=== Untracked File: $uPath ===`n$content")
+                        $normalizedUPath = $uPath.Replace('\', '/')
+                        $isIgnored = $false
+                        foreach ($p in $ignorePatterns) {
+                            if ($normalizedUPath.Contains($p)) {
+                                $isIgnored = $true
+                                break
+                            }
+                        }
+                        if (-not $isIgnored -and (Test-Path -LiteralPath $uPath -PathType Leaf)) {
+                            $fileItem = Get-Item -LiteralPath $uPath
+                            if ($fileItem.Length -le 2097152) { # Max 2MB per untracked file to prevent memory choke
+                                try {
+                                    $content = [System.IO.File]::ReadAllText($uPath, [System.Text.Encoding]::UTF8)
+                                    $untrackedDiffs.Add("=== Untracked File: $uPath ===`n$content")
+                                } catch {}
+                            }
                         }
                     }
                 }
@@ -633,8 +676,13 @@ while ($true) {
             Push-Location $wsPhysical
             try {
                 git add -A
-                $commitOut = git commit -m "feat($effectiveFeature): completed via dual-agent loop (round $round)" 2>&1 | Out-String
-                Write-Host "✅ Committed successfully." -ForegroundColor Green
+                $staged = git status --porcelain 2>&1 | Out-String
+                if (-not [string]::IsNullOrWhiteSpace($staged)) {
+                    $commitOut = git commit -m "feat($effectiveFeature): completed via dual-agent loop (round $round)" 2>&1 | Out-String
+                    Write-Host "✅ Committed successfully: $commitOut" -ForegroundColor Green
+                } else {
+                    Write-Host "ℹ️ Working tree clean, no staged changes to commit." -ForegroundColor Gray
+                }
             } catch {
                 Write-Warning "Auto-commit failed: $_"
             } finally {

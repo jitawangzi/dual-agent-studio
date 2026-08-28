@@ -9,15 +9,127 @@ let explorerCurrentPath = '';
 let explorerParentPath = null;
 let explorerSelectedPath = '';
 
+const PREF_KEY = 'dual_agent_studio_prefs';
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadModelsConfig();
+  loadUserPreferences();
   initProjects();
   initSSE();
   fetchStatus();
   const initWs = document.getElementById('workspaceRoot')?.value;
   if (initWs) autoDetectWorkspace(initWs);
   setInterval(fetchStatus, 3000);
+
+  // Auto-save preferences on input changes
+  document.querySelectorAll('input, select, textarea').forEach(el => {
+    el.addEventListener('change', saveUserPreferences);
+  });
 });
+
+function saveUserPreferences() {
+  try {
+    const prefs = {
+      workspaceRoot: document.getElementById('workspaceRoot')?.value,
+      featureName: document.getElementById('featureName')?.value,
+      maxRounds: document.getElementById('maxRounds')?.value,
+      verifyCommand: document.getElementById('verifyCommand')?.value,
+      autoCommit: document.getElementById('autoCommit')?.checked,
+      devProvider: document.getElementById('devProvider')?.value,
+      devSeries: document.getElementById('devSeries')?.value,
+      devModelCustom: document.getElementById('devModelCustom')?.value,
+      devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
+      reviewProvider: document.getElementById('reviewProvider')?.value,
+      reviewSeries: document.getElementById('reviewSeries')?.value,
+      reviewModelCustom: document.getElementById('reviewModelCustom')?.value,
+      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
+      copilotSessionId: document.getElementById('copilotSessionId')?.value
+    };
+    localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+  } catch (e) {}
+}
+
+function loadUserPreferences() {
+  try {
+    const raw = localStorage.getItem(PREF_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if (p.workspaceRoot) document.getElementById('workspaceRoot').value = p.workspaceRoot;
+    if (p.featureName) document.getElementById('featureName').value = p.featureName;
+    if (p.maxRounds) document.getElementById('maxRounds').value = p.maxRounds;
+    if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
+    if (p.autoCommit !== undefined) document.getElementById('autoCommit').checked = p.autoCommit;
+    if (p.copilotSessionId) document.getElementById('copilotSessionId').value = p.copilotSessionId;
+
+    if (p.devProvider) {
+      document.getElementById('devProvider').value = p.devProvider;
+      onDevEngineChange();
+      if (p.devSeries) {
+        document.getElementById('devSeries').value = p.devSeries;
+        onDevSeriesChange();
+      }
+      if (p.devModelCustom) {
+        document.getElementById('devModelCustom').value = p.devModelCustom;
+      }
+      if (p.devReasoningEffort) {
+        document.getElementById('devReasoningEffort').value = p.devReasoningEffort;
+      }
+    }
+
+    if (p.reviewProvider) {
+      document.getElementById('reviewProvider').value = p.reviewProvider;
+      onReviewEngineChange();
+      if (p.reviewSeries) {
+        document.getElementById('reviewSeries').value = p.reviewSeries;
+        onReviewSeriesChange();
+      }
+      if (p.reviewModelCustom) {
+        document.getElementById('reviewModelCustom').value = p.reviewModelCustom;
+      }
+      if (p.reviewReasoningEffort) {
+        document.getElementById('reviewReasoningEffort').value = p.reviewReasoningEffort;
+      }
+    }
+  } catch (e) {}
+}
+
+function renderMarkdown(md) {
+  if (!md) return '';
+  const codeBlocks = [];
+  let text = String(md).replace(/```([a-zA-Z0-9_\-\.]*)\r?\n([\s\S]*?)```/g, (match, lang, code) => {
+    const id = `___CODE_BLOCK_${codeBlocks.length}___`;
+    codeBlocks.push(`<pre class="code-block"><code class="lang-${escapeHtml(lang)}">${escapeHtml(code.trim())}</code></pre>`);
+    return id;
+  });
+
+  text = escapeHtml(text);
+
+  text = text.replace(/^### (.*$)/gim, '<h4 class="md-h4">$1</h4>');
+  text = text.replace(/^## (.*$)/gim, '<h3 class="md-h3">$1</h3>');
+  text = text.replace(/^# (.*$)/gim, '<h2 class="md-h2">$1</h2>');
+  text = text.replace(/^---$/gim, '<hr class="md-hr">');
+
+  text = text.replace(/^- \[x\] (.*$)/gim, '<div class="md-task-item done"><span class="check-box checked">☑</span> <span>$1</span></div>');
+  text = text.replace(/^- \[ \] (.*$)/gim, '<div class="md-task-item"><span class="check-box">☐</span> <span>$1</span></div>');
+
+  text = text.replace(/^\* (.*$)/gim, '<li class="md-li">$1</li>');
+  text = text.replace(/^- (.*$)/gim, '<li class="md-li">$1</li>');
+  text = text.replace(/^(\d+)\. (.*$)/gim, '<li class="md-num-li"><span class="num-badge">$1.</span> $2</li>');
+
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  text = text.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+
+  codeBlocks.forEach((cb, idx) => {
+    text = text.replace(`___CODE_BLOCK_${idx}___`, cb);
+  });
+
+  text = text.replace(/\r?\n/g, '<br>');
+  text = text.replace(/(<\/h[1-6]>|<hr[^>]*>|<\/pre>|<\/div>|<\/li>)<br>/g, '$1');
+  text = text.replace(/<br>(<h[1-6]>|<hr[^>]*>|<pre|<div|<li)/g, '$1');
+
+  return `<div class="markdown-body">${text}</div>`;
+}
 
 // --- TAB SWITCHING ---
 function switchTab(tab) {
@@ -457,14 +569,14 @@ async function startDiscussion() {
           <span>🛠️ 开发方提案 (${payload.devProvider} / ${payload.devModel})</span>
           <span>方案规划</span>
         </div>
-        <div class="discussion-body">${escapeHtml(result.devProposal)}</div>
+        <div class="discussion-body">${renderMarkdown(result.devProposal)}</div>
       </div>
       <div class="discussion-card reviewer">
         <div class="discussion-card-header">
           <span>🔍 审查方评估与质询 (${payload.reviewProvider} / ${payload.reviewModel})</span>
           <span>安全与门禁约束</span>
         </div>
-        <div class="discussion-body">${escapeHtml(result.reviewerFeedback)}</div>
+        <div class="discussion-body">${renderMarkdown(result.reviewerFeedback)}</div>
       </div>
     `;
 
@@ -660,20 +772,21 @@ function renderTimeline(mb) {
         <span class="verdict-tag ${verdictClass}">${verdict}</span>
       </div>
       ${r.devSubmission ? `
-        <div>
+        <div class="card-section">
           <div class="section-label">🛠️ 开发方提交:</div>
-          <div style="font-size: 12px; color: #cbd5e1;">${r.devSubmission.summary || '无描述'}</div>
-          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">测试门禁状态: <b>${r.devSubmission.testGateStatus || 'PENDING'}</b></div>
+          <div class="section-content">${renderMarkdown(r.devSubmission.summary || '无描述')}</div>
+          <div style="font-size: 11px; color: #94a3b8; margin-top: 6px;">测试门禁状态: <b class="gate-status ${r.devSubmission.testGateStatus === 'PASS' ? 'pass' : 'fail'}">${r.devSubmission.testGateStatus || 'PENDING'}</b></div>
         </div>
       ` : ''}
       ${r.reviewVerdict ? `
-        <div>
+        <div class="card-section">
           <div class="section-label">🔍 审查方报告:</div>
-          <div style="font-size: 12px; color: #cbd5e1; font-weight: 500;">${r.reviewVerdict.summary || '无总结'}</div>
+          <div class="section-content">${renderMarkdown(r.reviewVerdict.summary || '无总结')}</div>
           ${issuesHtml}
           ${r.reviewVerdict.nextPromptForDev ? `
-            <div style="margin-top: 8px; font-size: 11px; color: #f59e0b; background: rgba(245,158,11,0.1); padding: 6px 10px; border-radius: 4px;">
-              <b>下轮自愈指令:</b> ${r.reviewVerdict.nextPromptForDev}
+            <div class="next-prompt-box">
+              <div class="next-prompt-title">⚡ 下轮自愈指令:</div>
+              <div class="next-prompt-content">${renderMarkdown(r.reviewVerdict.nextPromptForDev)}</div>
             </div>
           ` : ''}
         </div>
@@ -747,6 +860,27 @@ async function stopLoop() {
 }
 
 // --- GIT DIFF VIEWER ---
+window.lastRawDiff = '';
+
+async function copyDiffToClipboard() {
+  const rawDiff = window.lastRawDiff || '';
+  if (!rawDiff) {
+    alert('当前工作区无 Diff 内容可复制');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(rawDiff);
+    const btn = document.getElementById('btnCopyDiff');
+    if (btn) {
+      const originalText = btn.textContent;
+      btn.textContent = '✅ 已复制!';
+      setTimeout(() => { btn.textContent = originalText; }, 2000);
+    }
+  } catch (e) {
+    alert('复制失败: ' + e.message);
+  }
+}
+
 async function fetchDiff() {
   const ws = document.getElementById('workspaceRoot').value.trim();
   if (!ws) return;
@@ -760,14 +894,18 @@ async function fetchDiff() {
     const data = await res.json();
     if (data.error) {
       diffCode.textContent = `错误: ${data.error}`;
+      window.lastRawDiff = '';
       return;
     }
 
     if (!data.diff && !data.status) {
       diffCode.textContent = '工作区干净，无未提交的 Git 变更。';
       diffStats.textContent = '0 files changed';
+      window.lastRawDiff = '';
       return;
     }
+
+    window.lastRawDiff = (data.status ? `# Status:\n${data.status}\n\n` : '') + (data.diff || '');
 
     const lines = (data.diff || '').split('\n');
     let adds = 0, dels = 0;
@@ -778,7 +916,7 @@ async function fetchDiff() {
       } else if (line.startsWith('-') && !line.startsWith('---')) {
         dels++;
         return `<span class="diff-line-del">${escapeHtml(line)}</span>`;
-      } else if (line.startsWith('diff --git') || line.startsWith('index ')) {
+      } else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('=== Untracked File:')) {
         return `<span class="diff-line-hdr">${escapeHtml(line)}</span>`;
       }
       return escapeHtml(line);
@@ -788,6 +926,7 @@ async function fetchDiff() {
     diffCode.innerHTML = formatted;
   } catch (e) {
     diffCode.textContent = `获取 Diff 失败: ${e.message}`;
+    window.lastRawDiff = '';
   }
 }
 

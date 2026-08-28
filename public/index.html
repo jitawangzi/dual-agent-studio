@@ -254,7 +254,10 @@
         <!-- TAB 3: GIT DIFF -->
         <div id="tab-diff" class="tab-content">
           <div class="diff-toolbar">
-            <button class="btn btn-sm btn-secondary" onclick="fetchDiff()">🔄 刷新 Diff</button>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button class="btn btn-sm btn-secondary" onclick="fetchDiff()">🔄 刷新 Diff</button>
+              <button class="btn btn-sm btn-secondary" id="btnCopyDiff" onclick="copyDiffToClipboard()">📋 复制 Diff</button>
+            </div>
             <span id="diffStats" class="diff-stats"></span>
           </div>
           <div id="diffViewer" class="diff-viewer">

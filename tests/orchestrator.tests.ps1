@@ -148,6 +148,41 @@ try {
     }
     Assert-True $selfHealExceeded "Failing verify command must throw TEST_GATE_SELF_HEAL_EXCEEDED when retry limit is exceeded"
 
+    # 5. Test Markdown-wrapped JSON response from Reviewer
+    $mb5 = Join-Path $TestRoot "mb5.json"
+    $markdownReviewerHook = {
+        param($OriginalTask, $GitDiff, $Round)
+        $rawMarkdownOutput = @"
+Here is my review output for round ${Round}:
+```json
+{
+  "verdict": "APPROVED",
+  "highestSeverity": "NONE",
+  "summary": "Verified all constraints in markdown wrapper.",
+  "issues": [],
+  "nextPromptForDev": ""
+}
+```
+All clear!
+"@
+        return (Extract-JsonFromText -Text $rawMarkdownOutput)
+    }
+
+    $res5 = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "Markdown Reviewer Task" `
+        -Feature "FeatureMarkdownReview" `
+        -DevProvider "mock" `
+        -ReviewProvider "custom" `
+        -ReviewerCustomHook $markdownReviewerHook `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 2 `
+        -MailboxPath $mb5 `
+        -PassThru
+
+    Assert-Equal $res5.status "APPROVED" "Markdown-fenced JSON review output should parse successfully and result in APPROVED"
+    Assert-Equal $res5.history[0].reviewVerdict.summary "Verified all constraints in markdown wrapper." "Review verdict summary should match"
+
     Write-Host "All Dual-Agent Studio orchestrator tests passed successfully." -ForegroundColor Green
 }
 finally {
