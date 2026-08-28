@@ -9,6 +9,9 @@ if "%http_proxy%"=="" set http_proxy=http://127.0.0.1:10809
 if "%https_proxy%"=="" set https_proxy=http://127.0.0.1:10809
 echo  Proxy configured: %http_proxy%
 
+REM Clean up any stale process occupying port 3700
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3700 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+
 start http://localhost:3700
-node "%~dp0server.js"
+node --watch "%~dp0server.js"
 pause
