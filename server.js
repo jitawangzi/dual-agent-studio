@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn, execFile } = require('child_process');
 
 const PORT = process.env.PORT || 3700;
