@@ -566,54 +566,54 @@
         {
           "id": "grok-4.6",
           "name": "Grok 4.6 (2026 最新旗舰推理与 Agent 综合引擎)",
-          "effortType": "grok_mode",
-          "defaultEffort": "think",
+          "effortType": "copilot_effort",
+          "defaultEffort": "high",
           "efforts": [
             {
-              "id": "think",
+              "id": "high",
               "label": "Deep Think (开启深度推理模式 - 严密代码审查)",
-              "value": "think"
+              "value": "high"
             },
             {
-              "id": "fast",
+              "id": "low",
               "label": "Fast (常规快速模式)",
-              "value": "fast"
+              "value": "low"
             }
           ]
         },
         {
           "id": "grok-3",
           "name": "Grok 3 (Deep Reasoning & Synthesis)",
-          "effortType": "grok_mode",
-          "defaultEffort": "think",
+          "effortType": "copilot_effort",
+          "defaultEffort": "high",
           "efforts": [
             {
-              "id": "think",
+              "id": "high",
               "label": "Deep Think (深度思考)",
-              "value": "think"
+              "value": "high"
             },
             {
-              "id": "fast",
+              "id": "low",
               "label": "Fast (快速模式)",
-              "value": "fast"
+              "value": "low"
             }
           ]
         },
         {
           "id": "grok-3-mini",
           "name": "Grok 3 Mini (轻量推理版)",
-          "effortType": "grok_mode",
-          "defaultEffort": "think",
+          "effortType": "copilot_effort",
+          "defaultEffort": "high",
           "efforts": [
             {
-              "id": "think",
+              "id": "high",
               "label": "Deep Think",
-              "value": "think"
+              "value": "high"
             },
             {
-              "id": "fast",
+              "id": "low",
               "label": "Fast",
-              "value": "fast"
+              "value": "low"
             }
           ]
         }

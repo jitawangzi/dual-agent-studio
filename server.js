@@ -333,6 +333,21 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Helper to map and sanitize reasoning effort levels for GitHub Copilot CLI
+    function sanitizeCopilotEffort(effort) {
+        if (!effort) return null;
+        const lower = String(effort).trim().toLowerCase();
+        if (['none', 'off', 'disable', 'disabled', 'false'].includes(lower)) return 'none';
+        if (['minimal', 'min'].includes(lower)) return 'minimal';
+        if (['low', 'fast', '2048', '4096'].includes(lower)) return 'low';
+        if (['medium', 'med', '8192', '16384'].includes(lower)) return 'medium';
+        if (['high', 'think', 'deepthink', '24576', '32768'].includes(lower)) return 'high';
+        if (['xhigh', 'extra-high'].includes(lower)) return 'xhigh';
+        if (['max', '64000', '65536'].includes(lower)) return 'max';
+        if (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(lower)) return lower;
+        return 'high';
+    }
+
     // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation
     async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role }) {
         let output = '';
@@ -358,8 +373,9 @@ const server = http.createServer(async (req, res) => {
                 psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
                 if (model) psCmd += ` --model '${model}'`;
                 if (sessionId) psCmd += ` --resume='${sessionId}'`;
-                if (reasoningEffort && reasoningEffort !== 'none') {
-                    psCmd += ` --reasoning-effort '${reasoningEffort}'`;
+                const safeEffort = sanitizeCopilotEffort(reasoningEffort);
+                if (safeEffort && safeEffort !== 'none') {
+                    psCmd += ` --reasoning-effort '${safeEffort}'`;
                 }
             }
 

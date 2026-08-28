@@ -113,6 +113,26 @@ function Read-MailboxState {
     return ($raw | ConvertFrom-Json -Depth 100)
 }
 
+function Format-CopilotReasoningEffort([string]$effort) {
+    if ([string]::IsNullOrWhiteSpace($effort)) { return $null }
+    $lower = $effort.Trim().ToLowerInvariant()
+    switch ($lower) {
+        { $_ -in @("none", "off", "disable", "disabled", "false") } { return "none" }
+        { $_ -in @("minimal", "min") } { return "minimal" }
+        { $_ -in @("low", "fast", "2048", "4096") } { return "low" }
+        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
+        { $_ -in @("high", "think", "deepthink", "24576", "32768") } { return "high" }
+        { $_ -in @("xhigh", "extra-high") } { return "xhigh" }
+        { $_ -in @("max", "64000", "65536") } { return "max" }
+        default {
+            if ($lower -in @("none", "minimal", "low", "medium", "high", "xhigh", "max")) {
+                return $lower
+            }
+            return "high"
+        }
+    }
+}
+
 function Invoke-DevTurn {
     param(
         [string]$Provider,
@@ -170,8 +190,9 @@ function Invoke-DevTurn {
                     if (-not [string]::IsNullOrWhiteSpace($Model)) {
                         $argsList += @("--model", $Model)
                     }
-                    if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
-                        $argsList += @("--reasoning-effort", $ReasoningEffort)
+                    $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
+                    if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") {
+                        $argsList += @("--reasoning-effort", $copilotEffort)
                     }
                     $Prompt | & $copilotCmd.Source @argsList
                     if ($LASTEXITCODE -ne 0) {
@@ -344,8 +365,9 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                 if (-not [string]::IsNullOrWhiteSpace($Model)) {
                     $argsList += @("--model", $Model)
                 }
-                if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
-                    $argsList += @("--reasoning-effort", $ReasoningEffort)
+                $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
+                if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") {
+                    $argsList += @("--reasoning-effort", $copilotEffort)
                 }
                 $res = $systemInstruction | & $copilotCmd.Source @argsList 2>&1 | Out-String
                 $copilotExit = $LASTEXITCODE
