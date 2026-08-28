@@ -170,17 +170,18 @@ $dialog.Description = "请选择目标工作区工程物理根目录"
 $dialog.ShowNewFolderButton = $true
 $result = $dialog.ShowDialog()
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Write-Output $dialog.SelectedPath
 } else {
     Write-Output ""
 }
 `;
-        const ps = spawn('pwsh', ['-NoProfile', '-Command', psScript]);
+        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-Command', psScript]);
         let selectedPath = '';
         ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
         ps.on('close', () => {
             const trimmed = selectedPath.trim();
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ path: trimmed || null, cancelled: !trimmed }));
         });
         return;

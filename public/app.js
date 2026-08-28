@@ -46,6 +46,10 @@ function toggleReqMode(mode) {
 async function browseWorkspaceFolder() {
   try {
     const res = await fetch('/api/browse-folder', { method: 'POST' });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`服务器响应异常 (${res.status}): ${errText.slice(0, 100)}`);
+    }
     const data = await res.json();
     if (data && data.path) {
       document.getElementById('workspaceRoot').value = data.path;
