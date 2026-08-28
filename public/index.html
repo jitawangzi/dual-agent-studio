@@ -10,6 +10,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="dark-theme">
+  <div id="toastContainer" class="toast-container"></div>
+
   <div id="app" class="app-layout">
     <!-- TOP HEADER -->
     <header class="app-header">
@@ -104,6 +106,10 @@
             <div class="form-group flex-1">
               <label for="maxRounds">执行最大轮次 (Max Rounds)</label>
               <input type="number" id="maxRounds" min="1" max="10" value="4">
+            </div>
+            <div class="form-group flex-1">
+              <label for="maxSelfHealAttempts">自愈重试上限 (Max Self-Heal)</label>
+              <input type="number" id="maxSelfHealAttempts" min="1" max="10" value="3">
             </div>
           </div>
         </div>

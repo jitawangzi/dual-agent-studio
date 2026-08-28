@@ -65,6 +65,9 @@ if (-not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
 }
 $wsPhysical = [System.IO.Path]::GetFullPath($WorkspaceRoot)
 
+# Load Core Modular Orchestration Library
+. (Join-Path $PSScriptRoot "orchestrator-lib.ps1")
+
 # Resolve Feature Name
 $effectiveFeature = if (-not [string]::IsNullOrWhiteSpace($Feature)) {
     $Feature
@@ -99,425 +102,6 @@ foreach ($cand in $candidateScripts) {
     if (Test-Path -LiteralPath $cand -PathType Leaf) {
         $targetMailboxScript = $cand
         break
-    }
-}
-
-function Write-MailboxState {
-    param([object]$StateObj)
-    $parent = Split-Path -Parent $effectiveMailboxPath
-    if (-not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-    $json = $StateObj | ConvertTo-Json -Depth 100
-    $tmp = $effectiveMailboxPath + ".tmp_" + [guid]::NewGuid().ToString("N")
-    [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::Move($tmp, $effectiveMailboxPath, $true)
-}
-
-function Read-MailboxState {
-    if (-not (Test-Path -LiteralPath $effectiveMailboxPath)) { return $null }
-    $raw = [System.IO.File]::ReadAllText($effectiveMailboxPath, [System.Text.Encoding]::UTF8)
-    return ($raw | ConvertFrom-Json -Depth 100)
-}
-
-function Format-CopilotReasoningEffort([string]$effort) {
-    if ([string]::IsNullOrWhiteSpace($effort)) { return $null }
-    $lower = $effort.Trim().ToLowerInvariant()
-    switch ($lower) {
-        { $_ -in @("none", "off", "disable", "disabled", "false") } { return "none" }
-        { $_ -in @("minimal", "min") } { return "minimal" }
-        { $_ -in @("low", "fast", "2048", "4096") } { return "low" }
-        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
-        { $_ -in @("high", "think", "deepthink", "24576", "32768") } { return "high" }
-        { $_ -in @("xhigh", "extra-high") } { return "xhigh" }
-        { $_ -in @("max", "64000", "65536") } { return "max" }
-        default {
-            if ($lower -in @("none", "minimal", "low", "medium", "high", "xhigh", "max")) {
-                return $lower
-            }
-            return "high"
-        }
-    }
-}
-
-function Format-AgyReasoningEffort([string]$effort) {
-    if ([string]::IsNullOrWhiteSpace($effort)) { return "" }
-    $lower = $effort.Trim().ToLowerInvariant()
-    switch ($lower) {
-        { $_ -in @("none", "off", "disable", "disabled", "false", "0") } { return "" }
-        { $_ -in @("low", "minimal", "min", "fast", "2048", "4096") } { return "low" }
-        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
-        { $_ -in @("high", "max", "xhigh", "think", "deepthink", "24576", "32768", "64000", "65536") } { return "high" }
-        default {
-            if ($lower -in @("low", "medium", "high")) { return $lower }
-            return "high"
-        }
-    }
-}
-
-function Invoke-DevTurn {
-    param(
-        [string]$Provider,
-        [string]$Prompt,
-        [int]$Round,
-        [string]$SessionId,
-        [string]$Model,
-        [string]$ReasoningEffort,
-        [scriptblock]$CustomHook
-    )
-
-    Write-Host "`n🛠️ [Round $Round] Waking Developer Agent (Provider: $Provider)..." -ForegroundColor Yellow
-
-    if ($null -ne $CustomHook) {
-        & $CustomHook -Prompt $Prompt -Round $Round -Model $Model -ReasoningEffort $ReasoningEffort
-        return
-    }
-
-    Push-Location $wsPhysical
-    try {
-        switch ($Provider.ToLowerInvariant()) {
-            "claude" {
-                Write-Host "Running Claude Code CLI in $wsPhysical..." -ForegroundColor Gray
-                $claudeCmd = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if (-not $claudeCmd) {
-                    throw "PROVIDER_UNAVAILABLE: Claude Code CLI ('claude') is not found in PATH."
-                }
-                $claudeArgs = @("-p", "$Prompt")
-                if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                    $claudeArgs += @("--model", $Model)
-                }
-                if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
-                    $env:MAX_THINKING_TOKENS = switch ($ReasoningEffort.ToLowerInvariant()) {
-                        "high" { "16384" }
-                        "max" { "64000" }
-                        "medium" { "8192" }
-                        "low" { "2048" }
-                        "off" { "0" }
-                        default { $ReasoningEffort }
-                    }
-                }
-                & $claudeCmd.Source @claudeArgs
-                if ($LASTEXITCODE -ne 0) {
-                    throw "DEV_AGENT_EXECUTION_FAILED: Claude Code CLI exited with error code $LASTEXITCODE. Please check terminal output above."
-                }
-            }
-            "copilot" {
-                Write-Host "Running GitHub Copilot CLI in $wsPhysical..." -ForegroundColor Gray
-                $copilotCmd = Get-Command "copilot", "copilot.cmd", "copilot.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($copilotCmd) {
-                    $argsList = @("--allow-all")
-                    if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
-                        $argsList += "--session-id=$SessionId"
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                        $argsList += @("--model", $Model)
-                    }
-                    $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
-                    if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") {
-                        $argsList += @("--reasoning-effort", $copilotEffort)
-                    }
-                    $Prompt | & $copilotCmd.Source @argsList
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "DEV_AGENT_EXECUTION_FAILED: GitHub Copilot CLI exited with error code $LASTEXITCODE. Please check terminal output above."
-                    }
-                } else {
-                    throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI ('copilot') is not found in PATH."
-                }
-            }
-            "aider" {
-                Write-Host "Running Aider CLI in $wsPhysical..." -ForegroundColor Gray
-                $aiderCmd = Get-Command "aider", "aider.cmd", "aider.ps1", "aider.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if (-not $aiderCmd) {
-                    throw "PROVIDER_UNAVAILABLE: Aider CLI ('aider') is not found in PATH."
-                }
-                $aiderArgs = @("--message", "$Prompt", "--yes-always")
-                if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                    $aiderArgs += @("--model", $Model)
-                }
-                & $aiderCmd.Source @aiderArgs
-                if ($LASTEXITCODE -ne 0) {
-                    throw "DEV_AGENT_EXECUTION_FAILED: Aider CLI exited with error code $LASTEXITCODE."
-                }
-            }
-            "cursor" {
-                Write-Host "Running Cursor CLI / Composer in $wsPhysical..." -ForegroundColor Gray
-                $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($cursorCmd) {
-                    & $cursorCmd.Source @("-p", "$Prompt")
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "DEV_AGENT_EXECUTION_FAILED: Cursor CLI exited with error code $LASTEXITCODE."
-                    }
-                } else {
-                    Write-Host "[CURSOR] Dispatched instruction to Cursor editor: $Prompt" -ForegroundColor Gray
-                }
-            }
-            "codex" {
-                Write-Host "Running OpenAI Codex CLI in $wsPhysical..." -ForegroundColor Gray
-                $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($codexCmd) {
-                    & $codexCmd.Source @("-p", "$Prompt")
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "DEV_AGENT_EXECUTION_FAILED: Codex CLI exited with error code $LASTEXITCODE."
-                    }
-                } else {
-                    Write-Host "[CODEX] Executing prompt: $Prompt" -ForegroundColor Gray
-                }
-            }
-            "pi" {
-                Write-Host "Running Pi Agent in $wsPhysical..." -ForegroundColor Gray
-                Write-Host "[PI AGENT] Executing prompt: $Prompt" -ForegroundColor Gray
-            }
-            "antigravity" {
-                Write-Host "Running Antigravity (AGY) Dev Agent in $wsPhysical..." -ForegroundColor Gray
-                $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($agyCmd) {
-                    $agyArgs = @("--dangerously-skip-permissions")
-                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                        $agyArgs += @("--model", $Model)
-                    }
-                    $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-                    if (-not [string]::IsNullOrWhiteSpace($agyEffort)) {
-                        $agyArgs += @("--effort", $agyEffort)
-                    }
-                    $agyArgs += @("--print", "$Prompt")
-                    & $agyCmd.Source @agyArgs
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with error code $LASTEXITCODE. Please check terminal output above."
-                    }
-                } else {
-                    Write-Host "Antigravity Dev Agent execution active with prompt: $Prompt" -ForegroundColor Gray
-                }
-            }
-            "mock" {
-                Write-Host "[MOCK DEV] Simulating code changes in $wsPhysical for prompt: $Prompt" -ForegroundColor Gray
-            }
-            default {
-                throw "Unsupported DevProvider '$Provider'."
-            }
-        }
-    } finally {
-        Pop-Location
-    }
-}
-
-function Extract-JsonFromText {
-    param([string]$Text)
-    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
-
-    # 1. Try markdown code block extraction ```json ... ```
-    if ($Text -match '(?ms)```(?:json)?\s*(\{\s*".*?"\s*:.*?\})\s*```') {
-        try {
-            $parsed = $Matches[1] | ConvertFrom-Json
-            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-                return $parsed
-            }
-        } catch {}
-    }
-
-    # 2. Try outer { ... } extraction
-    if ($Text -match '(?ms)(\{.*\})') {
-        try {
-            $parsed = $Matches[1] | ConvertFrom-Json
-            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-                return $parsed
-            }
-        } catch {}
-    }
-
-    # 3. Direct JSON parse
-    try {
-        $parsed = $Text | ConvertFrom-Json
-        if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-            return $parsed
-        }
-    } catch {}
-
-    return $null
-}
-
-function Invoke-ReviewerTurn {
-    param(
-        [string]$Provider,
-        [string]$OriginalTask,
-        [string]$GitDiff,
-        [int]$Round,
-        [string]$SessionId,
-        [string]$Model,
-        [string]$ReasoningEffort,
-        [scriptblock]$CustomHook
-    )
-
-    Write-Host "`n🔍 [Round $Round] Waking Reviewer Agent (Provider: $Provider)..." -ForegroundColor Magenta
-
-    if ($null -ne $CustomHook) {
-        $result = & $CustomHook -OriginalTask $OriginalTask -GitDiff $GitDiff -Round $Round -Model $Model -ReasoningEffort $ReasoningEffort
-        return $result
-    }
-
-    $systemInstruction = @"
-You are an independent Senior Software Architect and Security/Logic Auditor.
-Workspace: $wsPhysical
-Original Task: $OriginalTask
-Current Git Diff of changes:
-$GitDiff
-
-Analyze the code changes critically for boundary errors, concurrency risks, resource leaks, or specification mismatches.
-You MUST output a valid JSON object matching this structure (no markdown fences, just JSON):
-{
-  "verdict": "APPROVED" or "REJECTED",
-  "highestSeverity": "NONE"|"LOW"|"MEDIUM"|"HIGH"|"CRITICAL",
-  "summary": "Concise review summary",
-  "issues": [
-    {
-      "file": "path/to/file",
-      "lineRange": "10-20",
-      "severity": "HIGH",
-      "problem": "Specific defect description",
-      "fixSuggestion": "Concrete fix instructions"
-    }
-  ],
-  "nextPromptForDev": "Clear instructions for the developer on what to fix"
-}
-"@
-
-    Push-Location $wsPhysical
-    try {
-        switch ($Provider.ToLowerInvariant()) {
-            "mock" {
-                Write-Host "[MOCK REVIEWER] Producing simulated APPROVED verdict." -ForegroundColor Gray
-                return [ordered]@{
-                    verdict = "APPROVED"
-                    highestSeverity = "NONE"
-                    summary = "[Mock] Code looks robust and clean."
-                    issues = @()
-                    nextPromptForDev = ""
-                }
-            }
-            "copilot" {
-                $copilotCmd = Get-Command "copilot", "copilot.cmd", "copilot.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if (-not $copilotCmd) {
-                    throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI ('copilot') is not found in PATH."
-                }
-                $argsList = @("-s", "--allow-all")
-                if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
-                    $argsList += "--session-id=$SessionId"
-                }
-                if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                    $argsList += @("--model", $Model)
-                }
-                $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
-                if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") {
-                    $argsList += @("--reasoning-effort", $copilotEffort)
-                }
-                $res = $systemInstruction | & $copilotCmd.Source @argsList 2>&1 | Out-String
-                $copilotExit = $LASTEXITCODE
-                $jsonObj = Extract-JsonFromText -Text $res
-                if ($null -ne $jsonObj) {
-                    return $jsonObj
-                }
-                if ($copilotExit -ne 0) {
-                    throw "REVIEWER_EXECUTION_FAILED: GitHub Copilot CLI failed with exit code $($copilotExit): $res"
-                }
-                throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $res"
-            }
-            { $_ -in @("claude", "claude_code") } {
-                $claudeExe = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($claudeExe) {
-                    $claudeArgs = @("-p", $systemInstruction)
-                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                        $claudeArgs += @("--model", $Model)
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
-                        $env:MAX_THINKING_TOKENS = switch ($ReasoningEffort.ToLowerInvariant()) {
-                            "high" { "16384" }
-                            "max" { "64000" }
-                            "medium" { "8192" }
-                            "low" { "2048" }
-                            "off" { "0" }
-                            default { $ReasoningEffort }
-                        }
-                    }
-                    $res = & $claudeExe.Source @claudeArgs 2>&1 | Out-String
-                    $claudeExit = $LASTEXITCODE
-                    $jsonObj = Extract-JsonFromText -Text $res
-                    if ($null -ne $jsonObj) {
-                        return $jsonObj
-                    }
-                    if ($claudeExit -ne 0) {
-                        throw "REVIEWER_EXECUTION_FAILED: Claude CLI failed with exit code $($claudeExit): $res"
-                    }
-                    throw "PROVIDER_OUTPUT_INVALID: Claude CLI returned non-JSON review output: $res"
-                }
-                throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH."
-            }
-            "antigravity" {
-                Write-Host "Antigravity Reviewer Agent assessing code changes in $wsPhysical..." -ForegroundColor Gray
-                $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($agyCmd) {
-                    $agyArgs = @("--dangerously-skip-permissions")
-                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
-                        $agyArgs += @("--model", $Model)
-                    }
-                    $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-                    if (-not [string]::IsNullOrWhiteSpace($agyEffort)) {
-                        $agyArgs += @("--effort", $agyEffort)
-                    }
-                    $agyArgs += @("--print", "$systemInstruction")
-                    $res = & $agyCmd.Source @agyArgs 2>&1 | Out-String
-                    $agyExit = $LASTEXITCODE
-                    $jsonObj = Extract-JsonFromText -Text $res
-                    if ($null -ne $jsonObj) {
-                        return $jsonObj
-                    }
-                    if ($agyExit -ne 0) {
-                        throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($agyExit): $res"
-                    }
-                    throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $res"
-                }
-                return [ordered]@{
-                    verdict = "APPROVED"
-                    highestSeverity = "NONE"
-                    summary = "[Antigravity] Review passed with full test gates verified."
-                    issues = @()
-                    nextPromptForDev = ""
-                }
-            }
-            "cursor" {
-                Write-Host "Cursor Reviewer assessing diff in $wsPhysical..." -ForegroundColor Gray
-                return [ordered]@{
-                    verdict = "APPROVED"
-                    highestSeverity = "NONE"
-                    summary = "[Cursor] Code conforms to project conventions."
-                    issues = @()
-                    nextPromptForDev = ""
-                }
-            }
-            "codex" {
-                Write-Host "Codex Reviewer evaluating logic..." -ForegroundColor Gray
-                return [ordered]@{
-                    verdict = "APPROVED"
-                    highestSeverity = "NONE"
-                    summary = "[Codex] Evaluated logic cleanly."
-                    issues = @()
-                    nextPromptForDev = ""
-                }
-            }
-            "pi" {
-                Write-Host "Pi Reviewer analyzing code..." -ForegroundColor Gray
-                return [ordered]@{
-                    verdict = "APPROVED"
-                    highestSeverity = "NONE"
-                    summary = "[Pi] Review completed."
-                    issues = @()
-                    nextPromptForDev = ""
-                }
-            }
-            default {
-                throw "UNSUPPORTED_PROVIDER: Provider '$Provider' is not configured for automatic review execution. Provide -ReviewerCustomHook or use -Provider 'mock'."
-            }
-        }
-    } finally {
-        Pop-Location
     }
 }
 
@@ -568,6 +152,7 @@ Write-Host " Dev Session ID: $effectiveDevSessionId" -ForegroundColor White
 Write-Host " Review Agent  : $ReviewProvider ($mappedRev) $(if ($ReviewModel) { "[Model: $ReviewModel, Effort: $ReviewReasoningEffort]" })" -ForegroundColor White
 Write-Host " Review Session: $effectiveReviewSessionId" -ForegroundColor White
 Write-Host " Max Rounds    : $MaxRounds" -ForegroundColor White
+Write-Host " Max Self-Heal : $MaxSelfHealAttempts" -ForegroundColor White
 Write-Host " Verify Command: $VerifyCommand" -ForegroundColor White
 Write-Host " Mailbox File  : $effectiveMailboxPath" -ForegroundColor White
 Write-Host "================================================================================" -ForegroundColor Cyan
@@ -581,12 +166,12 @@ if ($targetMailboxScript) {
         -MaxRounds $MaxRounds `
         -MailboxPath $effectiveMailboxPath `
         -ProjectRoot $wsPhysical | Out-Null
-    $mbInit = Read-MailboxState
+    $mbInit = Read-MailboxState -MailboxPath $effectiveMailboxPath
     if ($null -ne $mbInit) {
         $mbInit | Add-Member -NotePropertyName "devSessionId" -NotePropertyValue $effectiveDevSessionId -Force
         $mbInit | Add-Member -NotePropertyName "reviewSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
         $mbInit | Add-Member -NotePropertyName "reviewerSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
-        Write-MailboxState -StateObj $mbInit
+        Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mbInit
     }
 } else {
     $initObj = [ordered]@{
@@ -606,7 +191,7 @@ if ($targetMailboxScript) {
         currentReviewVerdict = $null
         history = @()
     }
-    Write-MailboxState -StateObj $initObj
+    Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $initObj
 }
 
 $currentPrompt = $TaskPrompt
@@ -614,7 +199,7 @@ $selfHealAttempts = 0
 
 try {
     while ($true) {
-        $mailbox = Read-MailboxState
+        $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
         if ($null -eq $mailbox) {
             throw "MAILBOX_READ_FAILED: Cannot read mailbox state at $effectiveMailboxPath"
         }
@@ -623,7 +208,7 @@ try {
         Write-Host "`n====================== [ ROUND $round / $MaxRounds - DEV PHASE ] ======================" -ForegroundColor Yellow
 
         # Phase 1: Dev Turn
-        Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $effectiveDevSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook
+        Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $effectiveDevSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook -WorkspaceRoot $wsPhysical
 
         # Phase 2: Dev Submit & Test Gate Verification
         Write-Host "`n⚙️ Running test gate in $($wsPhysical): $VerifyCommand..." -ForegroundColor Gray
@@ -658,7 +243,7 @@ try {
             }
             & $targetMailboxScript @devSubmitParams | Out-Null
         } else {
-            $mailbox = Read-MailboxState
+            $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
             $mailbox.status = if ($testStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }
             $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
             $mailbox.currentDevSubmission = [ordered]@{
@@ -669,11 +254,11 @@ try {
                 testOutput = $testOut
                 gitDiffDigest = ""
             }
-            Write-MailboxState -StateObj $mailbox
+            Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mailbox
         }
 
         # Re-read mailbox after DevSubmit
-        $mailbox = Read-MailboxState
+        $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
 
         if ($mailbox.currentDevSubmission.testGateStatus -ne "PASS") {
             $selfHealAttempts++
@@ -681,7 +266,9 @@ try {
                 throw "TEST_GATE_SELF_HEAL_EXCEEDED: Test verification failed $selfHealAttempts consecutive attempts in round $round. Halting loop to prevent infinite retry."
             }
             Write-Host "❌ Test Gate Verification did not pass (status: $($mailbox.currentDevSubmission.testGateStatus), attempt $selfHealAttempts/$MaxSelfHealAttempts). Self-healing triggered..." -ForegroundColor Red
-            $currentPrompt = "Your recent changes did not pass automated verification (status: $($mailbox.currentDevSubmission.testGateStatus)). Please inspect the test error output below and fix the implementation:`n`n" + $mailbox.currentDevSubmission.testOutput
+            
+            $failureSummary = Extract-TestFailureSummary -TestOutput $mailbox.currentDevSubmission.testOutput -MaxChars 8192
+            $currentPrompt = "Your recent changes did not pass automated verification (status: $($mailbox.currentDevSubmission.testGateStatus)). Please inspect the test error output below and fix the implementation:`n`n" + $failureSummary
             continue
         }
 
@@ -691,46 +278,7 @@ try {
         # Phase 3: Reviewer Turn
         Write-Host "`n====================== [ ROUND $round / $MaxRounds - REVIEW PHASE ] ======================" -ForegroundColor Magenta
         
-        $gitDiff = ""
-        Push-Location $wsPhysical
-        try {
-            $diffStr = git diff HEAD 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0) {
-                $untrackedStat = git status --porcelain -uall 2>&1
-                if ($untrackedStat) {
-                    $untrackedDiffs = [System.Collections.Generic.List[string]]::new()
-                    $ignorePatterns = @('.git/', 'node_modules/', '.tmp_', '.lock', 'review-mailbox.json', 'projects.json', 'package-lock.json')
-                    foreach ($uLine in ($untrackedStat | Out-String -Stream)) {
-                        if ($uLine.Trim() -match '^\?\?\s+(.*)$') {
-                            $uPath = $Matches[1].Trim()
-                            $normalizedUPath = $uPath.Replace('\', '/')
-                            $isIgnored = $false
-                            foreach ($p in $ignorePatterns) {
-                                if ($normalizedUPath.Contains($p)) {
-                                    $isIgnored = $true
-                                    break
-                                }
-                            }
-                            if (-not $isIgnored -and (Test-Path -LiteralPath $uPath -PathType Leaf)) {
-                                $fileItem = Get-Item -LiteralPath $uPath
-                                if ($fileItem.Length -le 2097152) { # Max 2MB per untracked file to prevent memory choke
-                                    try {
-                                        $content = [System.IO.File]::ReadAllText($uPath, [System.Text.Encoding]::UTF8)
-                                        $untrackedDiffs.Add("=== Untracked File: $uPath ===`n$content")
-                                    } catch {}
-                                }
-                            }
-                        }
-                    }
-                    if ($untrackedDiffs.Count -gt 0) {
-                        $diffStr += "`n`n" + ($untrackedDiffs -join "`n`n")
-                    }
-                }
-                $gitDiff = $diffStr
-            }
-        } catch {} finally {
-            Pop-Location
-        }
+        $gitDiff = Get-SafeWorkspaceDiff -WorkspacePath $wsPhysical -MaxTotalChars 64000 -MaxFileBytes 262144
 
         $reviewResult = Invoke-ReviewerTurn `
             -Provider $ReviewProvider `
@@ -740,7 +288,8 @@ try {
             -SessionId $effectiveReviewSessionId `
             -Model $ReviewModel `
             -ReasoningEffort $ReviewReasoningEffort `
-            -CustomHook $ReviewerCustomHook
+            -CustomHook $ReviewerCustomHook `
+            -WorkspaceRoot $wsPhysical
 
         # Submit Review Verdict
         $issuesJsonStr = if ($reviewResult.issues) {
@@ -765,7 +314,7 @@ try {
             }
             & $targetMailboxScript @reviewSubmitParams | Out-Null
         } else {
-            $mailbox = Read-MailboxState
+            $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
             $verdict = [string]$reviewResult.verdict
             $isApproved = ($verdict -eq "APPROVED")
             $isMax = ($round -ge $MaxRounds)
@@ -802,11 +351,11 @@ try {
                 $mailbox.currentDevSubmission = $null
                 $mailbox.currentReviewVerdict = $null
             }
-            Write-MailboxState -StateObj $mailbox
+            Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mailbox
         }
 
         # Check terminal conditions
-        $mailbox = Read-MailboxState
+        $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
 
         if ($mailbox.status -eq "APPROVED") {
             Write-Host "`n================================================================================" -ForegroundColor Green
@@ -861,12 +410,12 @@ try {
     Write-Host "================================================================================" -ForegroundColor Red
     
     try {
-        $mailbox = Read-MailboxState
+        $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
         if ($null -ne $mailbox) {
             $mailbox | Add-Member -NotePropertyName "status" -NotePropertyValue "FAILED" -Force
             $mailbox | Add-Member -NotePropertyName "error" -NotePropertyValue "$errMessage" -Force
             $mailbox | Add-Member -NotePropertyName "updatedAt" -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString("o")) -Force
-            Write-MailboxState -StateObj $mailbox
+            Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mailbox
         }
     } catch {}
 

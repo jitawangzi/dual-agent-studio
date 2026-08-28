@@ -11,6 +11,37 @@ let explorerSelectedPath = '';
 
 const PREF_KEY = 'dual_agent_studio_prefs';
 
+// --- LIGHTWEIGHT TOAST NOTIFICATION SYSTEM ---
+function showToast(message, type = 'info', duration = 3500) {
+  const container = document.getElementById('toastContainer') || document.body;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+
+  const iconMap = {
+    success: '✅',
+    error: '❌',
+    warning: '⚠️',
+    info: 'ℹ️'
+  };
+  const icon = iconMap[type] || 'ℹ️';
+
+  toast.innerHTML = `<span style="font-size: 16px;">${icon}</span><span>${escapeHtml(String(message))}</span>`;
+  
+  toast.onclick = () => {
+    toast.classList.add('toast-hiding');
+    setTimeout(() => toast.remove(), 250);
+  };
+
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    if (toast.parentElement) {
+      toast.classList.add('toast-hiding');
+      setTimeout(() => toast.remove(), 250);
+    }
+  }, duration);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadModelsConfig();
   loadUserPreferences();
@@ -36,24 +67,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 function saveUserPreferences() {
   try {
     const prefs = {
-      workspaceRoot: document.getElementById('workspaceRoot')?.value,
-      featureName: document.getElementById('featureName')?.value,
-      maxRounds: document.getElementById('maxRounds')?.value,
-      maxSelfHealAttempts: document.getElementById('maxSelfHealAttempts')?.value,
-      autoCommit: document.getElementById('autoCommit')?.checked,
-      verifyCommand: document.getElementById('verifyCommand')?.value,
-      devProvider: document.getElementById('devProvider')?.value,
-      devSeries: document.getElementById('devSeries')?.value,
-      devModel: document.getElementById('devModel')?.value,
-      devModelCustom: document.getElementById('devModelCustom')?.value,
-      devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
-      reviewProvider: document.getElementById('reviewProvider')?.value,
-      reviewSeries: document.getElementById('reviewSeries')?.value,
-      reviewModel: document.getElementById('reviewModel')?.value,
-      reviewModelCustom: document.getElementById('reviewModelCustom')?.value,
-      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
-      vaguePrompt: document.getElementById('vaguePrompt')?.value,
-      taskPrompt: document.getElementById('taskPrompt')?.value
+      workspaceRoot: document.getElementById('workspaceRoot')?.value || '',
+      featureName: document.getElementById('featureName')?.value || '',
+      maxRounds: document.getElementById('maxRounds')?.value || '4',
+      maxSelfHealAttempts: document.getElementById('maxSelfHealAttempts')?.value || '3',
+      autoCommit: document.getElementById('autoCommit')?.checked ?? true,
+      verifyCommand: document.getElementById('verifyCommand')?.value || '',
+      devProvider: document.getElementById('devProvider')?.value || 'claude',
+      devSeries: document.getElementById('devSeries')?.value || '',
+      devModel: document.getElementById('devModel')?.value || '',
+      devModelCustom: document.getElementById('devModelCustom')?.value || '',
+      devReasoningEffort: document.getElementById('devReasoningEffort')?.value || '',
+      reviewProvider: document.getElementById('reviewProvider')?.value || 'copilot',
+      reviewSeries: document.getElementById('reviewSeries')?.value || '',
+      reviewModel: document.getElementById('reviewModel')?.value || '',
+      reviewModelCustom: document.getElementById('reviewModelCustom')?.value || '',
+      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value || '',
+      vaguePrompt: document.getElementById('vaguePrompt')?.value || '',
+      taskPrompt: document.getElementById('taskPrompt')?.value || ''
     };
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
   } catch (e) {
@@ -66,49 +97,58 @@ function loadUserPreferences() {
     const raw = localStorage.getItem(PREF_KEY);
     if (!raw) return;
     const p = JSON.parse(raw);
-    if (p.workspaceRoot) document.getElementById('workspaceRoot').value = p.workspaceRoot;
-    if (p.featureName) document.getElementById('featureName').value = p.featureName;
-    if (p.maxRounds) document.getElementById('maxRounds').value = p.maxRounds;
-    if (p.maxSelfHealAttempts) document.getElementById('maxSelfHealAttempts').value = p.maxSelfHealAttempts;
-    if (p.autoCommit !== undefined) document.getElementById('autoCommit').checked = p.autoCommit;
-    if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
-    if (p.vaguePrompt) document.getElementById('vaguePrompt').value = p.vaguePrompt;
-    if (p.taskPrompt) document.getElementById('taskPrompt').value = p.taskPrompt;
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.value = val;
+    };
+    const setChecked = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.checked = !!val;
+    };
 
-    if (p.devProvider) {
+    setVal('workspaceRoot', p.workspaceRoot);
+    setVal('featureName', p.featureName);
+    setVal('maxRounds', p.maxRounds);
+    setVal('maxSelfHealAttempts', p.maxSelfHealAttempts);
+    setChecked('autoCommit', p.autoCommit);
+    setVal('verifyCommand', p.verifyCommand);
+    setVal('vaguePrompt', p.vaguePrompt);
+    setVal('taskPrompt', p.taskPrompt);
+
+    if (p.devProvider && document.getElementById('devProvider')) {
       document.getElementById('devProvider').value = p.devProvider;
       onDevEngineChange();
-      if (p.devSeries) {
+      if (p.devSeries && document.getElementById('devSeries')) {
         document.getElementById('devSeries').value = p.devSeries;
         onDevSeriesChange();
-        if (p.devModel) {
+        if (p.devModel && document.getElementById('devModel')) {
           document.getElementById('devModel').value = p.devModel;
           onDevModelChange();
         }
       }
-      if (p.devModelCustom) {
+      if (p.devModelCustom && document.getElementById('devModelCustom')) {
         document.getElementById('devModelCustom').value = p.devModelCustom;
       }
-      if (p.devReasoningEffort) {
+      if (p.devReasoningEffort && document.getElementById('devReasoningEffort')) {
         document.getElementById('devReasoningEffort').value = p.devReasoningEffort;
       }
     }
 
-    if (p.reviewProvider) {
+    if (p.reviewProvider && document.getElementById('reviewProvider')) {
       document.getElementById('reviewProvider').value = p.reviewProvider;
       onReviewEngineChange();
-      if (p.reviewSeries) {
+      if (p.reviewSeries && document.getElementById('reviewSeries')) {
         document.getElementById('reviewSeries').value = p.reviewSeries;
         onReviewSeriesChange();
-        if (p.reviewModel) {
+        if (p.reviewModel && document.getElementById('reviewModel')) {
           document.getElementById('reviewModel').value = p.reviewModel;
           onReviewModelChange();
         }
       }
-      if (p.reviewModelCustom) {
+      if (p.reviewModelCustom && document.getElementById('reviewModelCustom')) {
         document.getElementById('reviewModelCustom').value = p.reviewModelCustom;
       }
-      if (p.reviewReasoningEffort) {
+      if (p.reviewReasoningEffort && document.getElementById('reviewReasoningEffort')) {
         document.getElementById('reviewReasoningEffort').value = p.reviewReasoningEffort;
       }
     }
@@ -177,18 +217,18 @@ function toggleReqMode(mode) {
   const directBox = document.getElementById('directReqBox');
   const discussBox = document.getElementById('discussReqBox');
   if (mode === 'direct') {
-    directBox.style.display = 'block';
-    discussBox.style.display = 'none';
+    if (directBox) directBox.style.display = 'block';
+    if (discussBox) discussBox.style.display = 'none';
   } else {
-    directBox.style.display = 'none';
-    discussBox.style.display = 'block';
+    if (directBox) directBox.style.display = 'none';
+    if (discussBox) discussBox.style.display = 'block';
   }
   saveUserPreferences();
 }
 
 // --- NATIVE FOLDER PICKER & EXPLORER DIALOG ---
-async function openFolderPicker() {
-  const currentVal = document.getElementById('workspaceRoot').value.trim();
+async function openFolderPickerModal() {
+  const currentVal = document.getElementById('workspaceRoot')?.value?.trim() || '';
   try {
     const res = await fetch('/api/browse-folder', {
       method: 'POST',
@@ -206,18 +246,40 @@ async function openFolderPicker() {
   }
 }
 
+function closeFolderPickerModal() {
+  const modal = document.getElementById('folderModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function navigateUpFolder() {
+  if (explorerParentPath) {
+    fetchDirectory(explorerParentPath);
+  }
+}
+
+function confirmSelectedFolder() {
+  const selected = explorerSelectedPath || explorerCurrentPath;
+  if (selected) {
+    closeFolderPickerModal();
+    setWorkspace(selected, true);
+  }
+}
+
+// Legacy aliases for backward compatibility
+function openFolderPicker() { return openFolderPickerModal(); }
 function openFolderModal(startPath) {
-  document.getElementById('folderModal').style.display = 'flex';
+  const modal = document.getElementById('folderModal');
+  if (modal) modal.style.display = 'flex';
   loadDrives();
   fetchDirectory(startPath || '');
 }
-
-function closeFolderModal() {
-  document.getElementById('folderModal').style.display = 'none';
-}
+function closeFolderModal() { return closeFolderPickerModal(); }
+function navigateParentFolder() { return navigateUpFolder(); }
+function confirmFolderSelection() { return confirmSelectedFolder(); }
 
 async function loadDrives() {
   const drivesContainer = document.getElementById('quickDrives');
+  if (!drivesContainer) return;
   drivesContainer.innerHTML = '';
   try {
     const res = await fetch('/api/list-dirs');
@@ -240,6 +302,7 @@ async function fetchDirectory(targetPath) {
   const listEl = document.getElementById('folderList');
   const pathDisplay = document.getElementById('folderCurrentPath');
   const btnUp = document.getElementById('btnNavUp');
+  if (!listEl || !pathDisplay) return;
 
   listEl.innerHTML = '<div class="folder-loading">正在读取目录...</div>';
   pathDisplay.textContent = targetPath || '根目录';
@@ -258,7 +321,7 @@ async function fetchDirectory(targetPath) {
     explorerParentPath = data.parentPath;
     explorerSelectedPath = explorerCurrentPath;
     pathDisplay.textContent = explorerCurrentPath;
-    btnUp.disabled = !explorerParentPath;
+    if (btnUp) btnUp.disabled = !explorerParentPath;
 
     listEl.innerHTML = '';
     if (!data.dirs || data.dirs.length === 0) {
@@ -289,20 +352,6 @@ async function fetchDirectory(targetPath) {
   }
 }
 
-function navigateParentFolder() {
-  if (explorerParentPath) {
-    fetchDirectory(explorerParentPath);
-  }
-}
-
-function confirmFolderSelection() {
-  const target = explorerSelectedPath || explorerCurrentPath;
-  if (target) {
-    setWorkspace(target, true);
-    closeFolderModal();
-  }
-}
-
 // --- AUTO DETECT WORKSPACE TEST COMMAND ---
 async function autoDetectWorkspace(wsPath) {
   if (!wsPath) return;
@@ -313,11 +362,11 @@ async function autoDetectWorkspace(wsPath) {
       body: JSON.stringify({ workspaceRoot: wsPath })
     });
     const data = await res.json();
-    if (data.recommendedCommand) {
+    const recommended = data.verifyCommand || data.recommendedCommand;
+    if (recommended) {
       const cmdInput = document.getElementById('verifyCommand');
-      // If user hasn't modified verify command or it's default exit 0, apply recommended
-      if (!cmdInput.value || cmdInput.value === 'exit 0' || cmdInput.value.includes('gradlew') || cmdInput.value.includes('mvn') || cmdInput.value.includes('npm')) {
-        cmdInput.value = data.recommendedCommand;
+      if (cmdInput && (!cmdInput.value || cmdInput.value === 'exit 0' || cmdInput.value.includes('gradlew') || cmdInput.value.includes('mvn') || cmdInput.value.includes('npm') || cmdInput.value.includes('pwsh'))) {
+        cmdInput.value = recommended;
       }
     }
   } catch (e) {
@@ -370,14 +419,6 @@ function updateRecentBadgesHighlight(wsPath) {
       badge.classList.remove('active');
     }
   });
-}
-
-function confirmSelectedFolder() {
-  const selected = explorerSelectedPath || explorerCurrentPath;
-  if (selected) {
-    closeFolderPickerModal();
-    setWorkspace(selected, true);
-  }
 }
 
 // --- RECENT PROJECTS ---
@@ -440,8 +481,10 @@ function getSeriesForEngine(engine) {
 }
 
 function onDevEngineChange() {
-  const engine = document.getElementById('devProvider').value;
+  const engineEl = document.getElementById('devProvider');
   const devSeries = document.getElementById('devSeries');
+  if (!engineEl || !devSeries) return;
+  const engine = engineEl.value;
   const allowedSeries = getSeriesForEngine(engine);
 
   devSeries.innerHTML = '';
@@ -459,9 +502,11 @@ function onDevEngineChange() {
 }
 
 function onDevSeriesChange() {
-  const seriesId = document.getElementById('devSeries').value;
-  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const seriesEl = document.getElementById('devSeries');
   const devModel = document.getElementById('devModel');
+  if (!seriesEl || !devModel) return;
+  const seriesId = seriesEl.value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   devModel.innerHTML = '';
 
   if (series && series.models) {
@@ -476,14 +521,12 @@ function onDevSeriesChange() {
 }
 
 function getEffortsForEngineAndModel(engine, model) {
-  // If model explicitly defines effortType as none, or has no reasoning support
   if (model && model.effortType === 'none') {
     return [
       { value: 'none', label: 'N/A (非思考模型，直接输出)', default: true }
     ];
   }
 
-  // If engine is copilot CLI, it strictly requires copilot effort levels
   if (engine === 'copilot') {
     return [
       { value: 'high', label: 'High (深度推理 / 严密代码审查 - 推荐)', default: true },
@@ -495,7 +538,6 @@ function getEffortsForEngineAndModel(engine, model) {
     ];
   }
 
-  // If engine is claude code CLI, it uses thinking tokens or token budget
   if (engine === 'claude' || engine === 'claude_code') {
     return [
       { value: '16384', label: 'High (16,384 Thinking Tokens - 推荐)', default: true },
@@ -506,7 +548,6 @@ function getEffortsForEngineAndModel(engine, model) {
     ];
   }
 
-  // If engine is Antigravity / AGY CLI, it accepts low | medium | high
   if (engine === 'antigravity' || engine === 'agy') {
     return [
       { value: 'high', label: 'High (深度推理 / 复杂架构规划 - 推荐)', default: true },
@@ -516,7 +557,6 @@ function getEffortsForEngineAndModel(engine, model) {
     ];
   }
 
-  // For other engines / models, use model's defined efforts if present
   if (model && model.efforts && model.efforts.length > 0) {
     return model.efforts.map(eff => ({
       value: eff.value || eff.id,
@@ -525,7 +565,6 @@ function getEffortsForEngineAndModel(engine, model) {
     }));
   }
 
-  // Standard fallback
   return [
     { value: 'high', label: 'High (深度推理 - 推荐)', default: true },
     { value: 'medium', label: 'Medium (均衡推理)', default: false },
@@ -535,19 +574,19 @@ function getEffortsForEngineAndModel(engine, model) {
 }
 
 function onDevModelChange() {
-  const engine = document.getElementById('devProvider').value;
-  const seriesId = document.getElementById('devSeries').value;
-  const modelId = document.getElementById('devModel').value;
+  const engine = document.getElementById('devProvider')?.value;
+  const seriesId = document.getElementById('devSeries')?.value;
+  const modelId = document.getElementById('devModel')?.value;
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   const model = series?.models?.find(m => m.id === modelId);
 
-  // Automatically update the manual custom input box
   const customInput = document.getElementById('devModelCustom');
   if (customInput && model) {
     customInput.value = model.id;
   }
 
   const effortSelect = document.getElementById('devReasoningEffort');
+  if (!effortSelect) return;
   effortSelect.innerHTML = '';
 
   const options = getEffortsForEngineAndModel(engine, model);
@@ -563,8 +602,10 @@ function onDevModelChange() {
 }
 
 function onReviewEngineChange() {
-  const engine = document.getElementById('reviewProvider').value;
+  const engineEl = document.getElementById('reviewProvider');
   const reviewSeries = document.getElementById('reviewSeries');
+  if (!engineEl || !reviewSeries) return;
+  const engine = engineEl.value;
   const allowedSeries = getSeriesForEngine(engine);
   reviewSeries.innerHTML = '';
   allowedSeries.forEach(s => {
@@ -581,9 +622,11 @@ function onReviewEngineChange() {
 }
 
 function onReviewSeriesChange() {
-  const seriesId = document.getElementById('reviewSeries').value;
-  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
+  const seriesEl = document.getElementById('reviewSeries');
   const reviewModel = document.getElementById('reviewModel');
+  if (!seriesEl || !reviewModel) return;
+  const seriesId = seriesEl.value;
+  const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   reviewModel.innerHTML = '';
 
   if (series && series.models) {
@@ -598,19 +641,19 @@ function onReviewSeriesChange() {
 }
 
 function onReviewModelChange() {
-  const engine = document.getElementById('reviewProvider').value;
-  const seriesId = document.getElementById('reviewSeries').value;
-  const modelId = document.getElementById('reviewModel').value;
+  const engine = document.getElementById('reviewProvider')?.value;
+  const seriesId = document.getElementById('reviewSeries')?.value;
+  const modelId = document.getElementById('reviewModel')?.value;
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
   const model = series?.models?.find(m => m.id === modelId);
 
-  // Automatically update the manual custom input box
   const customInput = document.getElementById('reviewModelCustom');
   if (customInput && model) {
     customInput.value = model.id;
   }
 
   const effortSelect = document.getElementById('reviewReasoningEffort');
+  if (!effortSelect) return;
   effortSelect.innerHTML = '';
 
   const options = getEffortsForEngineAndModel(engine, model);
@@ -627,12 +670,15 @@ function onReviewModelChange() {
 
 // --- MODEL MANAGER MODAL ---
 function openModelManager() {
-  document.getElementById('modelsJsonEditor').value = JSON.stringify(modelsConfig, null, 2);
-  document.getElementById('modelModal').style.display = 'flex';
+  const editor = document.getElementById('modelsJsonEditor');
+  if (editor) editor.value = JSON.stringify(modelsConfig, null, 2);
+  const modal = document.getElementById('modelModal');
+  if (modal) modal.style.display = 'flex';
 }
 
 function closeModelManager() {
-  document.getElementById('modelModal').style.display = 'none';
+  const modal = document.getElementById('modelModal');
+  if (modal) modal.style.display = 'none';
 }
 
 async function saveModelsManager() {
@@ -649,37 +695,39 @@ async function saveModelsManager() {
       onDevEngineChange();
       onReviewEngineChange();
       closeModelManager();
-      alert('模型与规则配置已成功保存并实时生效！');
+      showToast('模型与规则配置已成功保存并实时生效！', 'success');
     } else {
       const err = await res.json();
-      alert('保存失败: ' + err.error);
+      showToast('保存失败: ' + err.error, 'error');
     }
   } catch (e) {
-    alert('JSON 格式有误: ' + e.message);
+    showToast('JSON 格式有误: ' + e.message, 'error');
   }
 }
 
 // --- REQUIREMENT DISCUSSION PHASE ---
 async function startDiscussion() {
-  const ws = document.getElementById('workspaceRoot').value.trim();
-  const vague = document.getElementById('vaguePrompt').value.trim();
+  const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
+  const vague = document.getElementById('vaguePrompt')?.value?.trim() || '';
   const maxDiscussionRounds = parseInt(document.getElementById('maxDiscussionRounds')?.value, 10) || 2;
 
   if (!ws) {
-    alert('请填写项目物理根目录路径！');
+    showToast('请填写项目物理根目录路径！', 'warning');
     return;
   }
   if (!vague) {
-    alert('请输入您的初步需求或想法！');
+    showToast('请输入您的初步需求或想法！', 'warning');
     return;
   }
 
-  const effectiveDevModel = document.getElementById('devModelCustom')?.value.trim() || document.getElementById('devModel').value;
-  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value.trim() || document.getElementById('reviewModel').value;
+  const effectiveDevModel = document.getElementById('devModelCustom')?.value?.trim() || document.getElementById('devModel')?.value;
+  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value?.trim() || document.getElementById('reviewModel')?.value;
 
   const btn = document.getElementById('btnStartDiscuss');
-  btn.disabled = true;
-  btn.textContent = '⏳ 双 Agent 正在多轮推演讨论中...';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ 双 Agent 正在多轮推演讨论中...';
+  }
 
   switchTab('discussion');
   const container = document.getElementById('discussionMessages');
@@ -688,26 +736,29 @@ async function startDiscussion() {
     statusBadge.className = 'discussion-status-badge running';
     statusBadge.textContent = `多轮推演中 (最大 ${maxDiscussionRounds} 轮)...`;
   }
-  container.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon">💭</div>
-      <p>正在由开发方 (${document.getElementById('devProvider').value}) 与审查方 (${document.getElementById('reviewProvider').value}) 展开多轮需求辩论与架构共识推演...</p>
-    </div>
-  `;
-  document.getElementById('humanDecisionGate').style.display = 'none';
+  if (container) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">💭</div>
+        <p>正在由开发方 (${document.getElementById('devProvider')?.value || 'Dev'}) 与审查方 (${document.getElementById('reviewProvider')?.value || 'Reviewer'}) 展开多轮需求辩论与架构共识推演...</p>
+      </div>
+    `;
+  }
+  const gate = document.getElementById('humanDecisionGate');
+  if (gate) gate.style.display = 'none';
 
   const payload = {
     workspaceRoot: ws,
     vaguePrompt: vague,
     maxDiscussionRounds,
-    devProvider: document.getElementById('devProvider').value,
+    devProvider: document.getElementById('devProvider')?.value,
     devModel: effectiveDevModel,
-    devReasoningEffort: document.getElementById('devReasoningEffort').value,
-    devSessionId: document.getElementById('devSessionId')?.value.trim() || undefined,
-    reviewProvider: document.getElementById('reviewProvider').value,
+    devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
+    devSessionId: document.getElementById('devSessionId')?.value?.trim() || undefined,
+    reviewProvider: document.getElementById('reviewProvider')?.value,
     reviewModel: effectiveReviewModel,
-    reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    reviewSessionId: document.getElementById('reviewSessionId')?.value.trim() || undefined
+    reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
+    reviewSessionId: document.getElementById('reviewSessionId')?.value?.trim() || undefined
   };
 
   try {
@@ -717,54 +768,30 @@ async function startDiscussion() {
       body: JSON.stringify(payload)
     });
     const result = await res.json();
-    btn.disabled = false;
-    btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
 
-    if (!res.ok) {
-      alert('需求讨论失败: ' + result.error);
+    if (res.status === 202) {
+      showToast('双 Agent 需求推演已在后台启动...', 'info');
+    } else if (!res.ok) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+      }
+      showToast('需求讨论启动失败: ' + (result.error || '未知错误'), 'error');
       if (statusBadge) {
         statusBadge.className = 'discussion-status-badge error';
         statusBadge.textContent = '推演异常';
       }
-      return;
     }
-
-    if (statusBadge) {
-      statusBadge.className = 'discussion-status-badge success';
-      statusBadge.textContent = result.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
-    }
-
-    // Persist discussion to localStorage
-    try {
-      localStorage.setItem('dual_studio_discussion_' + ws, JSON.stringify({
-        savedAt: new Date().toISOString(),
-        vaguePrompt: vague,
-        consensusReached: result.consensusReached,
-        rounds: result.rounds,
-        finalPlan: result.finalPlan,
-        suggestedFeature: result.suggestedFeature
-      }));
-    } catch (e) {}
-
-    // Render Full Multi-Round Discussion Cards
-    renderDiscussionRounds(result.rounds || []);
-
-    // Show Human Decision Gate with final consolidated blueprint
-    const gate = document.getElementById('humanDecisionGate');
-    const editor = document.getElementById('finalPlanEditor');
-    editor.value = result.finalPlan;
-    if (result.suggestedFeature && !document.getElementById('featureName').value) {
-      document.getElementById('featureName').value = result.suggestedFeature;
-    }
-    gate.style.display = 'block';
   } catch (e) {
-    btn.disabled = false;
-    btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+    }
     if (statusBadge) {
       statusBadge.className = 'discussion-status-badge error';
       statusBadge.textContent = '推演异常';
     }
-    alert('请求异常: ' + e.message);
+    showToast('请求异常: ' + e.message, 'error');
   }
 }
 
@@ -815,7 +842,7 @@ async function loadWorkspaceDiscussion(wsPath) {
 
 function renderDiscussionRounds(rounds) {
   const container = document.getElementById('discussionMessages');
-  if (!rounds || rounds.length === 0) return;
+  if (!rounds || rounds.length === 0 || !container) return;
 
   container.innerHTML = '';
   rounds.forEach(msg => {
@@ -840,14 +867,15 @@ function renderDiscussionRounds(rounds) {
 }
 
 function approvePlanAndStart() {
-  const finalPlan = document.getElementById('finalPlanEditor').value.trim();
+  const finalPlan = document.getElementById('finalPlanEditor')?.value?.trim() || '';
   if (!finalPlan) {
-    alert('执行方案不能为空！');
+    showToast('执行方案不能为空！', 'warning');
     return;
   }
 
   // Populate into taskPrompt and switch to direct mode execution
-  document.getElementById('taskPrompt').value = finalPlan;
+  const taskPromptEl = document.getElementById('taskPrompt');
+  if (taskPromptEl) taskPromptEl.value = finalPlan;
   toggleReqMode('direct');
   const directRadio = document.querySelector('input[name="reqMode"][value="direct"]');
   if (directRadio) directRadio.checked = true;
@@ -884,26 +912,43 @@ function initSSE() {
     const msg = JSON.parse(e.data);
     if (msg) {
       const container = document.getElementById('discussionMessages');
-      const empty = container.querySelector('.empty-state');
-      if (empty) empty.remove();
+      if (container) {
+        const empty = container.querySelector('.empty-state');
+        if (empty) empty.remove();
 
-      const isDev = msg.sender === 'DEV';
-      const card = document.createElement('div');
-      card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
-      card.innerHTML = `
-        <div class="discussion-card-header">
-          <span class="sender-tag">
-            ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
-          </span>
-          <div class="round-badge-group">
-            <span class="round-chip">Round ${msg.round}</span>
-            ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+        const isDev = msg.sender === 'DEV';
+        const card = document.createElement('div');
+        card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
+        card.innerHTML = `
+          <div class="discussion-card-header">
+            <span class="sender-tag">
+              ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
+            </span>
+            <div class="round-badge-group">
+              <span class="round-chip">Round ${msg.round}</span>
+              ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+            </div>
           </div>
-        </div>
-        <div class="discussion-body">${renderMarkdown(msg.content)}</div>
-      `;
-      container.appendChild(card);
+          <div class="discussion-body">${renderMarkdown(msg.content)}</div>
+        `;
+        container.appendChild(card);
+      }
     }
+  });
+
+  eventSource.addEventListener('discussion_error', (e) => {
+    const data = JSON.parse(e.data);
+    const btn = document.getElementById('btnStartDiscuss');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+    }
+    const statusBadge = document.getElementById('discussionStatusBadge');
+    if (statusBadge) {
+      statusBadge.className = 'discussion-status-badge error';
+      statusBadge.textContent = '推演异常/已中止';
+    }
+    showToast(data.error || '需求推演异常', 'error');
   });
 
   eventSource.addEventListener('discussion_complete', (e) => {
@@ -929,6 +974,7 @@ function initSSE() {
         btn.disabled = false;
         btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
       }
+      showToast(data.consensusReached ? '双 Agent 达成共识方案！' : '需求推演完成！', 'success');
     }
   });
 
@@ -939,6 +985,7 @@ function initSSE() {
 
 function appendLogLine(log) {
   const consoleEl = document.getElementById('logsConsole');
+  if (!consoleEl) return;
   const line = document.createElement('div');
   line.className = `log-line ${log.type || 'stdout'}`;
 
@@ -954,18 +1001,19 @@ function appendLogLine(log) {
   line.appendChild(msg);
   consoleEl.appendChild(line);
 
-  if (document.getElementById('autoScroll').checked) {
+  if (document.getElementById('autoScroll')?.checked) {
     consoleEl.scrollTop = consoleEl.scrollHeight;
   }
 }
 
 function clearLogs() {
-  document.getElementById('logsConsole').innerHTML = '';
+  const consoleEl = document.getElementById('logsConsole');
+  if (consoleEl) consoleEl.innerHTML = '';
 }
 
 async function fetchStatus() {
   try {
-    const ws = document.getElementById('workspaceRoot')?.value.trim() || '';
+    const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
     const res = await fetch(`/api/status${ws ? `?workspace=${encodeURIComponent(ws)}` : ''}`);
     const data = await res.json();
     updateRunningState(data.isRunning);
@@ -985,13 +1033,13 @@ function updateRunningState(running) {
   const btnStop = document.getElementById('btnStop');
 
   if (running) {
-    statusBadge.className = 'status-badge running';
-    statusText.textContent = '运行中 (RUNNING)';
-    btnStart.disabled = true;
-    btnStop.disabled = false;
+    if (statusBadge) statusBadge.className = 'status-badge running';
+    if (statusText) statusText.textContent = '运行中 (RUNNING)';
+    if (btnStart) btnStart.disabled = true;
+    if (btnStop) btnStop.disabled = false;
   } else {
-    btnStart.disabled = false;
-    btnStop.disabled = true;
+    if (btnStart) btnStart.disabled = false;
+    if (btnStop) btnStop.disabled = true;
   }
 }
 
@@ -1006,29 +1054,31 @@ function renderTimeline(mb) {
   const statusBadge = document.getElementById('statusBadge');
   const statusText = document.getElementById('statusText');
 
-  roundBadge.style.display = 'inline-block';
-  currentRoundText.textContent = mb.round;
-  maxRoundText.textContent = mb.maxRounds;
+  if (roundBadge) roundBadge.style.display = 'inline-block';
+  if (currentRoundText) currentRoundText.textContent = mb.round;
+  if (maxRoundText) maxRoundText.textContent = mb.maxRounds;
 
-  if (mb.status === 'APPROVED') {
-    statusBadge.className = 'status-badge approved';
-    statusText.textContent = '审核通过 (APPROVED)';
-  } else if (mb.status === 'REJECTED_MAX_ROUNDS') {
-    statusBadge.className = 'status-badge rejected';
-    statusText.textContent = '达到最大轮次 (REJECTED)';
-  } else if (mb.status === 'FAILED' || mb.status === 'ERROR') {
-    statusBadge.className = 'status-badge rejected';
-    statusText.textContent = '任务执行失败 (FAILED)';
-  } else if (mb.status === 'WAITING_DEV') {
-    statusBadge.className = 'status-badge waiting';
-    statusText.textContent = '等待开发方调整 (WAITING_DEV)';
-  } else if (mb.status === 'WAITING_REVIEW') {
-    statusBadge.className = 'status-badge waiting';
-    statusText.textContent = '等待审查方评估 (WAITING_REVIEW)';
+  if (statusBadge && statusText) {
+    if (mb.status === 'APPROVED') {
+      statusBadge.className = 'status-badge approved';
+      statusText.textContent = '审核通过 (APPROVED)';
+    } else if (mb.status === 'REJECTED_MAX_ROUNDS') {
+      statusBadge.className = 'status-badge rejected';
+      statusText.textContent = '达到最大轮次 (REJECTED)';
+    } else if (mb.status === 'FAILED' || mb.status === 'ERROR') {
+      statusBadge.className = 'status-badge rejected';
+      statusText.textContent = '任务执行失败 (FAILED)';
+    } else if (mb.status === 'WAITING_DEV') {
+      statusBadge.className = 'status-badge waiting';
+      statusText.textContent = '等待开发方调整 (WAITING_DEV)';
+    } else if (mb.status === 'WAITING_REVIEW') {
+      statusBadge.className = 'status-badge waiting';
+      statusText.textContent = '等待审查方评估 (WAITING_REVIEW)';
+    }
   }
 
-  emptyState.style.display = 'none';
-  roundsList.innerHTML = '';
+  if (emptyState) emptyState.style.display = 'none';
+  if (roundsList) roundsList.innerHTML = '';
 
   if (mb.status === 'FAILED' || mb.status === 'ERROR' || mb.error) {
     const errCard = document.createElement('div');
@@ -1042,7 +1092,7 @@ function renderTimeline(mb) {
         <p style="color: #94a3b8; font-size: 11.5px; margin: 0;">建议：请查看下方【终端实时日志】查看详细报错输出，修复配置或环境后重新启动。</p>
       </div>
     `;
-    roundsList.appendChild(errCard);
+    if (roundsList) roundsList.appendChild(errCard);
   }
 
   if (mb.devSessionId && document.getElementById('devSessionId')) {
@@ -1122,42 +1172,43 @@ function renderTimeline(mb) {
       ` : ''}
     `;
 
-    roundsList.appendChild(card);
+    if (roundsList) roundsList.appendChild(card);
   });
 }
 
 // --- LAUNCH & CONTROL LOOP ---
 async function startLoop() {
-  const ws = document.getElementById('workspaceRoot').value.trim();
-  const prompt = document.getElementById('taskPrompt').value.trim();
+  const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
+  const prompt = document.getElementById('taskPrompt')?.value?.trim() || '';
 
   if (!ws) {
-    alert('请填写项目物理根目录路径！');
+    showToast('请填写项目物理根目录路径！', 'warning');
     return;
   }
   if (!prompt) {
-    alert('请填写开发任务描述！');
+    showToast('请填写开发任务描述！', 'warning');
     return;
   }
 
-  const effectiveDevModel = document.getElementById('devModelCustom')?.value.trim() || document.getElementById('devModel').value;
-  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value.trim() || document.getElementById('reviewModel').value;
+  const effectiveDevModel = document.getElementById('devModelCustom')?.value?.trim() || document.getElementById('devModel')?.value;
+  const effectiveReviewModel = document.getElementById('reviewModelCustom')?.value?.trim() || document.getElementById('reviewModel')?.value;
 
   const payload = {
     workspaceRoot: ws,
     taskPrompt: prompt,
-    feature: document.getElementById('featureName').value.trim() || undefined,
-    devProvider: document.getElementById('devProvider').value,
+    feature: document.getElementById('featureName')?.value?.trim() || undefined,
+    devProvider: document.getElementById('devProvider')?.value,
     devModel: effectiveDevModel || undefined,
-    devReasoningEffort: document.getElementById('devReasoningEffort').value,
-    devSessionId: document.getElementById('devSessionId')?.value.trim() || undefined,
-    reviewProvider: document.getElementById('reviewProvider').value,
+    devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
+    devSessionId: document.getElementById('devSessionId')?.value?.trim() || undefined,
+    reviewProvider: document.getElementById('reviewProvider')?.value,
     reviewModel: effectiveReviewModel || undefined,
-    reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    reviewSessionId: document.getElementById('reviewSessionId')?.value.trim() || undefined,
-    verifyCommand: document.getElementById('verifyCommand').value.trim() || undefined,
-    maxRounds: parseInt(document.getElementById('maxRounds').value, 10) || 4,
-    autoCommit: document.getElementById('autoCommit').checked
+    reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
+    reviewSessionId: document.getElementById('reviewSessionId')?.value?.trim() || undefined,
+    verifyCommand: document.getElementById('verifyCommand')?.value?.trim() || undefined,
+    maxRounds: parseInt(document.getElementById('maxRounds')?.value, 10) || 4,
+    maxSelfHealAttempts: parseInt(document.getElementById('maxSelfHealAttempts')?.value, 10) || 3,
+    autoCommit: document.getElementById('autoCommit')?.checked ?? true
   };
 
   try {
@@ -1168,24 +1219,25 @@ async function startLoop() {
     });
     const result = await res.json();
     if (!res.ok) {
-      alert(`启动失败: ${result.error}`);
+      showToast(`启动失败: ${result.error}`, 'error');
     } else {
       updateRunningState(true);
+      showToast('双 Agent 闭环已成功启动！', 'success');
       switchTab('logs');
     }
   } catch (e) {
-    alert(`请求异常: ${e.message}`);
+    showToast(`请求异常: ${e.message}`, 'error');
   }
 }
 
 async function stopLoop() {
-  if (!confirm('确定要停止正在运行的闭环任务吗？')) return;
   try {
     const res = await fetch('/api/stop', { method: 'POST' });
     const result = await res.json();
     updateRunningState(false);
+    showToast(result.message || '已停止运行', 'info');
   } catch (e) {
-    alert(`停止失败: ${e.message}`);
+    showToast(`停止失败: ${e.message}`, 'error');
   }
 }
 
@@ -1195,7 +1247,7 @@ window.lastRawDiff = '';
 async function copyDiffToClipboard() {
   const rawDiff = window.lastRawDiff || '';
   if (!rawDiff) {
-    alert('当前工作区无 Diff 内容可复制');
+    showToast('当前工作区无 Diff 内容可复制', 'info');
     return;
   }
   try {
@@ -1206,31 +1258,32 @@ async function copyDiffToClipboard() {
       btn.textContent = '✅ 已复制!';
       setTimeout(() => { btn.textContent = originalText; }, 2000);
     }
+    showToast('Diff 已成功复制到剪贴板！', 'success');
   } catch (e) {
-    alert('复制失败: ' + e.message);
+    showToast('复制失败: ' + e.message, 'error');
   }
 }
 
 async function fetchDiff() {
-  const ws = document.getElementById('workspaceRoot').value.trim();
+  const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
   if (!ws) return;
 
   const diffCode = document.getElementById('diffCode');
   const diffStats = document.getElementById('diffStats');
-  diffCode.textContent = '正在获取 Git 变更...';
+  if (diffCode) diffCode.textContent = '正在获取 Git 变更...';
 
   try {
     const res = await fetch(`/api/diff?workspace=${encodeURIComponent(ws)}`);
     const data = await res.json();
     if (data.error) {
-      diffCode.textContent = `错误: ${data.error}`;
+      if (diffCode) diffCode.textContent = `错误: ${data.error}`;
       window.lastRawDiff = '';
       return;
     }
 
     if (!data.diff && !data.status) {
-      diffCode.textContent = '工作区干净，无未提交的 Git 变更。';
-      diffStats.textContent = '0 files changed';
+      if (diffCode) diffCode.textContent = '工作区干净，无未提交的 Git 变更。';
+      if (diffStats) diffStats.textContent = '0 files changed';
       window.lastRawDiff = '';
       return;
     }
@@ -1246,16 +1299,16 @@ async function fetchDiff() {
       } else if (line.startsWith('-') && !line.startsWith('---')) {
         dels++;
         return `<span class="diff-line-del">${escapeHtml(line)}</span>`;
-      } else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('=== Untracked File:')) {
+      } else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('=== Tracked File:') || line.startsWith('=== Untracked File:')) {
         return `<span class="diff-line-hdr">${escapeHtml(line)}</span>`;
       }
       return escapeHtml(line);
     }).join('\n');
 
-    diffStats.textContent = `+${adds} / -${dels}`;
-    diffCode.innerHTML = formatted;
+    if (diffStats) diffStats.textContent = `+${adds} / -${dels}`;
+    if (diffCode) diffCode.innerHTML = formatted;
   } catch (e) {
-    diffCode.textContent = `获取 Diff 失败: ${e.message}`;
+    if (diffCode) diffCode.textContent = `获取 Diff 失败: ${e.message}`;
     window.lastRawDiff = '';
   }
 }
@@ -1266,4 +1319,30 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Global Exports
+if (typeof window !== 'undefined') {
+  window.openFolderPickerModal = openFolderPickerModal;
+  window.closeFolderPickerModal = closeFolderPickerModal;
+  window.navigateUpFolder = navigateUpFolder;
+  window.confirmSelectedFolder = confirmSelectedFolder;
+  window.openFolderPicker = openFolderPicker;
+  window.openFolderModal = openFolderModal;
+  window.closeFolderModal = closeFolderModal;
+  window.navigateParentFolder = navigateParentFolder;
+  window.confirmFolderSelection = confirmFolderSelection;
+  window.showToast = showToast;
+  window.startDiscussion = startDiscussion;
+  window.approvePlanAndStart = approvePlanAndStart;
+  window.startLoop = startLoop;
+  window.stopLoop = stopLoop;
+  window.fetchDiff = fetchDiff;
+  window.copyDiffToClipboard = copyDiffToClipboard;
+  window.switchTab = switchTab;
+  window.toggleReqMode = toggleReqMode;
+  window.openModelManager = openModelManager;
+  window.closeModelManager = closeModelManager;
+  window.saveModelsManager = saveModelsManager;
+  window.clearLogs = clearLogs;
 }
