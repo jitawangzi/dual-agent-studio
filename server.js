@@ -546,7 +546,9 @@ Output your final synthesized recommendation for the developer and user to appro
                 if (config.reviewModel) psArgs.push('-ReviewModel', config.reviewModel);
                 if (config.devReasoningEffort) psArgs.push('-DevReasoningEffort', config.devReasoningEffort);
                 if (config.reviewReasoningEffort) psArgs.push('-ReviewReasoningEffort', config.reviewReasoningEffort);
-                if (config.copilotSessionId) psArgs.push('-CopilotSessionId', config.copilotSessionId);
+                if (config.devSessionId) psArgs.push('-DevSessionId', config.devSessionId);
+                if (config.reviewSessionId) psArgs.push('-ReviewSessionId', config.reviewSessionId);
+                else if (config.copilotSessionId) psArgs.push('-ReviewSessionId', config.copilotSessionId);
                 if (config.verifyCommand) psArgs.push('-VerifyCommand', config.verifyCommand);
                 if (config.maxRounds) psArgs.push('-MaxRounds', String(config.maxRounds));
                 if (config.maxSelfHealAttempts) psArgs.push('-MaxSelfHealAttempts', String(config.maxSelfHealAttempts));

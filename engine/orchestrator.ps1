@@ -33,7 +33,10 @@ param(
     [string]$DevReasoningEffort,
     [string]$ReviewReasoningEffort,
 
-    [string]$CopilotSessionId,
+    # Session ID Tracking
+    [string]$DevSessionId,
+    [string]$ReviewSessionId,
+    [string]$CopilotSessionId, # Backwards compatibility alias for ReviewSessionId
 
     [string]$VerifyCommand = "exit 0",
     [int]$MaxRounds = 4,
@@ -83,8 +86,7 @@ $effectiveMailboxPath = if (-not [string]::IsNullOrWhiteSpace($MailboxPath)) {
 $targetMailboxScript = $null
 $candidateScripts = @(
     (Join-Path $wsPhysical ".ai-sop\scripts\review-mailbox.ps1"),
-    (Join-Path $wsPhysical "scripts\review-mailbox.ps1"),
-    (Join-Path $PSScriptRoot "..\..\agent-sop\scripts\review-mailbox.ps1")
+    (Join-Path $wsPhysical "scripts\review-mailbox.ps1")
 )
 foreach ($cand in $candidateScripts) {
     if (Test-Path -LiteralPath $cand -PathType Leaf) {
@@ -427,18 +429,32 @@ $mappedRev = switch ($ReviewProvider.ToLowerInvariant()) {
     default { if ($mappedDev -eq "CUSTOM") { "COPILOT" } else { "CUSTOM" } }
 }
 
+# Resolve Dev and Reviewer Session IDs
+$effectiveDevSessionId = if (-not [string]::IsNullOrWhiteSpace($DevSessionId)) {
+    $DevSessionId
+} else {
+    [guid]::NewGuid().ToString()
+}
+
+$effectiveReviewSessionId = if (-not [string]::IsNullOrWhiteSpace($ReviewSessionId)) {
+    $ReviewSessionId
+} elseif (-not [string]::IsNullOrWhiteSpace($CopilotSessionId)) {
+    $CopilotSessionId
+} else {
+    [guid]::NewGuid().ToString()
+}
+
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host " 🚀 DUAL-AGENT STUDIO AUTONOMOUS LOOP" -ForegroundColor Cyan
 Write-Host " Workspace     : $wsPhysical" -ForegroundColor White
 Write-Host " Feature       : $effectiveFeature" -ForegroundColor White
 Write-Host " Dev Agent     : $DevProvider ($mappedDev) $(if ($DevModel) { "[Model: $DevModel, Effort: $DevReasoningEffort]" })" -ForegroundColor White
+Write-Host " Dev Session ID: $effectiveDevSessionId" -ForegroundColor White
 Write-Host " Review Agent  : $ReviewProvider ($mappedRev) $(if ($ReviewModel) { "[Model: $ReviewModel, Effort: $ReviewReasoningEffort]" })" -ForegroundColor White
+Write-Host " Review Session: $effectiveReviewSessionId" -ForegroundColor White
 Write-Host " Max Rounds    : $MaxRounds" -ForegroundColor White
 Write-Host " Verify Command: $VerifyCommand" -ForegroundColor White
 Write-Host " Mailbox File  : $effectiveMailboxPath" -ForegroundColor White
-if (-not [string]::IsNullOrWhiteSpace($CopilotSessionId)) {
-    Write-Host " Copilot Session: $CopilotSessionId" -ForegroundColor White
-}
 Write-Host "================================================================================" -ForegroundColor Cyan
 
 # 1. Initialize Mailbox
@@ -450,6 +466,13 @@ if ($targetMailboxScript) {
         -MaxRounds $MaxRounds `
         -MailboxPath $effectiveMailboxPath `
         -ProjectRoot $wsPhysical | Out-Null
+    $mbInit = Read-MailboxState
+    if ($null -ne $mbInit) {
+        $mbInit | Add-Member -NotePropertyName "devSessionId" -NotePropertyValue $effectiveDevSessionId -Force
+        $mbInit | Add-Member -NotePropertyName "reviewSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
+        $mbInit | Add-Member -NotePropertyName "reviewerSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
+        Write-MailboxState -StateObj $mbInit
+    }
 } else {
     $initObj = [ordered]@{
         schemaVersion = "1.0"
@@ -459,6 +482,9 @@ if ($targetMailboxScript) {
         status = "INITIALIZED"
         devAgent = $mappedDev
         reviewerAgent = $mappedRev
+        devSessionId = $effectiveDevSessionId
+        reviewSessionId = $effectiveReviewSessionId
+        reviewerSessionId = $effectiveReviewSessionId
         updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
         currentDevSubmission = $null
         currentReviewVerdict = $null
@@ -480,7 +506,7 @@ while ($true) {
     Write-Host "`n====================== [ ROUND $round / $MaxRounds - DEV PHASE ] ======================" -ForegroundColor Yellow
 
     # Phase 1: Dev Turn
-    Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $CopilotSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook
+    Invoke-DevTurn -Provider $DevProvider -Prompt $currentPrompt -Round $round -SessionId $effectiveDevSessionId -Model $DevModel -ReasoningEffort $DevReasoningEffort -CustomHook $DevCustomHook
 
     # Phase 2: Dev Submit & Test Gate Verification
     Write-Host "`n⚙️ Running test gate in ${wsPhysical}: $VerifyCommand..." -ForegroundColor Gray
@@ -594,7 +620,7 @@ while ($true) {
         -OriginalTask $TaskPrompt `
         -GitDiff $gitDiff `
         -Round $round `
-        -SessionId $CopilotSessionId `
+        -SessionId $effectiveReviewSessionId `
         -Model $ReviewModel `
         -ReasoningEffort $ReviewReasoningEffort `
         -CustomHook $ReviewerCustomHook

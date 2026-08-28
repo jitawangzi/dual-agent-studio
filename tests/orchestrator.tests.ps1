@@ -44,6 +44,8 @@ try {
     Assert-Equal $res1.status "APPROVED" "Single round should result in APPROVED"
     Assert-Equal $res1.round 1 "Should complete in round 1"
     Assert-Equal $res1.history.Count 1 "History should have 1 round"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($res1.devSessionId)) "devSessionId should be auto-generated"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($res1.reviewSessionId)) "reviewSessionId should be auto-generated"
 
     # 2. Test Multi-Round Feedback Loop (Round 1 REJECT -> Round 2 APPROVE)
     $mb2 = Join-Path $TestRoot "mb2.json"
@@ -182,6 +184,24 @@ All clear!
 
     Assert-Equal $res5.status "APPROVED" "Markdown-fenced JSON review output should parse successfully and result in APPROVED"
     Assert-Equal $res5.history[0].reviewVerdict.summary "Verified all constraints in markdown wrapper." "Review verdict summary should match"
+
+    # 6. Test Explicit Dev and Reviewer Session IDs
+    $mb6 = Join-Path $TestRoot "mb6.json"
+    $res6 = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "Custom Session Task" `
+        -Feature "FeatureCustomSession" `
+        -DevSessionId "dev-custom-session-123" `
+        -ReviewSessionId "review-custom-session-456" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -MailboxPath $mb6 `
+        -PassThru
+
+    Assert-Equal $res6.devSessionId "dev-custom-session-123" "Dev session ID should preserve custom input"
+    Assert-Equal $res6.reviewSessionId "review-custom-session-456" "Review session ID should preserve custom input"
 
     Write-Host "All Dual-Agent Studio orchestrator tests passed successfully." -ForegroundColor Green
 }

@@ -128,9 +128,17 @@
             </label>
             <input type="text" id="devModelCustom" placeholder="例如 claude-sonnet-5 或自定义 fine-tune ID">
           </div>
+          <!-- ROW 4: Dev 会话 ID -->
+          <div class="form-group" id="devSessionGroup" style="margin-top: 4px;">
+            <label for="devSessionId">
+              <span>🆔 开发会话 ID (Dev Session ID)</span>
+              <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话保持上下文)</span>
+            </label>
+            <input type="text" id="devSessionId" placeholder="任务启动后自动生成">
+          </div>
         </div>
 
-        <!-- 4. REVIEWER AGENT CONFIG (2 Rows + Custom Model ID) -->
+        <!-- 4. REVIEWER AGENT CONFIG (2 Rows + Custom Model ID + Session ID) -->
         <div class="panel-section">
           <h2>🔍 审查方配置 (Reviewer Agent)</h2>
           <!-- ROW 1: 引擎 & 模型系列 -->
@@ -171,10 +179,13 @@
             </label>
             <input type="text" id="reviewModelCustom" placeholder="例如 gpt-5.6-sol 或自定义 ID">
           </div>
-          <!-- ROW 4: Copilot 会话 ID -->
-          <div class="form-group" id="copilotSessionGroup">
-            <label for="copilotSessionId">Copilot 会话 ID (保持连续审查)</label>
-            <input type="text" id="copilotSessionId" placeholder="例如 9fa43261-d96c-430b-ac43-20e3035ec1bf" value="9fa43261-d96c-430b-ac43-20e3035ec1bf">
+          <!-- ROW 4: Reviewer 会话 ID -->
+          <div class="form-group" id="reviewSessionGroup" style="margin-top: 4px;">
+            <label for="reviewSessionId">
+              <span>🆔 审查会话 ID (Reviewer Session ID)</span>
+              <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话保持上下文)</span>
+            </label>
+            <input type="text" id="reviewSessionId" placeholder="任务启动后自动生成">
           </div>
         </div>
 

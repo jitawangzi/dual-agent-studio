@@ -39,11 +39,12 @@ function saveUserPreferences() {
       devSeries: document.getElementById('devSeries')?.value,
       devModelCustom: document.getElementById('devModelCustom')?.value,
       devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
+      devSessionId: document.getElementById('devSessionId')?.value,
       reviewProvider: document.getElementById('reviewProvider')?.value,
       reviewSeries: document.getElementById('reviewSeries')?.value,
       reviewModelCustom: document.getElementById('reviewModelCustom')?.value,
       reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
-      copilotSessionId: document.getElementById('copilotSessionId')?.value
+      reviewSessionId: document.getElementById('reviewSessionId')?.value
     };
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
   } catch (e) {}
@@ -59,7 +60,8 @@ function loadUserPreferences() {
     if (p.maxRounds) document.getElementById('maxRounds').value = p.maxRounds;
     if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
     if (p.autoCommit !== undefined) document.getElementById('autoCommit').checked = p.autoCommit;
-    if (p.copilotSessionId) document.getElementById('copilotSessionId').value = p.copilotSessionId;
+    if (p.devSessionId) document.getElementById('devSessionId').value = p.devSessionId;
+    if (p.reviewSessionId) document.getElementById('reviewSessionId').value = p.reviewSessionId;
 
     if (p.devProvider) {
       document.getElementById('devProvider').value = p.devProvider;
@@ -399,12 +401,6 @@ function onDevModelChange() {
 function onReviewEngineChange() {
   const engine = document.getElementById('reviewProvider').value;
   const reviewSeries = document.getElementById('reviewSeries');
-  const copilotGroup = document.getElementById('copilotSessionGroup');
-  
-  if (copilotGroup) {
-    copilotGroup.style.display = (engine === 'copilot') ? 'block' : 'none';
-  }
-
   const allowedSeries = getSeriesForEngine(engine);
   reviewSeries.innerHTML = '';
   allowedSeries.forEach(s => {
@@ -541,10 +537,11 @@ async function startDiscussion() {
     devProvider: document.getElementById('devProvider').value,
     devModel: effectiveDevModel,
     devReasoningEffort: document.getElementById('devReasoningEffort').value,
+    devSessionId: document.getElementById('devSessionId')?.value.trim() || undefined,
     reviewProvider: document.getElementById('reviewProvider').value,
     reviewModel: effectiveReviewModel,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined
+    reviewSessionId: document.getElementById('reviewSessionId')?.value.trim() || undefined
   };
 
   try {
@@ -723,6 +720,13 @@ function renderTimeline(mb) {
   emptyState.style.display = 'none';
   roundsList.innerHTML = '';
 
+  if (mb.devSessionId && document.getElementById('devSessionId')) {
+    document.getElementById('devSessionId').value = mb.devSessionId;
+  }
+  if ((mb.reviewSessionId || mb.reviewerSessionId) && document.getElementById('reviewSessionId')) {
+    document.getElementById('reviewSessionId').value = mb.reviewSessionId || mb.reviewerSessionId;
+  }
+
   const allRounds = [...(mb.history || [])];
   if (mb.currentDevSubmission || mb.currentReviewVerdict) {
     allRounds.push({
@@ -821,10 +825,11 @@ async function startLoop() {
     devProvider: document.getElementById('devProvider').value,
     devModel: effectiveDevModel || undefined,
     devReasoningEffort: document.getElementById('devReasoningEffort').value,
+    devSessionId: document.getElementById('devSessionId')?.value.trim() || undefined,
     reviewProvider: document.getElementById('reviewProvider').value,
     reviewModel: effectiveReviewModel || undefined,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined,
+    reviewSessionId: document.getElementById('reviewSessionId')?.value.trim() || undefined,
     verifyCommand: document.getElementById('verifyCommand').value.trim() || undefined,
     maxRounds: parseInt(document.getElementById('maxRounds').value, 10) || 4,
     autoCommit: document.getElementById('autoCommit').checked
