@@ -464,7 +464,7 @@ function Invoke-DevTurn {
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print")
+            $argsList += @("--print", "-")
 
             $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
@@ -606,7 +606,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print")
+            $argsList += @("--print", "-")
 
             $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
             $jsonObj = Extract-JsonFromText -Text $res.Combined
