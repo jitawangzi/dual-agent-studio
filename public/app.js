@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateRecentBadgesHighlight(currentWs);
     autoDetectWorkspace(currentWs);
     fetchDiff();
+    loadWorkspaceDiscussion(currentWs);
   }
   fetchStatus();
   setInterval(fetchStatus, 3000);
@@ -38,19 +39,26 @@ function saveUserPreferences() {
       workspaceRoot: document.getElementById('workspaceRoot')?.value,
       featureName: document.getElementById('featureName')?.value,
       maxRounds: document.getElementById('maxRounds')?.value,
-      verifyCommand: document.getElementById('verifyCommand')?.value,
+      maxSelfHealAttempts: document.getElementById('maxSelfHealAttempts')?.value,
       autoCommit: document.getElementById('autoCommit')?.checked,
+      verifyCommand: document.getElementById('verifyCommand')?.value,
       devProvider: document.getElementById('devProvider')?.value,
       devSeries: document.getElementById('devSeries')?.value,
+      devModel: document.getElementById('devModel')?.value,
       devModelCustom: document.getElementById('devModelCustom')?.value,
       devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
       reviewProvider: document.getElementById('reviewProvider')?.value,
       reviewSeries: document.getElementById('reviewSeries')?.value,
+      reviewModel: document.getElementById('reviewModel')?.value,
       reviewModelCustom: document.getElementById('reviewModelCustom')?.value,
-      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value
+      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
+      vaguePrompt: document.getElementById('vaguePrompt')?.value,
+      taskPrompt: document.getElementById('taskPrompt')?.value
     };
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-  } catch (e) {}
+  } catch (e) {
+    console.error('Failed to save preferences:', e);
+  }
 }
 
 function loadUserPreferences() {
@@ -61,8 +69,11 @@ function loadUserPreferences() {
     if (p.workspaceRoot) document.getElementById('workspaceRoot').value = p.workspaceRoot;
     if (p.featureName) document.getElementById('featureName').value = p.featureName;
     if (p.maxRounds) document.getElementById('maxRounds').value = p.maxRounds;
-    if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
+    if (p.maxSelfHealAttempts) document.getElementById('maxSelfHealAttempts').value = p.maxSelfHealAttempts;
     if (p.autoCommit !== undefined) document.getElementById('autoCommit').checked = p.autoCommit;
+    if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
+    if (p.vaguePrompt) document.getElementById('vaguePrompt').value = p.vaguePrompt;
+    if (p.taskPrompt) document.getElementById('taskPrompt').value = p.taskPrompt;
 
     if (p.devProvider) {
       document.getElementById('devProvider').value = p.devProvider;
@@ -70,6 +81,10 @@ function loadUserPreferences() {
       if (p.devSeries) {
         document.getElementById('devSeries').value = p.devSeries;
         onDevSeriesChange();
+        if (p.devModel) {
+          document.getElementById('devModel').value = p.devModel;
+          onDevModelChange();
+        }
       }
       if (p.devModelCustom) {
         document.getElementById('devModelCustom').value = p.devModelCustom;
@@ -85,6 +100,10 @@ function loadUserPreferences() {
       if (p.reviewSeries) {
         document.getElementById('reviewSeries').value = p.reviewSeries;
         onReviewSeriesChange();
+        if (p.reviewModel) {
+          document.getElementById('reviewModel').value = p.reviewModel;
+          onReviewModelChange();
+        }
       }
       if (p.reviewModelCustom) {
         document.getElementById('reviewModelCustom').value = p.reviewModelCustom;
@@ -93,7 +112,9 @@ function loadUserPreferences() {
         document.getElementById('reviewReasoningEffort').value = p.reviewReasoningEffort;
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('Failed to load preferences:', e);
+  }
 }
 
 function renderMarkdown(md) {
@@ -162,18 +183,36 @@ function toggleReqMode(mode) {
     directBox.style.display = 'none';
     discussBox.style.display = 'block';
   }
+  saveUserPreferences();
 }
 
-// --- WEB DIRECTORY EXPLORER MODAL (100% Guaranteed Reliability) ---
-function openFolderPickerModal() {
+// --- NATIVE FOLDER PICKER & EXPLORER DIALOG ---
+async function openFolderPicker() {
   const currentVal = document.getElementById('workspaceRoot').value.trim();
-  const startPath = currentVal || 'D:\\project';
+  try {
+    const res = await fetch('/api/browse-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initialPath: currentVal })
+    });
+    const data = await res.json();
+    if (data.path && !data.cancelled) {
+      setWorkspace(data.path, true);
+    } else if (data.useFallback || data.error) {
+      openFolderModal(currentVal || 'D:\\');
+    }
+  } catch (e) {
+    openFolderModal(currentVal || 'D:\\');
+  }
+}
+
+function openFolderModal(startPath) {
   document.getElementById('folderModal').style.display = 'flex';
   loadDrives();
-  fetchDirectory(startPath);
+  fetchDirectory(startPath || '');
 }
 
-function closeFolderPickerModal() {
+function closeFolderModal() {
   document.getElementById('folderModal').style.display = 'none';
 }
 
@@ -250,9 +289,17 @@ async function fetchDirectory(targetPath) {
   }
 }
 
-function navigateUpFolder() {
+function navigateParentFolder() {
   if (explorerParentPath) {
     fetchDirectory(explorerParentPath);
+  }
+}
+
+function confirmFolderSelection() {
+  const target = explorerSelectedPath || explorerCurrentPath;
+  if (target) {
+    setWorkspace(target, true);
+    closeFolderModal();
   }
 }
 
@@ -265,10 +312,12 @@ async function autoDetectWorkspace(wsPath) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceRoot: wsPath })
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.verifyCommand) {
-        document.getElementById('verifyCommand').value = data.verifyCommand;
+    const data = await res.json();
+    if (data.recommendedCommand) {
+      const cmdInput = document.getElementById('verifyCommand');
+      // If user hasn't modified verify command or it's default exit 0, apply recommended
+      if (!cmdInput.value || cmdInput.value === 'exit 0' || cmdInput.value.includes('gradlew') || cmdInput.value.includes('mvn') || cmdInput.value.includes('npm')) {
+        cmdInput.value = data.recommendedCommand;
       }
     }
   } catch (e) {
@@ -293,6 +342,9 @@ function setWorkspace(wsPath, updateServerProjects = true) {
   // Refresh git diff & mailbox status for this workspace
   fetchDiff();
   fetchStatus();
+
+  // Load saved discussion & blueprint for this workspace
+  loadWorkspaceDiscussion(wsPath);
 
   // Register in recent projects on backend
   if (updateServerProjects) {
@@ -682,6 +734,18 @@ async function startDiscussion() {
       statusBadge.textContent = result.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
     }
 
+    // Persist discussion to localStorage
+    try {
+      localStorage.setItem('dual_studio_discussion_' + ws, JSON.stringify({
+        savedAt: new Date().toISOString(),
+        vaguePrompt: vague,
+        consensusReached: result.consensusReached,
+        rounds: result.rounds,
+        finalPlan: result.finalPlan,
+        suggestedFeature: result.suggestedFeature
+      }));
+    } catch (e) {}
+
     // Render Full Multi-Round Discussion Cards
     renderDiscussionRounds(result.rounds || []);
 
@@ -701,6 +765,51 @@ async function startDiscussion() {
       statusBadge.textContent = '推演异常';
     }
     alert('请求异常: ' + e.message);
+  }
+}
+
+async function loadWorkspaceDiscussion(wsPath) {
+  if (!wsPath) return;
+  try {
+    const res = await fetch(`/api/discuss?workspace=${encodeURIComponent(wsPath)}`);
+    const data = await res.json();
+    let disc = (data && data.success && data.discussion) ? data.discussion : null;
+
+    if (!disc) {
+      try {
+        const cached = localStorage.getItem('dual_studio_discussion_' + wsPath);
+        if (cached) disc = JSON.parse(cached);
+      } catch (e) {}
+    }
+
+    if (disc) {
+      const vagueInput = document.getElementById('vaguePrompt');
+      if (vagueInput && !vagueInput.value && disc.vaguePrompt) {
+        vagueInput.value = disc.vaguePrompt;
+      }
+
+      const statusBadge = document.getElementById('discussionStatusBadge');
+      if (statusBadge) {
+        statusBadge.className = 'discussion-status-badge success';
+        statusBadge.textContent = disc.consensusReached ? '🏆 双方已达成共识 (历史已恢复)' : '🏁 推演完成 (历史已恢复)';
+      }
+
+      if (disc.rounds && disc.rounds.length > 0) {
+        renderDiscussionRounds(disc.rounds);
+      }
+
+      const gate = document.getElementById('humanDecisionGate');
+      const editor = document.getElementById('finalPlanEditor');
+      if (gate && editor && disc.finalPlan) {
+        editor.value = disc.finalPlan;
+        if (disc.suggestedFeature && !document.getElementById('featureName').value) {
+          document.getElementById('featureName').value = disc.suggestedFeature;
+        }
+        gate.style.display = 'block';
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load saved discussion:', e);
   }
 }
 

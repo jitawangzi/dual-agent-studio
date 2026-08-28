@@ -1,4 +1,6 @@
 node_modules/
 review-mailbox.json*
+requirement-discussion.json*
+.ai-workspace/
 *.tmp_*
 projects.json
