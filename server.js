@@ -163,20 +163,8 @@ const server = http.createServer(async (req, res) => {
 
     // 4. REST API: /api/browse-folder (Windows Native Folder Picker)
     if (pathname === '/api/browse-folder' && req.method === 'POST') {
-        const psScript = `
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = "请选择目标工作区工程物理根目录"
-$dialog.ShowNewFolderButton = $true
-$result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    Write-Output $dialog.SelectedPath
-} else {
-    Write-Output ""
-}
-`;
-        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-Command', psScript]);
+        const scriptPath = path.join(__dirname, 'engine', 'browse-folder.ps1');
+        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
         let selectedPath = '';
         ps.stdout.on('data', d => selectedPath += d.toString('utf-8'));
         ps.on('close', () => {

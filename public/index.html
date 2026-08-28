@@ -44,6 +44,7 @@
             <div class="input-with-btn">
               <input type="text" id="workspaceRoot" placeholder="例如 D:\project\agent-sop 或 D:\svn\server_new" value="D:\project\agent-sop">
               <button class="btn btn-sm btn-secondary" onclick="browseWorkspaceFolder()">📁 浏览...</button>
+              <input type="file" id="fallbackFolderPicker" webkitdirectory style="display: none;" onchange="onFallbackFolderPicked(event)">
             </div>
             <div class="recent-projects" id="recentProjects"></div>
           </div>
@@ -89,69 +90,61 @@
         <!-- 3. DEV AGENT CONFIG -->
         <div class="panel-section">
           <h2>🛠️ 开发方配置 (Developer Agent)</h2>
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="devProvider">Dev 引擎</label>
-              <select id="devProvider">
-                <option value="claude" selected>Claude Code (claude)</option>
-                <option value="copilot">GitHub Copilot (copilot)</option>
-                <option value="antigravity">Google Antigravity</option>
-                <option value="cursor">Cursor (cursor)</option>
-                <option value="codex">OpenAI Codex</option>
-                <option value="pi">Inflection Pi</option>
-                <option value="aider">Aider (aider)</option>
-                <option value="mock">Mock (仿真测试)</option>
-              </select>
-            </div>
-            <div class="form-group flex-1">
-              <label for="devSeries">模型系列</label>
-              <select id="devSeries" onchange="onDevSeriesChange()"></select>
-            </div>
+          <div class="form-group">
+            <label for="devProvider">Dev 引擎</label>
+            <select id="devProvider" onchange="onDevEngineChange()">
+              <option value="antigravity">Google Antigravity (限 Gemini 系列)</option>
+              <option value="copilot">GitHub Copilot (GPT / Claude / Gemini)</option>
+              <option value="claude" selected>Claude Code (限 Claude 系列)</option>
+              <option value="cursor">Cursor (多模型)</option>
+              <option value="codex">OpenAI Codex (限 GPT 系列)</option>
+              <option value="pi">Inflection Pi</option>
+              <option value="aider">Aider (多模型)</option>
+              <option value="mock">Mock (仿真测试)</option>
+            </select>
           </div>
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="devModel">具体模型</label>
-              <select id="devModel" onchange="onDevModelChange()"></select>
-            </div>
-            <div class="form-group flex-1">
-              <label for="devReasoningEffort">思考强度 (Reasoning)</label>
-              <select id="devReasoningEffort"></select>
-            </div>
+          <div class="form-group">
+            <label for="devSeries">模型系列</label>
+            <select id="devSeries" onchange="onDevSeriesChange()"></select>
+          </div>
+          <div class="form-group">
+            <label for="devModel">具体模型</label>
+            <select id="devModel" onchange="onDevModelChange()"></select>
+          </div>
+          <div class="form-group">
+            <label for="devReasoningEffort">思考强度 (Reasoning Effort)</label>
+            <select id="devReasoningEffort"></select>
           </div>
         </div>
 
         <!-- 4. REVIEWER AGENT CONFIG -->
         <div class="panel-section">
           <h2>🔍 审查方配置 (Reviewer Agent)</h2>
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="reviewProvider">Reviewer 引擎</label>
-              <select id="reviewProvider">
-                <option value="copilot" selected>GitHub Copilot (copilot)</option>
-                <option value="claude">Claude Code (claude)</option>
-                <option value="antigravity">Google Antigravity</option>
-                <option value="cursor">Cursor (cursor)</option>
-                <option value="codex">OpenAI Codex</option>
-                <option value="pi">Inflection Pi</option>
-                <option value="mock">Mock (仿真测试)</option>
-              </select>
-            </div>
-            <div class="form-group flex-1">
-              <label for="reviewSeries">模型系列</label>
-              <select id="reviewSeries" onchange="onReviewSeriesChange()"></select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="reviewModel">具体模型</label>
-              <select id="reviewModel" onchange="onReviewModelChange()"></select>
-            </div>
-            <div class="form-group flex-1">
-              <label for="reviewReasoningEffort">审查思考强度</label>
-              <select id="reviewReasoningEffort"></select>
-            </div>
+          <div class="form-group">
+            <label for="reviewProvider">Reviewer 引擎</label>
+            <select id="reviewProvider" onchange="onReviewEngineChange()">
+              <option value="copilot" selected>GitHub Copilot (GPT / Claude / Gemini)</option>
+              <option value="claude">Claude Code (限 Claude 系列)</option>
+              <option value="antigravity">Google Antigravity (限 Gemini 系列)</option>
+              <option value="cursor">Cursor (多模型)</option>
+              <option value="codex">OpenAI Codex (限 GPT 系列)</option>
+              <option value="pi">Inflection Pi</option>
+              <option value="mock">Mock (仿真测试)</option>
+            </select>
           </div>
           <div class="form-group">
+            <label for="reviewSeries">模型系列</label>
+            <select id="reviewSeries" onchange="onReviewSeriesChange()"></select>
+          </div>
+          <div class="form-group">
+            <label for="reviewModel">具体模型</label>
+            <select id="reviewModel" onchange="onReviewModelChange()"></select>
+          </div>
+          <div class="form-group">
+            <label for="reviewReasoningEffort">审查思考强度</label>
+            <select id="reviewReasoningEffort"></select>
+          </div>
+          <div class="form-group" id="copilotSessionGroup">
             <label for="copilotSessionId">Copilot 会话 ID (保持连续审查)</label>
             <input type="text" id="copilotSessionId" placeholder="例如 9fa43261-d96c-430b-ac43-20e3035ec1bf" value="9fa43261-d96c-430b-ac43-20e3035ec1bf">
           </div>
@@ -262,7 +255,7 @@
           <button class="modal-close" onclick="closeModelManager()">✕</button>
         </div>
         <div class="modal-body">
-          <p class="modal-tip">您可以直接在此维护支持的模型系列（Claude/GPT/Gemini/DeepSeek/GLM/Grok 等）、具体模型 ID 及关联的思考强度档位：</p>
+          <p class="modal-tip">您可以直接在此维护支持的模型系列（Claude/GPT/Gemini/DeepSeek/GLM/Grok 等）、引擎系列绑定规则及关联的思考强度档位：</p>
           <textarea id="modelsJsonEditor" rows="16" class="json-editor"></textarea>
         </div>
         <div class="modal-footer">

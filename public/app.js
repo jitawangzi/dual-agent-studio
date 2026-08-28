@@ -2,7 +2,7 @@
 
 let activeTab = 'timeline';
 let isRunning = false;
-let modelsConfig = { series: [] };
+let modelsConfig = { series: [], engineSeriesRules: {} };
 
 document.addEventListener('DOMContentLoaded', async () => {
   await loadModelsConfig();
@@ -42,22 +42,46 @@ function toggleReqMode(mode) {
   }
 }
 
-// --- FOLDER BROWSER ---
+// --- FOLDER BROWSER (Native + Fallback) ---
 async function browseWorkspaceFolder() {
   try {
     const res = await fetch('/api/browse-folder', { method: 'POST' });
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`服务器响应异常 (${res.status}): ${errText.slice(0, 100)}`);
-    }
-    const data = await res.json();
-    if (data && data.path) {
-      document.getElementById('workspaceRoot').value = data.path;
-      fetchDiff();
-      fetchStatus();
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.path) {
+        document.getElementById('workspaceRoot').value = data.path;
+        fetchDiff();
+        fetchStatus();
+        return;
+      }
+      if (data && data.cancelled) {
+        return;
+      }
     }
   } catch (e) {
-    alert('打开目录选择对话框失败: ' + e.message);
+    console.warn('Native folder browser API failed, opening web fallback:', e);
+  }
+
+  // Fallback to web directory picker
+  const picker = document.getElementById('fallbackFolderPicker');
+  if (picker) picker.click();
+}
+
+function onFallbackFolderPicked(e) {
+  const files = e.target.files;
+  if (files && files.length > 0) {
+    // Some browsers provide full path or relative path
+    const firstFile = files[0];
+    if (firstFile.path) {
+      // In Electron / local browser with path
+      const dirPath = firstFile.path.substring(0, firstFile.path.lastIndexOf('\\') || firstFile.path.lastIndexOf('/'));
+      document.getElementById('workspaceRoot').value = dirPath;
+    } else if (firstFile.webkitRelativePath) {
+      const rootName = firstFile.webkitRelativePath.split('/')[0];
+      alert(`已选择目录: "${rootName}"。请确认物理路径是否正确：`);
+    }
+    fetchDiff();
+    fetchStatus();
   }
 }
 
@@ -85,46 +109,41 @@ async function initProjects() {
   }
 }
 
-// --- TWO-TIER CASCADING MODEL CONFIG ---
+// --- ENGINE & MODEL CASCADE RULES ---
 async function loadModelsConfig() {
   try {
     const res = await fetch('/api/models');
     modelsConfig = await res.json();
-    populateSeriesDropdowns();
+    onDevEngineChange();
+    onReviewEngineChange();
   } catch (e) {
     console.error('Failed to load models config:', e);
   }
 }
 
-function populateSeriesDropdowns() {
+function getSeriesForEngine(engine) {
+  const rules = modelsConfig.engineSeriesRules || {};
+  const allowed = rules[engine] || ['claude', 'gpt', 'gemini', 'deepseek', 'grok', 'glm', 'qwen', 'custom'];
+  return (modelsConfig.series || []).filter(s => allowed.includes(s.id));
+}
+
+function onDevEngineChange() {
+  const engine = document.getElementById('devProvider').value;
   const devSeries = document.getElementById('devSeries');
-  const reviewSeries = document.getElementById('reviewSeries');
+  const allowedSeries = getSeriesForEngine(engine);
 
   devSeries.innerHTML = '';
-  reviewSeries.innerHTML = '';
-
-  (modelsConfig.series || []).forEach(s => {
-    const opt1 = document.createElement('option');
-    opt1.value = s.id;
-    opt1.textContent = s.name;
-    devSeries.appendChild(opt1);
-
-    const opt2 = document.createElement('option');
-    opt2.value = s.id;
-    opt2.textContent = s.name;
-    reviewSeries.appendChild(opt2);
+  allowedSeries.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name;
+    devSeries.appendChild(opt);
   });
 
-  // Set defaults: Dev -> Claude, Reviewer -> GPT / Copilot
-  if (devSeries.querySelector('option[value="claude"]')) {
-    devSeries.value = 'claude';
+  if (allowedSeries.length > 0) {
+    devSeries.value = allowedSeries[0].id;
   }
-  if (reviewSeries.querySelector('option[value="gpt"]')) {
-    reviewSeries.value = 'gpt';
-  }
-
   onDevSeriesChange();
-  onReviewSeriesChange();
 }
 
 function onDevSeriesChange() {
@@ -158,15 +177,41 @@ function onDevModelChange() {
       const opt = document.createElement('option');
       opt.value = eff.value || eff.id;
       opt.textContent = eff.label;
-      if (eff.id === model.defaultEffort) opt.selected = true;
+      if (eff.id === model.defaultEffort || eff.value === model.defaultEffort) {
+        opt.selected = true;
+      }
       effortSelect.appendChild(opt);
     });
   } else {
     const opt = document.createElement('option');
     opt.value = 'none';
-    opt.textContent = 'N/A (非思考模型)';
+    opt.textContent = 'N/A (非思考模型，直接生成代码)';
     effortSelect.appendChild(opt);
   }
+}
+
+function onReviewEngineChange() {
+  const engine = document.getElementById('reviewProvider').value;
+  const reviewSeries = document.getElementById('reviewSeries');
+  const copilotGroup = document.getElementById('copilotSessionGroup');
+  
+  if (copilotGroup) {
+    copilotGroup.style.display = (engine === 'copilot') ? 'block' : 'none';
+  }
+
+  const allowedSeries = getSeriesForEngine(engine);
+  reviewSeries.innerHTML = '';
+  allowedSeries.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name;
+    reviewSeries.appendChild(opt);
+  });
+
+  if (allowedSeries.length > 0) {
+    reviewSeries.value = allowedSeries[0].id;
+  }
+  onReviewSeriesChange();
 }
 
 function onReviewSeriesChange() {
@@ -200,13 +245,15 @@ function onReviewModelChange() {
       const opt = document.createElement('option');
       opt.value = eff.value || eff.id;
       opt.textContent = eff.label;
-      if (eff.id === model.defaultEffort) opt.selected = true;
+      if (eff.id === model.defaultEffort || eff.value === model.defaultEffort) {
+        opt.selected = true;
+      }
       effortSelect.appendChild(opt);
     });
   } else {
     const opt = document.createElement('option');
     opt.value = 'none';
-    opt.textContent = 'N/A (非思考模型)';
+    opt.textContent = 'N/A (非思考模型，直接响应)';
     effortSelect.appendChild(opt);
   }
 }
@@ -232,9 +279,10 @@ async function saveModelsManager() {
     });
     if (res.ok) {
       modelsConfig = parsed;
-      populateSeriesDropdowns();
+      onDevEngineChange();
+      onReviewEngineChange();
       closeModelManager();
-      alert('模型配置已成功保存并实时生效！');
+      alert('模型与规则配置已成功保存并实时生效！');
     } else {
       const err = await res.json();
       alert('保存失败: ' + err.error);
@@ -281,7 +329,7 @@ async function startDiscussion() {
     reviewProvider: document.getElementById('reviewProvider').value,
     reviewModel: document.getElementById('reviewModel').value,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    copilotSessionId: document.getElementById('copilotSessionId').value.trim() || undefined
+    copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined
   };
 
   try {
@@ -557,7 +605,7 @@ async function startLoop() {
     reviewProvider: document.getElementById('reviewProvider').value,
     reviewModel: document.getElementById('reviewModel').value.trim() || undefined,
     reviewReasoningEffort: document.getElementById('reviewReasoningEffort').value,
-    copilotSessionId: document.getElementById('copilotSessionId').value.trim() || undefined,
+    copilotSessionId: document.getElementById('copilotSessionId')?.value.trim() || undefined,
     verifyCommand: document.getElementById('verifyCommand').value.trim() || undefined,
     maxRounds: parseInt(document.getElementById('maxRounds').value, 10) || 4,
     autoCommit: document.getElementById('autoCommit').checked
