@@ -163,7 +163,7 @@ function Invoke-DevTurn {
                 Write-Host "Running GitHub Copilot CLI in $wsPhysical..." -ForegroundColor Gray
                 $copilotCmd = Get-Command "copilot", "copilot.cmd", "copilot.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($copilotCmd) {
-                    $argsList = @("-p", $Prompt, "--allow-all")
+                    $argsList = @("--allow-all")
                     if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
                         $argsList += "--resume=$SessionId"
                     }
@@ -173,7 +173,7 @@ function Invoke-DevTurn {
                     if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
                         $argsList += @("--reasoning-effort", $ReasoningEffort)
                     }
-                    & $copilotCmd.Source @argsList
+                    $Prompt | & $copilotCmd.Source @argsList
                     if ($LASTEXITCODE -ne 0) {
                         throw "DEV_AGENT_EXECUTION_FAILED: GitHub Copilot CLI exited with error code $LASTEXITCODE. Please check terminal output above."
                     }
@@ -337,7 +337,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                 if (-not $copilotCmd) {
                     throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI ('copilot') is not found in PATH."
                 }
-                $argsList = @("-p", $systemInstruction, "-s", "--allow-all")
+                $argsList = @("-s", "--allow-all")
                 if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
                     $argsList += "--resume=$SessionId"
                 }
@@ -347,7 +347,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                 if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
                     $argsList += @("--reasoning-effort", $ReasoningEffort)
                 }
-                $res = & $copilotCmd.Source @argsList 2>&1 | Out-String
+                $res = $systemInstruction | & $copilotCmd.Source @argsList 2>&1 | Out-String
                 $copilotExit = $LASTEXITCODE
                 $jsonObj = Extract-JsonFromText -Text $res
                 if ($null -ne $jsonObj) {

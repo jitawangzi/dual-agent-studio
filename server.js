@@ -332,7 +332,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Helper to execute CLI agent turn in discussion using safe PowerShell invocation
+    // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation
     async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role }) {
         let output = '';
         const tmpFile = path.join(os.tmpdir(), `discuss_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
@@ -342,49 +342,65 @@ const server = http.createServer(async (req, res) => {
             const safeTmp = tmpFile.replace(/\\/g, '/');
             const ws = (workspaceRoot && fs.existsSync(workspaceRoot)) ? workspaceRoot : process.cwd();
 
-        const env = { ...process.env };
-        if (reasoningEffort && reasoningEffort !== 'none') {
-            env.MAX_THINKING_TOKENS = reasoningEffort;
-        }
+            let psCmd = '';
+            const env = { ...process.env };
+            if (!env.http_proxy) env.http_proxy = 'http://127.0.0.1:10809';
+            if (!env.https_proxy) env.https_proxy = 'http://127.0.0.1:10809';
 
-        try {
             if (provider === 'claude') {
-                const claudeArgs = ['--print'];
-                if (model) claudeArgs.push('--model', model);
+                if (reasoningEffort && reasoningEffort !== 'none') {
+                    env.MAX_THINKING_TOKENS = reasoningEffort;
+                }
+                psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print`;
+                if (model) psCmd += ` --model '${model}'`;
+            } else if (provider === 'copilot') {
+                psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
+                if (model) psCmd += ` --model '${model}'`;
+                if (sessionId) psCmd += ` --resume='${sessionId}'`;
+                if (reasoningEffort && reasoningEffort !== 'none') {
+                    psCmd += ` --reasoning-effort '${reasoningEffort}'`;
+                }
+            }
+
+            if (psCmd) {
                 await new Promise((resolve) => {
                     try {
-                        const proc = spawn('claude', claudeArgs, {
-                            cwd: workspaceRoot || process.cwd(),
+                        const proc = spawn('pwsh', ['-NoProfile', '-Command', psCmd], {
+                            cwd: ws,
                             env,
-                            shell: true,
-                            stdio: ['pipe', 'pipe', 'pipe']
+                            shell: false
                         });
+
                         proc.on('error', (err) => {
-                            appendLog(`[${role} Claude] CLI 未在系统 PATH 中找到 (${err.message})，自动切换至智能方案推演`, 'info');
+                            appendLog(`[${role} ${provider}] 调度提示: ${err.message}`, 'info');
                             resolve();
                         });
-                        if (proc.stdin) {
-                            proc.stdin.write(prompt);
-                            proc.stdin.end();
-                        }
+
                         if (proc.stdout) {
                             proc.stdout.on('data', d => output += d.toString('utf-8'));
                         }
                         if (proc.stderr) {
                             proc.stderr.on('data', d => {
                                 const text = d.toString('utf-8');
-                                if (!text.includes('no stdin data received')) {
-                                    appendLog(`[${role} Claude] ${text}`, 'stderr');
+                                if (!text.includes('alt_screen') && !text.includes('no stdin data received')) {
+                                    appendLog(`[${role} ${provider}] ${text}`, 'stderr');
                                 }
                             });
                         }
+
                         proc.on('close', resolve);
                     } catch (e) {
-                        appendLog(`[${role} Claude] 启动失败: ${e.message}`, 'info');
+                        appendLog(`[${role} ${provider}] 异常: ${e.message}`, 'info');
                         resolve();
                     }
                 });
-            } else if (provider === 'copilot') {
+            }
+        } catch (e) {
+            appendLog(`[${role}] 执行异常: ${e.message}`, 'stderr');
+        } finally {
+            try {
+                if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+            } catch {}
         }
 
         return output.trim();
