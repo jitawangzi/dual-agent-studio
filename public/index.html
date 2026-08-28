@@ -49,28 +49,50 @@
           </div>
         </div>
 
-        <!-- 2. REQUIREMENT & DISCUSSION MODE -->
+        <!-- 2. REQUIREMENT & DISCUSSION -->
         <div class="panel-section">
-          <div class="section-header-row">
-            <h2>📝 开发需求与任务规划</h2>
+          <div class="section-title-row">
+            <h2>📝 需求规划与工作模式</h2>
             <div class="mode-toggle">
-              <label><input type="radio" name="reqMode" value="direct" checked onchange="toggleReqMode('direct')"> ⚡ 确定需求</label>
-              <label><input type="radio" name="reqMode" value="discuss" onchange="toggleReqMode('discuss')"> 💬 需求讨论</label>
+              <label title="需求已明确，直接进入全自动编码-测试-审查闭环">
+                <input type="radio" name="reqMode" value="direct" checked onchange="toggleReqMode('direct')"> ⚡ 确定需求
+              </label>
+              <label title="初步/模糊想法，双 Agent 多轮推演辩论达成共识后再执行">
+                <input type="radio" name="reqMode" value="discuss" onchange="toggleReqMode('discuss')"> 💬 需求讨论
+              </label>
             </div>
           </div>
 
           <!-- DIRECT MODE -->
           <div id="directReqBox" class="form-group">
-            <label for="taskPrompt">明确任务描述 (Task Prompt)</label>
-            <textarea id="taskPrompt" rows="3" placeholder="请输入具体需要开发、重构或优化的目标需求..."></textarea>
+            <div class="mode-tip-banner direct">
+              ⚡ <b>直接执行模式</b>：需求已明确具体，直接由开发方编码、运行测试门禁、审查方复核并自动自愈提交。
+            </div>
+            <label for="taskPrompt">明确开发任务描述 (Task Prompt)</label>
+            <textarea id="taskPrompt" rows="4" placeholder="请输入具体需要开发、重构或优化的目标需求（包含具体模块、功能点或接口）..."></textarea>
           </div>
 
           <!-- DISCUSSION MODE -->
           <div id="discussReqBox" class="form-group" style="display: none;">
+            <div class="mode-tip-banner discuss">
+              💬 <b>多轮共识推演模式</b>：输入初步构想，开发方与审查方将自动展开多轮辩论与质询，直至就架构、风险与测试门禁达成共识。
+            </div>
             <label for="vaguePrompt">模糊/初步想法 (Vague Idea)</label>
-            <textarea id="vaguePrompt" rows="2" placeholder="例如：我想为当前服务增加一个内存缓存层，提升响应速度，但还没想好具体类和接口..."></textarea>
-            <button id="btnStartDiscuss" class="btn btn-sm btn-secondary" style="width: 100%; margin-top: 6px;" onclick="startDiscussion()">
-              💬 启动双 Agent 需求对齐与方案推演
+            <textarea id="vaguePrompt" rows="3" placeholder="例如：我想为当前服务增加一个内存缓存层，提升响应速度，但还没想好具体类和接口..."></textarea>
+            
+            <div class="form-row" style="margin-top: 6px;">
+              <div class="form-group flex-1">
+                <label for="maxDiscussionRounds">最大推演轮次</label>
+                <select id="maxDiscussionRounds">
+                  <option value="1">1 轮快速对齐 (初案 + 审查补充)</option>
+                  <option value="2" selected>2 轮标准推演 (提案 -> 质询 -> 修订 -> 共识)</option>
+                  <option value="3">3 轮深度辩论 (多轮攻防打磨)</option>
+                </select>
+              </div>
+            </div>
+
+            <button id="btnStartDiscuss" class="btn btn-sm btn-secondary" style="width: 100%; margin-top: 8px;" onclick="startDiscussion()">
+              💬 启动双 Agent 多轮对齐与共识推演
             </button>
           </div>
 
@@ -80,7 +102,7 @@
               <input type="text" id="featureName" placeholder="例如 feature-cache-opt">
             </div>
             <div class="form-group flex-1">
-              <label for="maxRounds">最大轮次 (Max Rounds)</label>
+              <label for="maxRounds">执行最大轮次 (Max Rounds)</label>
               <input type="number" id="maxRounds" min="1" max="10" value="4">
             </div>
           </div>
@@ -236,26 +258,32 @@
         <div id="tab-discussion" class="tab-content">
           <div class="discussion-container">
             <div class="discussion-header">
-              <h3>💬 双 Agent 需求对齐与方案推演</h3>
-              <p class="text-muted">开发方拟定架构与子任务，审查方补充安全约束与测试门禁，综合生成可执行方案供人工判定。</p>
+              <div class="discussion-header-left">
+                <h3>💬 双 Agent 需求对齐与方案推演</h3>
+                <p class="text-muted">开发方提出架构与子任务，审查方进行边界质询与安全门禁补充，双方多轮推演直至达成共识，最终由开发方执行。</p>
+              </div>
+              <div id="discussionStatusBadge" class="discussion-status-badge">等待发起</div>
             </div>
             <div id="discussionMessages" class="discussion-messages">
               <div class="empty-state">
-                <p>在左侧选择【💬 需求讨论】模式并输入模糊想法后，点击【启动双 Agent 需求对齐】即可在此查看讨论。</p>
+                <div class="empty-icon">💭</div>
+                <p>在左侧选择【💬 需求讨论】模式并输入模糊想法后，点击【启动双 Agent 多轮对齐与共识推演】即可在此查看双方的深度辩论与共识过程。</p>
               </div>
             </div>
 
             <!-- HUMAN DECISION GATE -->
             <div id="humanDecisionGate" class="human-decision-gate" style="display: none;">
               <div class="gate-header">
-                <h4>🎯 人工判定与任务确认 (Human Approval Gate)</h4>
-                <span class="gate-badge">待人工确认</span>
+                <div>
+                  <h4>🎯 人工判定与执行确认 (Human Approval Gate)</h4>
+                  <p style="font-size: 12px; color: #94a3b8; margin: 2px 0 0 0;">双 Agent 已完成多轮辩论并达成架构共识。确认以下任务执行方案无误后，直接指派给开发方执行：</p>
+                </div>
+                <span id="consensusBadge" class="gate-badge">🏆 达成共识 / 待人工确认</span>
               </div>
-              <p style="font-size: 12px; color: #cbd5e1; margin-bottom: 8px;">以下是双方讨论后提炼的最终执行方案。您可以在下方直接编辑、调整清单后点击确认：</p>
               <textarea id="finalPlanEditor" rows="8" class="plan-editor"></textarea>
               <div class="gate-actions">
                 <button class="btn btn-primary" onclick="approvePlanAndStart()">
-                  ✅ 确认方案并开始执行 (Approve & Launch)
+                  ✅ 确认共识方案并开始执行 (Approve & Launch)
                 </button>
               </div>
             </div>

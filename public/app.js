@@ -500,6 +500,7 @@ async function saveModelsManager() {
 async function startDiscussion() {
   const ws = document.getElementById('workspaceRoot').value.trim();
   const vague = document.getElementById('vaguePrompt').value.trim();
+  const maxDiscussionRounds = parseInt(document.getElementById('maxDiscussionRounds')?.value, 10) || 2;
 
   if (!ws) {
     alert('请填写项目物理根目录路径！');
@@ -515,14 +516,19 @@ async function startDiscussion() {
 
   const btn = document.getElementById('btnStartDiscuss');
   btn.disabled = true;
-  btn.textContent = '⏳ 双 Agent 正在推演讨论中...';
+  btn.textContent = '⏳ 双 Agent 正在多轮推演讨论中...';
 
   switchTab('discussion');
   const container = document.getElementById('discussionMessages');
+  const statusBadge = document.getElementById('discussionStatusBadge');
+  if (statusBadge) {
+    statusBadge.className = 'discussion-status-badge running';
+    statusBadge.textContent = `多轮推演中 (最大 ${maxDiscussionRounds} 轮)...`;
+  }
   container.innerHTML = `
     <div class="empty-state">
       <div class="empty-icon">💭</div>
-      <p>正在由开发方 (${document.getElementById('devProvider').value}) 与审查方 (${document.getElementById('reviewProvider').value}) 展开需求与架构对齐讨论...</p>
+      <p>正在由开发方 (${document.getElementById('devProvider').value}) 与审查方 (${document.getElementById('reviewProvider').value}) 展开多轮需求辩论与架构共识推演...</p>
     </div>
   `;
   document.getElementById('humanDecisionGate').style.display = 'none';
@@ -530,6 +536,7 @@ async function startDiscussion() {
   const payload = {
     workspaceRoot: ws,
     vaguePrompt: vague,
+    maxDiscussionRounds,
     devProvider: document.getElementById('devProvider').value,
     devModel: effectiveDevModel,
     devReasoningEffort: document.getElementById('devReasoningEffort').value,
@@ -548,32 +555,26 @@ async function startDiscussion() {
     });
     const result = await res.json();
     btn.disabled = false;
-    btn.textContent = '💬 启动双 Agent 需求对齐与方案推演';
+    btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
 
     if (!res.ok) {
       alert('需求讨论失败: ' + result.error);
+      if (statusBadge) {
+        statusBadge.className = 'discussion-status-badge error';
+        statusBadge.textContent = '推演异常';
+      }
       return;
     }
 
-    // Render Discussion Cards
-    container.innerHTML = `
-      <div class="discussion-card dev">
-        <div class="discussion-card-header">
-          <span>🛠️ 开发方提案 (${payload.devProvider} / ${payload.devModel})</span>
-          <span>方案规划</span>
-        </div>
-        <div class="discussion-body">${renderMarkdown(result.devProposal)}</div>
-      </div>
-      <div class="discussion-card reviewer">
-        <div class="discussion-card-header">
-          <span>🔍 审查方评估与质询 (${payload.reviewProvider} / ${payload.reviewModel})</span>
-          <span>安全与门禁约束</span>
-        </div>
-        <div class="discussion-body">${renderMarkdown(result.reviewerFeedback)}</div>
-      </div>
-    `;
+    if (statusBadge) {
+      statusBadge.className = 'discussion-status-badge success';
+      statusBadge.textContent = result.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
+    }
 
-    // Show Human Decision Gate
+    // Render Full Multi-Round Discussion Cards
+    renderDiscussionRounds(result.rounds || []);
+
+    // Show Human Decision Gate with final consolidated blueprint
     const gate = document.getElementById('humanDecisionGate');
     const editor = document.getElementById('finalPlanEditor');
     editor.value = result.finalPlan;
@@ -583,9 +584,39 @@ async function startDiscussion() {
     gate.style.display = 'block';
   } catch (e) {
     btn.disabled = false;
-    btn.textContent = '💬 启动双 Agent 需求对齐与方案推演';
+    btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+    if (statusBadge) {
+      statusBadge.className = 'discussion-status-badge error';
+      statusBadge.textContent = '推演异常';
+    }
     alert('请求异常: ' + e.message);
   }
+}
+
+function renderDiscussionRounds(rounds) {
+  const container = document.getElementById('discussionMessages');
+  if (!rounds || rounds.length === 0) return;
+
+  container.innerHTML = '';
+  rounds.forEach(msg => {
+    const isDev = msg.sender === 'DEV';
+    const card = document.createElement('div');
+    card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
+    
+    card.innerHTML = `
+      <div class="discussion-card-header">
+        <span class="sender-tag">
+          ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
+        </span>
+        <div class="round-badge-group">
+          <span class="round-chip">Round ${msg.round}</span>
+          ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+        </div>
+      </div>
+      <div class="discussion-body">${renderMarkdown(msg.content)}</div>
+    `;
+    container.appendChild(card);
+  });
 }
 
 function approvePlanAndStart() {
@@ -601,6 +632,7 @@ function approvePlanAndStart() {
   const directRadio = document.querySelector('input[name="reqMode"][value="direct"]');
   if (directRadio) directRadio.checked = true;
 
+  switchTab('timeline');
   startLoop();
 }
 
@@ -625,6 +657,32 @@ function initSSE() {
     const mailbox = JSON.parse(e.data);
     if (mailbox) {
       renderTimeline(mailbox);
+    }
+  });
+
+  eventSource.addEventListener('discussion_message', (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg) {
+      const container = document.getElementById('discussionMessages');
+      const empty = container.querySelector('.empty-state');
+      if (empty) empty.remove();
+
+      const isDev = msg.sender === 'DEV';
+      const card = document.createElement('div');
+      card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
+      card.innerHTML = `
+        <div class="discussion-card-header">
+          <span class="sender-tag">
+            ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
+          </span>
+          <div class="round-badge-group">
+            <span class="round-chip">Round ${msg.round}</span>
+            ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+          </div>
+        </div>
+        <div class="discussion-body">${renderMarkdown(msg.content)}</div>
+      `;
+      container.appendChild(card);
     }
   });
 

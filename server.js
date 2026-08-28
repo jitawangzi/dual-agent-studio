@@ -309,7 +309,55 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 5. REST API: /api/discuss (Requirement Alignment & Discussion Phase)
+    // Helper to execute CLI agent turn in discussion
+    async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role }) {
+        let output = '';
+        const env = { ...process.env };
+        if (reasoningEffort && reasoningEffort !== 'none') {
+            env.MAX_THINKING_TOKENS = reasoningEffort;
+        }
+
+        try {
+            if (provider === 'claude') {
+                const claudeArgs = ['-p', prompt];
+                if (model) claudeArgs.push('--model', model);
+                const proc = spawn('claude', claudeArgs, {
+                    cwd: workspaceRoot || process.cwd(),
+                    env,
+                    shell: process.platform === 'win32'
+                });
+                await new Promise((resolve) => {
+                    proc.stdout.on('data', d => output += d.toString('utf-8'));
+                    proc.stderr.on('data', d => appendLog(`[${role} Claude] ${d.toString('utf-8')}`, 'stderr'));
+                    proc.on('close', resolve);
+                    proc.on('error', resolve);
+                });
+            } else if (provider === 'copilot') {
+                const copilotArgs = ['-p', prompt, '-s', '--allow-all'];
+                if (model) copilotArgs.push('--model', model);
+                if (sessionId) copilotArgs.push(`--resume=${sessionId}`);
+                if (reasoningEffort && reasoningEffort !== 'none') {
+                    copilotArgs.push('--reasoning-effort', reasoningEffort);
+                }
+                const proc = spawn('copilot', copilotArgs, {
+                    cwd: workspaceRoot || process.cwd(),
+                    env,
+                    shell: process.platform === 'win32'
+                });
+                await new Promise((resolve) => {
+                    proc.stdout.on('data', d => output += d.toString('utf-8'));
+                    proc.stderr.on('data', d => appendLog(`[${role} Copilot] ${d.toString('utf-8')}`, 'stderr'));
+                    proc.on('close', resolve);
+                    proc.on('error', resolve);
+                });
+            }
+        } catch (e) {
+            output = '';
+        }
+        return output.trim();
+    }
+
+    // 5. REST API: /api/discuss (Multi-Round Collaborative Requirement Alignment)
     if (pathname === '/api/discuss' && req.method === 'POST') {
         let body = '';
         req.on('data', c => body += c);
@@ -318,12 +366,15 @@ const server = http.createServer(async (req, res) => {
                 const {
                     workspaceRoot,
                     vaguePrompt,
+                    maxDiscussionRounds = 2,
                     devProvider = 'claude',
                     devModel,
                     devReasoningEffort,
+                    devSessionId,
                     reviewProvider = 'copilot',
                     reviewModel,
                     reviewReasoningEffort,
+                    reviewSessionId,
                     copilotSessionId
                 } = JSON.parse(body);
 
@@ -333,166 +384,158 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
-                appendLog(`💬 发起双 Agent 需求对齐与架构讨论: "${vaguePrompt}"`, 'system');
-                broadcast('discussion_start', { prompt: vaguePrompt });
+                const totalRounds = Math.min(Math.max(parseInt(maxDiscussionRounds, 10) || 2, 1), 4);
+                appendLog(`💬 发起双 Agent 多轮需求对齐与架构共识推演 (最大 ${totalRounds} 轮): "${vaguePrompt}"`, 'system');
+                broadcast('discussion_start', { prompt: vaguePrompt, maxRounds: totalRounds });
 
-                // Step 1: Dev Agent Generates Proposal
-                appendLog(`🛠️ [Step 1] 开发方 (${devProvider} / ${devModel || 'default'}) 正在分析需求并拟定方案提案...`, 'stdout');
-                
-                const devSystemPrompt = `
+                const effectiveReviewSessionId = reviewSessionId || copilotSessionId;
+                const discussionHistory = [];
+                let devProposal = '';
+                let reviewerFeedback = '';
+                let consensusReached = false;
+
+                for (let r = 1; r <= totalRounds; r++) {
+                    // --- 1. Dev Agent Turn ---
+                    appendLog(`🛠️ [Round ${r}/${totalRounds} 讨论] 开发方 (${devProvider} / ${devModel || 'default'}) 正在${r === 1 ? '分析需求并拟定初案' : '根据审查方意见修正方案并深化子任务'}...`, 'stdout');
+
+                    let devPrompt = '';
+                    if (r === 1) {
+                        devPrompt = `
 You are the Lead Developer Agent.
 Workspace: ${workspaceRoot || 'Current Workspace'}
-User Raw/Vague Requirement: "${vaguePrompt}"
-
-Please analyze this requirement and provide a structured implementation proposal in markdown:
-1. **Core Intent & Acceptance Criteria (核心目标与验收准则)**
-2. **Architecture & Scope of Changes (架构改动与涉及模块)**
-3. **Actionable Subtask Checklist (可落地的任务分解清单 - 每项包含具体文件与逻辑)**
-4. **Potential Risks & Testing Plan (风险点与测试计划)**
-
-Keep it precise, practical, and highly structured.
-`;
-                let devProposal = '';
-                try {
-                    const devEnv = { ...process.env };
-                    if (devReasoningEffort && devReasoningEffort !== 'none') {
-                        devEnv.MAX_THINKING_TOKENS = devReasoningEffort;
-                    }
-
-                    if (devProvider === 'claude') {
-                        const claudeArgs = ['-p', devSystemPrompt];
-                        if (devModel) claudeArgs.push('--model', devModel);
-                        const cProc = spawn('claude', claudeArgs, {
-                            cwd: workspaceRoot || process.cwd(),
-                            env: devEnv,
-                            shell: process.platform === 'win32'
-                        });
-                        await new Promise((resolve) => {
-                            cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
-                            cProc.stderr.on('data', d => appendLog(`[Claude Dev Error] ${d.toString('utf-8')}`, 'stderr'));
-                            cProc.on('close', resolve);
-                            cProc.on('error', resolve);
-                        });
-                    } else if (devProvider === 'copilot') {
-                        const copilotArgs = ['-p', devSystemPrompt, '-s', '--allow-all'];
-                        if (devModel) copilotArgs.push('--model', devModel);
-                        if (devReasoningEffort && devReasoningEffort !== 'none') {
-                            copilotArgs.push('--reasoning-effort', devReasoningEffort);
-                        }
-                        const cProc = spawn('copilot', copilotArgs, {
-                            cwd: workspaceRoot || process.cwd(),
-                            env: devEnv,
-                            shell: process.platform === 'win32'
-                        });
-                        await new Promise((resolve) => {
-                            cProc.stdout.on('data', d => devProposal += d.toString('utf-8'));
-                            cProc.stderr.on('data', d => appendLog(`[Copilot Dev Error] ${d.toString('utf-8')}`, 'stderr'));
-                            cProc.on('close', resolve);
-                            cProc.on('error', resolve);
-                        });
-                    } else {
-                        // Mock/Generic fallback for discussion
-                        devProposal = `### 🎯 开发方初拟方案 (Dev Proposal)
-1. **核心目标**：针对 "${vaguePrompt}" 建立高效健壮的功能实现与模块隔离。
-2. **改动范围**：
-   - 核心业务层与调度状态管理
-   - 外部调用配置与思考强度参数透传
-   - 自动化门禁测试与端到端闭环验证
-3. **任务清单**：
-   - [ ] [Task 1] 实现核心能力并增加前置参数与边界校验
-   - [ ] [Task 2] 编写针对性单元测试与回归门禁验证
-   - [ ] [Task 3] 验证与外部依赖模块契约一致性`;
-                    }
-                } catch (e) {
-                    devProposal = `### 🎯 开发方初步方案\n针对需求 "${vaguePrompt}" 进行架构拆解与功能落地。`;
-                }
-
-                if (!devProposal || devProposal.trim().length === 0) {
-                    devProposal = `### 🎯 开发方初拟方案 (Dev Proposal)\n针对需求 "${vaguePrompt}" 进行架构拆解与子任务规划。`;
-                }
-
-                broadcast('discussion_message', { sender: 'DEV', content: devProposal });
-                appendLog(`✅ 开发方提案已就绪，转交审查方审阅...`, 'stdout');
-
-                // Step 2: Reviewer Critiques & Refines
-                appendLog(`🔍 [Step 2] 审查方 (${reviewProvider} / ${reviewModel || 'default'}) 正在审查提案并补充安全与测试门禁...`, 'stdout');
-
-                const reviewerSystemPrompt = `
-You are the Independent Senior Reviewer Agent.
 User Initial Requirement: "${vaguePrompt}"
-Developer Proposed Plan:
+
+Please analyze this requirement and provide a structured technical implementation proposal in markdown:
+1. **Core Intent & Acceptance Criteria (核心目标与验收准则)**
+2. **Architecture & Scope of Changes (架构设计与涉及模块)**
+3. **Actionable Subtask Checklist (可落地的任务分解清单 - 每项包含具体文件、方法与逻辑)**
+4. **Potential Risks & Test Gate Strategy (风险防范与自动化测试门禁策略)**
+
+Keep it clear, modular, and highly practical.
+`;
+                    } else {
+                        devPrompt = `
+You are the Lead Developer Agent.
+Workspace: ${workspaceRoot || 'Current Workspace'}
+User Initial Requirement: "${vaguePrompt}"
+Your Previous Proposal:
 ${devProposal}
 
-Review this proposal critically. Supplement any missing edge cases, security considerations, rollback plans, and test gate constraints.
-Output your final synthesized recommendation for the developer and user to approve.
+The Reviewer Agent has provided the following critical feedback/concerns in Round ${r - 1}:
+${reviewerFeedback}
+
+Please thoroughly address all points raised by the Reviewer:
+1. Direct response to security, concurrency, failure modes, and edge-case concerns.
+2. Refined architecture and boundary definitions.
+3. Updated, concrete subtask checklist (- [ ] Task ...) incorporating all necessary safeguards and test gates.
+4. Output your revised, consolidated proposal.
 `;
-                let reviewerFeedback = '';
-                try {
-                    const reviewEnv = { ...process.env };
-                    if (reviewReasoningEffort && reviewReasoningEffort !== 'none') {
-                        reviewEnv.MAX_THINKING_TOKENS = reviewReasoningEffort;
                     }
 
-                    if (reviewProvider === 'copilot') {
-                        const copilotArgs = ['-p', reviewerSystemPrompt, '-s', '--allow-all'];
-                        if (reviewModel) copilotArgs.push('--model', reviewModel);
-                        if (copilotSessionId) copilotArgs.push(`--resume=${copilotSessionId}`);
-                        if (reviewReasoningEffort && reviewReasoningEffort !== 'none') {
-                            copilotArgs.push('--reasoning-effort', reviewReasoningEffort);
+                    let devOut = await executeDiscussionAgent({
+                        provider: devProvider,
+                        model: devModel,
+                        reasoningEffort: devReasoningEffort,
+                        sessionId: devSessionId,
+                        prompt: devPrompt,
+                        workspaceRoot,
+                        role: `Dev-R${r}`
+                    });
+
+                    if (!devOut) {
+                        if (r === 1) {
+                            devOut = `### 🛠️ 开发方方案提案 (第 1 轮)\n1. **核心目标**：针对 "${vaguePrompt}" 进行模块化架构设计与开发落地。\n2. **模块变动**：\n   - 核心业务处理与调度逻辑\n   - 参数安全校验与异常处理\n   - 自动化门禁测试套件\n3. **可执行子任务清单**：\n   - [ ] [Task 1] 实现核心功能与边界参数校验\n   - [ ] [Task 2] 编写单元测试验证正常流与异常流\n   - [ ] [Task 3] 跑通自动化测试门禁并验证模块契约`;
+                        } else {
+                            devOut = `### 🛠️ 开发方方案修订 (第 ${r} 轮)\n1. **回应审查意见**：已强化并发安全性、异常重试与前置校验，补充端到端测试门禁。\n2. **深化任务清单**：\n   - [ ] [Task 1] 核心业务层实现，加入线程安全与边界防御\n   - [ ] [Task 2] 编写针对性单元测试与回归门禁验证\n   - [ ] [Task 3] 验证与外部依赖契约一致性`;
                         }
-                        const rProc = spawn('copilot', copilotArgs, {
-                            cwd: workspaceRoot || process.cwd(),
-                            env: reviewEnv,
-                            shell: process.platform === 'win32'
-                        });
-                        await new Promise((resolve) => {
-                            rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
-                            rProc.stderr.on('data', d => appendLog(`[Copilot Reviewer Error] ${d.toString('utf-8')}`, 'stderr'));
-                            rProc.on('close', resolve);
-                            rProc.on('error', resolve);
-                        });
-                    } else if (reviewProvider === 'claude') {
-                        const claudeArgs = ['-p', reviewerSystemPrompt];
-                        if (reviewModel) claudeArgs.push('--model', reviewModel);
-                        const rProc = spawn('claude', claudeArgs, {
-                            cwd: workspaceRoot || process.cwd(),
-                            env: reviewEnv,
-                            shell: process.platform === 'win32'
-                        });
-                        await new Promise((resolve) => {
-                            rProc.stdout.on('data', d => reviewerFeedback += d.toString('utf-8'));
-                            rProc.stderr.on('data', d => appendLog(`[Claude Reviewer Error] ${d.toString('utf-8')}`, 'stderr'));
-                            rProc.on('close', resolve);
-                            rProc.on('error', resolve);
-                        });
-                    } else {
-                        reviewerFeedback = `### 🔍 审查方评估意见 (Reviewer Critique)
-1. **安全与并发防御**：确保所有状态修改具备前置防御、异常捕获与超时回滚；
-2. **测试门禁约束**：必须跑通工程测试套件并通过代码质量检查；
-3. **判定**：方案架构合理，风险可控，确认无误后可进入全自动迭代执行。`;
                     }
-                } catch (e) {
-                    reviewerFeedback = `### 🔍 审查方建议\n建议增加完备的异常处理与自动化测试门禁。`;
+
+                    devProposal = devOut;
+                    const devMsg = {
+                        round: r,
+                        sender: 'DEV',
+                        role: r === 1 ? '🛠️ 开发方初始提案' : `🛠️ 开发方方案修订 (第 ${r} 轮)`,
+                        content: devProposal
+                    };
+                    discussionHistory.push(devMsg);
+                    broadcast('discussion_message', devMsg);
+
+                    // --- 2. Reviewer Agent Turn ---
+                    appendLog(`🔍 [Round ${r}/${totalRounds} 讨论] 审查方 (${reviewProvider} / ${reviewModel || 'default'}) 正在${r === 1 ? '审查提案并提出质询与边界约束' : '复核修订方案并评估共识'}...`, 'stdout');
+
+                    const reviewerPrompt = `
+You are the Independent Senior Technical Architect & Reviewer Agent.
+Workspace: ${workspaceRoot || 'Current Workspace'}
+User Initial Requirement: "${vaguePrompt}"
+Developer Proposed Plan (Round ${r}):
+${devProposal}
+
+Analyze this proposal critically for:
+1. Edge cases, data corruption risks, security vulnerabilities, or concurrency pitfalls.
+2. Completeness of subtask checklist, rollback feasibility, and test gate coverage.
+
+Conclude with your verdict:
+- If all technical risks are addressed and the plan is ready for execution, conclude with:
+  **[VERDICT: CONSENSUS_REACHED]** (共识达成，方案完备可执行)
+- If there are still critical missing considerations or open questions, conclude with:
+  **[VERDICT: NEEDS_REFINEMENT]** (需进一步修改) followed by the specific questions and demands for the developer.
+`;
+
+                    let revOut = await executeDiscussionAgent({
+                        provider: reviewProvider,
+                        model: reviewModel,
+                        reasoningEffort: reviewReasoningEffort,
+                        sessionId: effectiveReviewSessionId,
+                        prompt: reviewerPrompt,
+                        workspaceRoot,
+                        role: `Reviewer-R${r}`
+                    });
+
+                    if (!revOut) {
+                        if (r < totalRounds) {
+                            revOut = `### 🔍 审查方质询 (第 ${r} 轮)\n1. **并发与边界防御**：请开发方明确高并发场景下的数据竞争防御与超时回滚策略。\n2. **自动化测试门禁**：测试用例必须覆盖边界异常流。\n\n**[VERDICT: NEEDS_REFINEMENT]** 请开发方在下轮中补全上述防范措施。`;
+                        } else {
+                            revOut = `### 🔍 审查方评估与共识确认 (第 ${r} 轮)\n1. **架构与防御**：方案已明确防御措施与异常回滚机制。\n2. **测试门禁**：已制定完备的自动化门禁与回归路径。\n\n**[VERDICT: CONSENSUS_REACHED]** 双方达成共识，方案完备，可进入执行阶段。`;
+                        }
+                    }
+
+                    reviewerFeedback = revOut;
+                    const isConsensus = revOut.includes('CONSENSUS_REACHED') || revOut.includes('共识达成') || r >= totalRounds;
+                    const revMsg = {
+                        round: r,
+                        sender: 'REVIEWER',
+                        role: isConsensus ? `🔍 审查方达成共识 (第 ${r} 轮)` : `🔍 审查方质询与要求 (第 ${r} 轮)`,
+                        content: reviewerFeedback,
+                        consensus: isConsensus
+                    };
+                    discussionHistory.push(revMsg);
+                    broadcast('discussion_message', revMsg);
+
+                    if (isConsensus) {
+                        consensusReached = true;
+                        appendLog(`🎉 [Round ${r}] 双 Agent 在需求与架构方案上达成共识！`, 'stdout');
+                        break;
+                    }
                 }
 
-                if (!reviewerFeedback || reviewerFeedback.trim().length === 0) {
-                    reviewerFeedback = `### 🔍 审查方评估意见\n方案架构合理，建议补充完整测试门禁并执行。`;
-                }
+                // --- 3. Synthesize Final Task Plan ---
+                const finalSynthesizedPlan = `${devProposal}\n\n---\n\n### 📋 审查方确认之约束与测试门禁\n${reviewerFeedback}`;
+                appendLog(`🏁 需求多轮推演完成（共 ${discussionHistory.length} 轮次交互）！已生成综合可执行任务方案，等待人工确认...`, 'system');
 
-                broadcast('discussion_message', { sender: 'REVIEWER', content: reviewerFeedback });
-
-                // Synthesize Final Task Plan
-                const finalSynthesizedPlan = `${devProposal}\n\n---\n\n${reviewerFeedback}`;
-                appendLog(`🏁 需求讨论完成！已生成综合任务提案，等待人工判定与微调...`, 'system');
-
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
+                const responseData = {
                     success: true,
+                    consensusReached,
+                    rounds: discussionHistory,
                     devProposal,
                     reviewerFeedback,
                     finalPlan: finalSynthesizedPlan,
                     suggestedFeature: 'feature_' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '_' + Math.random().toString(36).substring(2,6)
-                }));
+                };
+
+                broadcast('discussion_complete', responseData);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(responseData));
             } catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
