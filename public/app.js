@@ -906,6 +906,32 @@ function initSSE() {
     }
   });
 
+  eventSource.addEventListener('discussion_complete', (e) => {
+    const data = JSON.parse(e.data);
+    if (data) {
+      const statusBadge = document.getElementById('discussionStatusBadge');
+      if (statusBadge) {
+        statusBadge.className = 'discussion-status-badge success';
+        statusBadge.textContent = data.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
+      }
+      const gate = document.getElementById('humanDecisionGate');
+      const editor = document.getElementById('finalPlanEditor');
+      if (gate && editor && data.finalPlan) {
+        editor.value = data.finalPlan;
+        if (data.suggestedFeature && !document.getElementById('featureName').value) {
+          document.getElementById('featureName').value = data.suggestedFeature;
+        }
+        gate.style.display = 'block';
+        setTimeout(() => gate.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
+      }
+      const btn = document.getElementById('btnStartDiscuss');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+      }
+    }
+  });
+
   eventSource.onerror = () => {
     console.warn('SSE connection lost, reconnecting...');
   };
