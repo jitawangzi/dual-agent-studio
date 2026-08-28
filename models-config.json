@@ -3,95 +3,117 @@
     {
       "id": "claude",
       "name": "Claude 系列 (Anthropic)",
+      "description": "Anthropic 旗舰模型，支持混合推理与长思考预算控制",
       "models": [
         {
           "id": "claude-3-7-sonnet-20250219",
-          "name": "Claude 3.7 Sonnet (Hybrid Reasoning)",
+          "name": "Claude 3.7 Sonnet (Hybrid Reasoning 混合思考旗舰)",
           "effortType": "thinking_tokens",
-          "defaultEffort": "high",
+          "defaultEffort": "16384",
           "efforts": [
-            { "id": "high", "label": "High (16,384 Thinking Tokens)", "value": "16384" },
-            { "id": "medium", "label": "Medium (8,192 Thinking Tokens)", "value": "8192" },
-            { "id": "low", "label": "Low (2,048 Thinking Tokens)", "value": "2048" },
-            { "id": "max", "label": "Max (64,000 Thinking Tokens)", "value": "64000" },
-            { "id": "off", "label": "Off (关闭思考 / 0 Tokens)", "value": "0" }
+            { "id": "16384", "label": "High (16,384 Thinking Tokens - 推荐深入架构推演)", "value": "16384" },
+            { "id": "8192", "label": "Medium (8,192 Thinking Tokens - 均衡编码与自愈)", "value": "8192" },
+            { "id": "2048", "label": "Low (2,048 Thinking Tokens - 快速轻度自省)", "value": "2048" },
+            { "id": "64000", "label": "Max (64,000 Thinking Tokens - 极致极限逻辑推演)", "value": "64000" },
+            { "id": "0", "label": "Off (0 Tokens - 关闭思考，标准直接响应)", "value": "0" }
           ]
         },
         {
           "id": "claude-3-5-sonnet-20241022",
-          "name": "Claude 3.5 Sonnet (v2)",
+          "name": "Claude 3.5 Sonnet v2 (稳定经典编程主力)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+            { "id": "none", "label": "N/A (非思考模型，直接生成代码)", "value": "" }
           ]
         },
         {
           "id": "claude-3-5-haiku-20241022",
-          "name": "Claude 3.5 Haiku",
+          "name": "Claude 3.5 Haiku (轻量极速小型模型)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (标准高速模型)", "value": "" }
+            { "id": "none", "label": "N/A (标准高速模式)", "value": "" }
           ]
         },
         {
           "id": "claude-3-opus-20240229",
-          "name": "Claude 3 Opus",
+          "name": "Claude 3 Opus (宏观架构与长文分析)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+            { "id": "none", "label": "N/A (标准直接响应)", "value": "" }
           ]
         }
       ]
     },
     {
       "id": "gpt",
-      "name": "GPT / OpenAI o-Series 系列",
+      "name": "GPT / OpenAI o-Series 系列 (OpenAI / Copilot)",
+      "description": "OpenAI 旗舰与 Copilot 原生支持模型，支持推理强度档位控制",
       "models": [
         {
           "id": "gpt-5.4",
-          "name": "GPT-5.4 (Next-Gen Flagship)",
+          "name": "GPT-5.4 (Copilot 下一代旗舰推理模型)",
           "effortType": "copilot_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高强度推演)", "value": "high" },
-            { "id": "xhigh", "label": "X-High / Max (极致思考)", "value": "xhigh" },
-            { "id": "medium", "label": "Medium (均衡思考)", "value": "medium" },
-            { "id": "low", "label": "Low (轻度思考)", "value": "low" },
-            { "id": "none", "label": "None (直接输出)", "value": "none" }
+            { "id": "high", "label": "High (高强度推演 - 适合严格代码审计与边界检测)", "value": "high" },
+            { "id": "xhigh", "label": "X-High / Max (极致深度思考 - 复杂高并发/分布式逻辑)", "value": "xhigh" },
+            { "id": "medium", "label": "Medium (均衡思考 - 推荐常规开发)", "value": "medium" },
+            { "id": "low", "label": "Low (轻度思考 - 快速轻量检查)", "value": "low" },
+            { "id": "none", "label": "None (直接输出 - 关闭推演)", "value": "none" }
           ]
         },
         {
           "id": "o3-mini",
-          "name": "OpenAI o3-mini (High-Speed Reasoning)",
+          "name": "OpenAI o3-mini (高速代码与数学专用推理模型)",
           "effortType": "reasoning_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (高深度推理)", "value": "high" },
-            { "id": "medium", "label": "Medium (中等深度)", "value": "medium" },
-            { "id": "low", "label": "Low (快速浅层推理)", "value": "low" }
+            { "id": "high", "label": "High (高深度推理 - 严谨算法与边界推演)", "value": "high" },
+            { "id": "medium", "label": "Medium (中等深度 - 快速自愈迭代)", "value": "medium" },
+            { "id": "low", "label": "Low (快速浅层推理 - 轻量重构)", "value": "low" }
           ]
         },
         {
           "id": "o1",
-          "name": "OpenAI o1 (Full Reasoning)",
+          "name": "OpenAI o1 (完整通用强推理旗舰)",
           "effortType": "reasoning_effort",
           "defaultEffort": "high",
           "efforts": [
-            { "id": "high", "label": "High (完整推理链)", "value": "high" },
-            { "id": "medium", "label": "Medium", "value": "medium" },
-            { "id": "low", "label": "Low", "value": "low" }
+            { "id": "high", "label": "High (完整推理链 - 全局代码拓扑分析)", "value": "high" },
+            { "id": "medium", "label": "Medium (标准推理链)", "value": "medium" },
+            { "id": "low", "label": "Low (精简推理链)", "value": "low" }
+          ]
+        },
+        {
+          "id": "o1-mini",
+          "name": "OpenAI o1-mini (轻量 STEM/Code 推理模型)",
+          "effortType": "reasoning_effort",
+          "defaultEffort": "medium",
+          "efforts": [
+            { "id": "high", "label": "High (完整推理)", "value": "high" },
+            { "id": "medium", "label": "Medium (推荐均衡)", "value": "medium" },
+            { "id": "low", "label": "Low (快速模式)", "value": "low" }
           ]
         },
         {
           "id": "gpt-4o",
-          "name": "GPT-4o (Omni 旗舰)",
+          "name": "GPT-4o (Omni 全模态旗舰，非思考模型)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
             { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+          ]
+        },
+        {
+          "id": "gpt-4o-mini",
+          "name": "GPT-4o-mini (经济型轻量助手)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (标准快速模式)", "value": "" }
           ]
         }
       ]
@@ -99,37 +121,48 @@
     {
       "id": "gemini",
       "name": "Gemini 系列 (Google)",
+      "description": "Google 前沿大模型，支持原生 Thinking Budget 预算配置",
       "models": [
         {
           "id": "gemini-2.5-pro",
-          "name": "Gemini 2.5 Pro (Thinking Mode)",
+          "name": "Gemini 2.5 Pro (思考增强多模态旗舰)",
           "effortType": "gemini_budget",
-          "defaultEffort": "high",
+          "defaultEffort": "24576",
           "efforts": [
-            { "id": "high", "label": "High (24k Thinking Budget)", "value": "24576" },
-            { "id": "medium", "label": "Medium (8k Thinking Budget)", "value": "8192" },
-            { "id": "low", "label": "Low (2k Thinking Budget)", "value": "2048" },
-            { "id": "off", "label": "Off (关闭思考)", "value": "0" }
+            { "id": "24576", "label": "High (24k Thinking Budget - 深度架构与多文件分析)", "value": "24576" },
+            { "id": "8192", "label": "Medium (8k Thinking Budget - 均衡模式)", "value": "8192" },
+            { "id": "2048", "label": "Low (2k Thinking Budget - 轻度快速思考)", "value": "2048" },
+            { "id": "0", "label": "Off (关闭思考，直接响应)", "value": "0" }
           ]
         },
         {
           "id": "gemini-2.5-flash",
-          "name": "Gemini 2.5 Flash",
+          "name": "Gemini 2.5 Flash (兼具思考与超高吞吐)",
           "effortType": "gemini_budget",
-          "defaultEffort": "medium",
+          "defaultEffort": "8192",
           "efforts": [
-            { "id": "medium", "label": "Medium (8k Budget)", "value": "8192" },
-            { "id": "low", "label": "Low (2k Budget)", "value": "2048" },
-            { "id": "off", "label": "Off", "value": "0" }
+            { "id": "8192", "label": "Medium (8k Budget - 推荐日常编码)", "value": "8192" },
+            { "id": "2048", "label": "Low (2k Budget - 快速响应)", "value": "2048" },
+            { "id": "0", "label": "Off (关闭思考)", "value": "0" }
+          ]
+        },
+        {
+          "id": "gemini-2.0-flash-thinking-exp-01-21",
+          "name": "Gemini 2.0 Flash Thinking Exp (专用深度思考实验版)",
+          "effortType": "gemini_budget",
+          "defaultEffort": "24576",
+          "efforts": [
+            { "id": "24576", "label": "Deep (24k 深度思维链推导)", "value": "24576" },
+            { "id": "8192", "label": "Standard (8k 标准思维链)", "value": "8192" }
           ]
         },
         {
           "id": "gemini-2.0-flash",
-          "name": "Gemini 2.0 Flash",
+          "name": "Gemini 2.0 Flash (毫秒级超快响应)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (超快响应)", "value": "" }
+            { "id": "none", "label": "N/A (极速直出)", "value": "" }
           ]
         }
       ]
@@ -137,24 +170,44 @@
     {
       "id": "deepseek",
       "name": "DeepSeek 系列 (深度求索)",
+      "description": "国产顶尖开源与推理模型，以超强数学代码逻辑和长思维链著称",
       "models": [
         {
           "id": "deepseek-r1",
-          "name": "DeepSeek-R1 (Full CoT Reasoning)",
+          "name": "DeepSeek-R1 (开源强推理 SOTA 旗舰)",
           "effortType": "cot_mode",
-          "defaultEffort": "cot_full",
+          "defaultEffort": "full",
           "efforts": [
-            { "id": "cot_full", "label": "Full CoT (默认开启完整长思维链)", "value": "full" },
-            { "id": "cot_concise", "label": "Concise CoT (精简思维链)", "value": "concise" }
+            { "id": "full", "label": "Full CoT (默认开启原生完整长思维链 - 深度纠错与推导)", "value": "full" },
+            { "id": "concise", "label": "Concise CoT (精简思维链 - 缩短思考耗时)", "value": "concise" }
+          ]
+        },
+        {
+          "id": "deepseek-reasoner",
+          "name": "DeepSeek Reasoner (API 原生推理链)",
+          "effortType": "cot_mode",
+          "defaultEffort": "full",
+          "efforts": [
+            { "id": "full", "label": "Full Reasoning (长链深度推理)", "value": "full" },
+            { "id": "fast", "label": "Fast (快速模式)", "value": "fast" }
           ]
         },
         {
           "id": "deepseek-v3",
-          "name": "DeepSeek-V3 (通用主力)",
+          "name": "DeepSeek-V3 (通用高性价比主力模型)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+            { "id": "none", "label": "N/A (非思考模型，直接输出代码)", "value": "" }
+          ]
+        },
+        {
+          "id": "deepseek-coder-v2.5",
+          "name": "DeepSeek Coder v2.5 (专注全栈代码生成与补全)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (专业代码直出)", "value": "" }
           ]
         }
       ]
@@ -162,20 +215,31 @@
     {
       "id": "grok",
       "name": "Grok 系列 (xAI)",
+      "description": "xAI 旗舰模型，支持 DeepSearch 与长程逻辑推理",
       "models": [
         {
           "id": "grok-3",
-          "name": "Grok 3 (Deep Reasoning)",
+          "name": "Grok 3 (Deep Reasoning & Complex Synthesis)",
           "effortType": "grok_mode",
           "defaultEffort": "think",
           "efforts": [
-            { "id": "think", "label": "Deep Think (开启深度思考)", "value": "think" },
-            { "id": "fast", "label": "Fast (快速模式)", "value": "fast" }
+            { "id": "think", "label": "Deep Think (开启深度思考模式 - 严密审查与排查)", "value": "think" },
+            { "id": "fast", "label": "Fast (常规快速模式)", "value": "fast" }
+          ]
+        },
+        {
+          "id": "grok-3-mini",
+          "name": "Grok 3 Mini (轻量推理版)",
+          "effortType": "grok_mode",
+          "defaultEffort": "think",
+          "efforts": [
+            { "id": "think", "label": "Deep Think (深度思考)", "value": "think" },
+            { "id": "fast", "label": "Fast (标准速度)", "value": "fast" }
           ]
         },
         {
           "id": "grok-2",
-          "name": "Grok 2",
+          "name": "Grok 2 (标准旗舰版)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
@@ -187,23 +251,97 @@
     {
       "id": "glm",
       "name": "GLM 系列 (智谱清言)",
+      "description": "智谱国产顶尖大模型系列，支持原生推理模型与多尺寸基座",
       "models": [
         {
           "id": "glm-zero-preview",
-          "name": "GLM-Zero-Preview (原生推理模型)",
+          "name": "GLM-Zero-Preview (原生思维链推理模型)",
           "effortType": "cot_mode",
-          "defaultEffort": "cot_full",
+          "defaultEffort": "full",
           "efforts": [
-            { "id": "cot_full", "label": "Full Reasoning (原生深度推理)", "value": "full" }
+            { "id": "full", "label": "Full Reasoning (原生深度思维链 - 复杂逻辑验证)", "value": "full" },
+            { "id": "concise", "label": "Concise (精炼思考模式)", "value": "concise" }
           ]
         },
         {
           "id": "glm-4-plus",
-          "name": "GLM-4-Plus (旗舰通用)",
+          "name": "GLM-4-Plus (旗舰通用主力)",
           "effortType": "none",
           "defaultEffort": "none",
           "efforts": [
-            { "id": "none", "label": "N/A (非思考模型)", "value": "" }
+            { "id": "none", "label": "N/A (非思考模型，直接响应)", "value": "" }
+          ]
+        },
+        {
+          "id": "codegeex-4",
+          "name": "CodeGeeX-4 (专业代码多语言助手)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (代码特化模型)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen / 通义千问 系列 (Alibaba Cloud)",
+      "description": "阿里开源与商业化 SOTA 大模型，涵盖专属推理与代码特化模型",
+      "models": [
+        {
+          "id": "qwq-32b-preview",
+          "name": "QwQ-32B-Preview (开源强推理思维链模型)",
+          "effortType": "cot_mode",
+          "defaultEffort": "full",
+          "efforts": [
+            { "id": "full", "label": "Full CoT (完整原生思维链推导)", "value": "full" },
+            { "id": "concise", "label": "Concise CoT (精简推理)", "value": "concise" }
+          ]
+        },
+        {
+          "id": "qwen-2.5-coder-32b-instruct",
+          "name": "Qwen 2.5 Coder 32B (开源代码榜首模型)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (专注精准代码生成与补齐)", "value": "" }
+          ]
+        },
+        {
+          "id": "qwen-2.5-max",
+          "name": "Qwen 2.5 Max (云端千亿超大规模旗舰)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (旗舰全能直出)", "value": "" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "custom",
+      "name": "Custom / 自定义与本地私有化模型 (Ollama / vLLM / SGLang)",
+      "description": "供用户接入本地开源模型或私有部署的 API",
+      "models": [
+        {
+          "id": "custom-reasoner",
+          "name": "Custom Local Reasoner (本地推理模型)",
+          "effortType": "reasoning_effort",
+          "defaultEffort": "medium",
+          "efforts": [
+            { "id": "high", "label": "High (高深度)", "value": "high" },
+            { "id": "medium", "label": "Medium (中等)", "value": "medium" },
+            { "id": "low", "label": "Low (低深度)", "value": "low" },
+            { "id": "none", "label": "None (直接输出)", "value": "none" }
+          ]
+        },
+        {
+          "id": "custom-direct",
+          "name": "Custom Local Direct (本地标准模型)",
+          "effortType": "none",
+          "defaultEffort": "none",
+          "efforts": [
+            { "id": "none", "label": "N/A (直接生成)", "value": "" }
           ]
         }
       ]
