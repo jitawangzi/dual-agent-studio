@@ -246,7 +246,24 @@ function Invoke-DevTurn {
                 Write-Host "[PI AGENT] Executing prompt: $Prompt" -ForegroundColor Gray
             }
             "antigravity" {
-                Write-Host "Antigravity Dev Agent execution active with prompt: $Prompt" -ForegroundColor Gray
+                Write-Host "Running Antigravity (AGY) Dev Agent in $wsPhysical..." -ForegroundColor Gray
+                $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($agyCmd) {
+                    $agyArgs = @("--dangerously-skip-permissions")
+                    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+                        $agyArgs += @("--model", $Model)
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort) -and $ReasoningEffort -ne "none") {
+                        $agyArgs += @("--effort", $ReasoningEffort)
+                    }
+                    $agyArgs += @("--print", "$Prompt")
+                    & $agyCmd.Source @agyArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with error code $LASTEXITCODE. Please check terminal output above."
+                    }
+                } else {
+                    Write-Host "Antigravity Dev Agent execution active with prompt: $Prompt" -ForegroundColor Gray
+                }
             }
             "mock" {
                 Write-Host "[MOCK DEV] Simulating code changes in $wsPhysical for prompt: $Prompt" -ForegroundColor Gray

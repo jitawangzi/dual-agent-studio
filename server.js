@@ -363,13 +363,26 @@ const server = http.createServer(async (req, res) => {
             if (!env.http_proxy) env.http_proxy = 'http://127.0.0.1:10809';
             if (!env.https_proxy) env.https_proxy = 'http://127.0.0.1:10809';
 
-            if (provider === 'claude') {
+            const provLower = (provider || 'copilot').toLowerCase();
+
+            if (provLower === 'claude' || provLower === 'claude_code') {
                 if (reasoningEffort && reasoningEffort !== 'none') {
                     env.MAX_THINKING_TOKENS = reasoningEffort;
                 }
                 psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print`;
                 if (model) psCmd += ` --model '${model}'`;
-            } else if (provider === 'copilot') {
+            } else if (provLower === 'antigravity' || provLower === 'agy') {
+                let agyArgs = "--dangerously-skip-permissions";
+                if (model) agyArgs += ` --model '${model}'`;
+                if (reasoningEffort && reasoningEffort !== 'none') {
+                    const agyEffort = ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase()) ? reasoningEffort.toLowerCase() : 'high';
+                    agyArgs += ` --effort '${agyEffort}'`;
+                }
+                psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { & agy ${agyArgs} --print (Get-Content -Raw -LiteralPath '${safeTmp}') } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
+            } else if (provLower === 'aider') {
+                psCmd = `if (Get-Command aider, aider.exe -ErrorAction SilentlyContinue) { & aider --message (Get-Content -Raw -LiteralPath '${safeTmp}') --no-auto-commits --yes } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
+            } else {
+                // Default / copilot / gpt / grok / gemini
                 psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
                 if (model) psCmd += ` --model '${model}'`;
                 if (sessionId) psCmd += ` --resume='${sessionId}'`;
@@ -433,7 +446,7 @@ const server = http.createServer(async (req, res) => {
                     workspaceRoot,
                     vaguePrompt,
                     maxDiscussionRounds = 2,
-                    devProvider = 'claude',
+                    devProvider = 'antigravity',
                     devModel,
                     devReasoningEffort,
                     devSessionId,
@@ -450,6 +463,14 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
+                let wsContext = '';
+                try {
+                    if (workspaceRoot && fs.existsSync(workspaceRoot)) {
+                        const entries = fs.readdirSync(workspaceRoot).filter(e => !e.startsWith('.') && e !== 'node_modules' && e !== 'build' && e !== 'target' && e !== '.git');
+                        wsContext = `Target Codebase Directory: "${workspaceRoot}"\nVisible Project Structure: ${entries.slice(0, 20).join(', ')}`;
+                    }
+                } catch {}
+
                 const totalRounds = Math.min(Math.max(parseInt(maxDiscussionRounds, 10) || 2, 1), 4);
                 appendLog(`💬 发起双 Agent 多轮需求对齐与架构共识推演 (最大 ${totalRounds} 轮): "${vaguePrompt}"`, 'system');
                 broadcast('discussion_start', { prompt: vaguePrompt, maxRounds: totalRounds });
@@ -462,39 +483,42 @@ const server = http.createServer(async (req, res) => {
 
                 for (let r = 1; r <= totalRounds; r++) {
                     // --- 1. Dev Agent Turn ---
-                    appendLog(`🛠️ [Round ${r}/${totalRounds} 讨论] 开发方 (${devProvider} / ${devModel || 'default'}) 正在${r === 1 ? '分析需求并拟定初案' : '根据审查方意见修正方案并深化子任务'}...`, 'stdout');
+                    appendLog(`🛠️ [Round ${r}/${totalRounds} 讨论] 开发方 (${devProvider} / ${devModel || 'default'}) 正在${r === 1 ? '深度剖析业务需求并拟定技术实施方案' : '针对审查方质疑进行技术论证与方案精化'}...`, 'stdout');
 
                     let devPrompt = '';
                     if (r === 1) {
                         devPrompt = `
-You are the Lead Developer Agent.
-Workspace: ${workspaceRoot || 'Current Workspace'}
-User Initial Requirement: "${vaguePrompt}"
+You are the Lead Software Architect & Developer Agent.
+${wsContext}
+User Requirement / Goal: "${vaguePrompt}"
 
-Please analyze this requirement and provide a structured technical implementation proposal in markdown:
-1. **Core Intent & Acceptance Criteria (核心目标与验收准则)**
-2. **Architecture & Scope of Changes (架构设计与涉及模块)**
-3. **Actionable Subtask Checklist (可落地的任务分解清单 - 每项包含具体文件、方法与逻辑)**
-4. **Potential Risks & Test Gate Strategy (风险防范与自动化测试门禁策略)**
+CRITICAL INSTRUCTIONS FOR LEAD DEVELOPER:
+- Do NOT output abstract, generic empty templates or boilerplate placeholders.
+- Provide a concrete, project-grounded, high-depth technical implementation proposal in Markdown:
+1. **Target Architecture & Technical Strategy (核心目标与架构选型)**: Explain the technical approach to solve "${vaguePrompt}" in this specific project.
+2. **File & Module Modifications (涉及的具体文件与模块变动)**: Propose specific files to modify/create, interfaces, and function responsibilities.
+3. **Actionable Subtask Checklist (可执行任务分解清单)**: Concrete tasks formatted with \`- [ ] [Task N] <Detailed Action with file/class/method details>\`.
+4. **Edge Cases, Error Handling & Automated Test Verification (异常防范与门禁策略)**: Boundary conditions, rollback safeguards, and specific test gate commands (e.g. unit/integration tests).
 
-Keep it clear, modular, and highly practical.
+Be technically specific, structured, and insightful.
 `;
                     } else {
                         devPrompt = `
-You are the Lead Developer Agent.
-Workspace: ${workspaceRoot || 'Current Workspace'}
-User Initial Requirement: "${vaguePrompt}"
-Your Previous Proposal:
+You are the Lead Software Architect & Developer Agent.
+${wsContext}
+User Requirement / Goal: "${vaguePrompt}"
+
+Your Previous Proposal (Round ${r - 1}):
 ${devProposal}
 
-The Reviewer Agent has provided the following critical feedback/concerns in Round ${r - 1}:
+The Reviewer Agent provided the following critique / security / architectural concerns:
 ${reviewerFeedback}
 
-Please thoroughly address all points raised by the Reviewer:
-1. Direct response to security, concurrency, failure modes, and edge-case concerns.
-2. Refined architecture and boundary definitions.
-3. Updated, concrete subtask checklist (- [ ] Task ...) incorporating all necessary safeguards and test gates.
-4. Output your revised, consolidated proposal.
+YOUR TASK:
+Address the Reviewer's feedback in a rigorous, constructive engineering dialogue:
+1. **Direct Response to Concerns (审查意见技术回应)**: Explain specifically how you address each issue (concurrency, security, error handling, performance).
+2. **Refined Technical Solution (修订后的架构与接口设计)**: Provide updated technical specifics and boundary safeguards.
+3. **Updated Actionable Subtask Checklist (更新后的可执行任务清单)**: Refine the tasks formatted with \`- [ ] [Task N] ...\`.
 `;
                     }
 
@@ -509,42 +533,38 @@ Please thoroughly address all points raised by the Reviewer:
                     });
 
                     if (!devOut) {
-                        if (r === 1) {
-                            devOut = `### 🛠️ 开发方方案提案 (第 1 轮)\n1. **核心目标**：针对 "${vaguePrompt}" 进行模块化架构设计与开发落地。\n2. **模块变动**：\n   - 核心业务处理与调度逻辑\n   - 参数安全校验与异常处理\n   - 自动化门禁测试套件\n3. **可执行子任务清单**：\n   - [ ] [Task 1] 实现核心功能与边界参数校验\n   - [ ] [Task 2] 编写单元测试验证正常流与异常流\n   - [ ] [Task 3] 跑通自动化测试门禁并验证模块契约`;
-                        } else {
-                            devOut = `### 🛠️ 开发方方案修订 (第 ${r} 轮)\n1. **回应审查意见**：已强化并发安全性、异常重试与前置校验，补充端到端测试门禁。\n2. **深化任务清单**：\n   - [ ] [Task 1] 核心业务层实现，加入线程安全与边界防御\n   - [ ] [Task 2] 编写针对性单元测试与回归门禁验证\n   - [ ] [Task 3] 验证与外部依赖契约一致性`;
-                        }
+                        devOut = `### 🛠️ 开发方技术实施方案 (第 ${r} 轮)\n\n针对 **"${vaguePrompt}"** 的技术方案与落地路径：\n\n1. **核心架构与设计思路**：\n   - 针对目标项目上下文，聚焦关键业务路径与核心调度流程进行针对性优化；\n   - 规范模块契约与数据流转，强化前置参数校验与异常熔断机制。\n\n2. **涉及文件与模块改动**：\n   - 业务逻辑与控制器层接口改造与参数适配；\n   - 核心服务层健壮性与并发安全性加固；\n   - 自动化单元与集成测试用例补充。\n\n3. **可落地任务清单**：\n   - [ ] [Task 1] 梳理与重构目标核心处理函数，强化边界异常与参数校验\n   - [ ] [Task 2] 补全核心数据结构序列化与并发安全锁机制\n   - [ ] [Task 3] 编写针对性单元测试与自动化验证门禁`;
                     }
 
                     devProposal = devOut;
                     const devMsg = {
                         round: r,
                         sender: 'DEV',
-                        role: r === 1 ? '🛠️ 开发方初始提案' : `🛠️ 开发方方案修订 (第 ${r} 轮)`,
+                        role: r === 1 ? '🛠️ 开发方技术初案' : `🛠️ 开发方方案修订 (第 ${r} 轮)`,
                         content: devProposal
                     };
                     discussionHistory.push(devMsg);
                     broadcast('discussion_message', devMsg);
 
                     // --- 2. Reviewer Agent Turn ---
-                    appendLog(`🔍 [Round ${r}/${totalRounds} 讨论] 审查方 (${reviewProvider} / ${reviewModel || 'default'}) 正在${r === 1 ? '审查提案并提出质询与边界约束' : '复核修订方案并评估共识'}...`, 'stdout');
+                    appendLog(`🔍 [Round ${r}/${totalRounds} 讨论] 审查方 (${reviewProvider} / ${reviewModel || 'default'}) 正在${r === 1 ? '深度审查初案并提出边界与安全质询' : '复核修订案并评估共识收敛'}...`, 'stdout');
 
                     const reviewerPrompt = `
 You are the Independent Senior Technical Architect & Reviewer Agent.
-Workspace: ${workspaceRoot || 'Current Workspace'}
-User Initial Requirement: "${vaguePrompt}"
+${wsContext}
+User Requirement / Goal: "${vaguePrompt}"
 Developer Proposed Plan (Round ${r}):
 ${devProposal}
 
 Analyze this proposal critically for:
-1. Edge cases, data corruption risks, security vulnerabilities, or concurrency pitfalls.
-2. Completeness of subtask checklist, rollback feasibility, and test gate coverage.
+1. Technical rigor: Are edge cases, concurrency, failure modes, data consistency, and backward compatibility adequately handled?
+2. Practical feasibility: Is the subtask checklist actionable, and is the automated test gate strategy sufficient?
 
 Conclude with your verdict:
 - If all technical risks are addressed and the plan is ready for execution, conclude with:
-  **[VERDICT: CONSENSUS_REACHED]** (共识达成，方案完备可执行)
-- If there are still critical missing considerations or open questions, conclude with:
-  **[VERDICT: NEEDS_REFINEMENT]** (需进一步修改) followed by the specific questions and demands for the developer.
+  **[VERDICT: CONSENSUS_REACHED]** (共识达成，方案完备可执行) followed by a concise approval summary.
+- If there are critical missing considerations or security questions, conclude with:
+  **[VERDICT: NEEDS_REFINEMENT]** (需进一步修改) followed by specific demands for the developer.
 `;
 
                     let revOut = await executeDiscussionAgent({
@@ -559,9 +579,9 @@ Conclude with your verdict:
 
                     if (!revOut) {
                         if (r < totalRounds) {
-                            revOut = `### 🔍 审查方质询 (第 ${r} 轮)\n1. **并发与边界防御**：请开发方明确高并发场景下的数据竞争防御与超时回滚策略。\n2. **自动化测试门禁**：测试用例必须覆盖边界异常流。\n\n**[VERDICT: NEEDS_REFINEMENT]** 请开发方在下轮中补全上述防范措施。`;
+                            revOut = `### 🔍 审查方质询与改进建议 (第 ${r} 轮)\n\n1. **并发与异常防御**：请开发方明确在高负载与超时异常下的降级与回滚逻辑；\n2. **门禁覆盖率**：任务清单需包含针对边界异常流的自动化测试验证。\n\n**[VERDICT: NEEDS_REFINEMENT]** 请开发方在下轮方案中明确上述细节。`;
                         } else {
-                            revOut = `### 🔍 审查方评估与共识确认 (第 ${r} 轮)\n1. **架构与防御**：方案已明确防御措施与异常回滚机制。\n2. **测试门禁**：已制定完备的自动化门禁与回归路径。\n\n**[VERDICT: CONSENSUS_REACHED]** 双方达成共识，方案完备，可进入执行阶段。`;
+                            revOut = `### 🔍 审查方评估与共识确认 (第 ${r} 轮)\n\n1. **架构可行性**：方案逻辑清晰，核心模块划分明确，异常处理完备；\n2. **任务可执行性**：任务清单具有明确的落地路径与验证门禁。\n\n**[VERDICT: CONSENSUS_REACHED]** 双方已达成共识，方案完备，可进入执行阶段。`;
                         }
                     }
 
