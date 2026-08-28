@@ -423,7 +423,57 @@ function onDevSeriesChange() {
   onDevModelChange();
 }
 
+function getEffortsForEngineAndModel(engine, model) {
+  // If model explicitly defines effortType as none, or has no reasoning support
+  if (model && model.effortType === 'none') {
+    return [
+      { value: 'none', label: 'N/A (非思考模型，直接输出)', default: true }
+    ];
+  }
+
+  // If engine is copilot CLI, it strictly requires copilot effort levels
+  if (engine === 'copilot') {
+    return [
+      { value: 'high', label: 'High (深度推理 / 严密代码审查 - 推荐)', default: true },
+      { value: 'medium', label: 'Medium (均衡推理)', default: false },
+      { value: 'low', label: 'Low (快速轻量响应)', default: false },
+      { value: 'xhigh', label: 'Extra High (极致长程深度推理)', default: false },
+      { value: 'max', label: 'Max (最高算力推理)', default: false },
+      { value: 'none', label: 'None (关闭思考 / 常规模式)', default: false }
+    ];
+  }
+
+  // If engine is claude code CLI, it uses thinking tokens or token budget
+  if (engine === 'claude' || engine === 'claude_code') {
+    return [
+      { value: '16384', label: 'High (16,384 Thinking Tokens - 推荐)', default: true },
+      { value: '8192', label: 'Medium (8,192 Thinking Tokens)', default: false },
+      { value: '2048', label: 'Low (2,048 Thinking Tokens)', default: false },
+      { value: '64000', label: 'Max (64,000 Thinking Tokens)', default: false },
+      { value: '0', label: 'Off (关闭思考)', default: false }
+    ];
+  }
+
+  // For other engines / models, use model's defined efforts if present
+  if (model && model.efforts && model.efforts.length > 0) {
+    return model.efforts.map(eff => ({
+      value: eff.value || eff.id,
+      label: eff.label,
+      default: (eff.id === model.defaultEffort || eff.value === model.defaultEffort)
+    }));
+  }
+
+  // Standard fallback
+  return [
+    { value: 'high', label: 'High (深度推理 - 推荐)', default: true },
+    { value: 'medium', label: 'Medium (均衡推理)', default: false },
+    { value: 'low', label: 'Low (常规快速)', default: false },
+    { value: 'none', label: 'None (关闭思考)', default: false }
+  ];
+}
+
 function onDevModelChange() {
+  const engine = document.getElementById('devProvider').value;
   const seriesId = document.getElementById('devSeries').value;
   const modelId = document.getElementById('devModel').value;
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
@@ -438,22 +488,16 @@ function onDevModelChange() {
   const effortSelect = document.getElementById('devReasoningEffort');
   effortSelect.innerHTML = '';
 
-  if (model && model.efforts && model.efforts.length > 0) {
-    model.efforts.forEach(eff => {
-      const opt = document.createElement('option');
-      opt.value = eff.value || eff.id;
-      opt.textContent = eff.label;
-      if (eff.id === model.defaultEffort || eff.value === model.defaultEffort) {
-        opt.selected = true;
-      }
-      effortSelect.appendChild(opt);
-    });
-  } else {
+  const options = getEffortsForEngineAndModel(engine, model);
+  options.forEach(eff => {
     const opt = document.createElement('option');
-    opt.value = 'none';
-    opt.textContent = 'N/A (非思考模型，直接生成代码)';
+    opt.value = eff.value;
+    opt.textContent = eff.label;
+    if (eff.default) {
+      opt.selected = true;
+    }
     effortSelect.appendChild(opt);
-  }
+  });
 }
 
 function onReviewEngineChange() {
@@ -492,6 +536,7 @@ function onReviewSeriesChange() {
 }
 
 function onReviewModelChange() {
+  const engine = document.getElementById('reviewProvider').value;
   const seriesId = document.getElementById('reviewSeries').value;
   const modelId = document.getElementById('reviewModel').value;
   const series = (modelsConfig.series || []).find(s => s.id === seriesId);
@@ -506,22 +551,16 @@ function onReviewModelChange() {
   const effortSelect = document.getElementById('reviewReasoningEffort');
   effortSelect.innerHTML = '';
 
-  if (model && model.efforts && model.efforts.length > 0) {
-    model.efforts.forEach(eff => {
-      const opt = document.createElement('option');
-      opt.value = eff.value || eff.id;
-      opt.textContent = eff.label;
-      if (eff.id === model.defaultEffort || eff.value === model.defaultEffort) {
-        opt.selected = true;
-      }
-      effortSelect.appendChild(opt);
-    });
-  } else {
+  const options = getEffortsForEngineAndModel(engine, model);
+  options.forEach(eff => {
     const opt = document.createElement('option');
-    opt.value = 'none';
-    opt.textContent = 'N/A (非思考模型，直接响应)';
+    opt.value = eff.value;
+    opt.textContent = eff.label;
+    if (eff.default) {
+      opt.selected = true;
+    }
     effortSelect.appendChild(opt);
-  }
+  });
 }
 
 // --- MODEL MANAGER MODAL ---
