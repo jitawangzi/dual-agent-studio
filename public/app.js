@@ -39,12 +39,10 @@ function saveUserPreferences() {
       devSeries: document.getElementById('devSeries')?.value,
       devModelCustom: document.getElementById('devModelCustom')?.value,
       devReasoningEffort: document.getElementById('devReasoningEffort')?.value,
-      devSessionId: document.getElementById('devSessionId')?.value,
       reviewProvider: document.getElementById('reviewProvider')?.value,
       reviewSeries: document.getElementById('reviewSeries')?.value,
       reviewModelCustom: document.getElementById('reviewModelCustom')?.value,
-      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value,
-      reviewSessionId: document.getElementById('reviewSessionId')?.value
+      reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value
     };
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
   } catch (e) {}
@@ -60,8 +58,6 @@ function loadUserPreferences() {
     if (p.maxRounds) document.getElementById('maxRounds').value = p.maxRounds;
     if (p.verifyCommand) document.getElementById('verifyCommand').value = p.verifyCommand;
     if (p.autoCommit !== undefined) document.getElementById('autoCommit').checked = p.autoCommit;
-    if (p.devSessionId) document.getElementById('devSessionId').value = p.devSessionId;
-    if (p.reviewSessionId) document.getElementById('reviewSessionId').value = p.reviewSessionId;
 
     if (p.devProvider) {
       document.getElementById('devProvider').value = p.devProvider;
