@@ -238,7 +238,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
                 const agyEffort = ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase()) ? reasoningEffort.toLowerCase() : 'high';
                 agyArgs += ` --effort '${agyEffort}'`;
             }
-            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & agy ${agyArgs} --print - } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
+            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { $promptText = Get-Content -Raw -LiteralPath '${safeTmp}'; & agy ${agyArgs} --print $promptText } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'aider') {
             psCmd = `if (Get-Command aider, aider.exe, aider.cmd -ErrorAction SilentlyContinue) { & aider --message-file '${safeTmp}' --no-auto-commits --yes-always } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'cursor') {
