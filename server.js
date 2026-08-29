@@ -851,6 +851,10 @@ const server = http.createServer(async (req, res) => {
             'Connection': 'keep-alive'
         });
         res.write(': connected\n\n');
+        // Replay recent logs so refreshed or newly connected clients get instant history
+        for (const l of logs.slice(-100)) {
+            res.write(`event: log\ndata: ${JSON.stringify(l)}\n\n`);
+        }
         sseClients.add(res);
         req.on('close', () => sseClients.delete(res));
         return;

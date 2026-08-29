@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadUserPreferences();
   await initProjects();
   initSSE();
+  fetchInitialLogs();
   
   const currentWs = document.getElementById('workspaceRoot')?.value;
   if (currentWs) {
@@ -1130,6 +1131,21 @@ function appendLogLine(log) {
 function clearLogs() {
   const consoleEl = document.getElementById('logsConsole');
   if (consoleEl) consoleEl.innerHTML = '';
+}
+
+async function fetchInitialLogs() {
+  try {
+    const res = await fetch('/api/logs');
+    const logsList = await res.json();
+    if (Array.isArray(logsList) && logsList.length > 0) {
+      const consoleEl = document.getElementById('logsConsole');
+      if (consoleEl && consoleEl.children.length === 0) {
+        logsList.forEach(l => appendLogLine(l));
+      }
+    }
+  } catch (e) {
+    console.error('Error fetching initial logs:', e);
+  }
 }
 
 async function fetchStatus() {
