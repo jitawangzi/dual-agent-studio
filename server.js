@@ -236,7 +236,20 @@ function resolveEffectiveSessionId({ explicitId, workspaceRoot, feature, mailbox
             if (sanitized) return { sessionId: sanitized, source: 'mailbox' };
         }
 
-        // Check Discussion
+        // Check Feature Discussion
+        if (feature) {
+            const featDisc = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features', feature, 'discussion-history.json');
+            if (fs.existsSync(featDisc)) {
+                try {
+                    const disc = JSON.parse(fs.readFileSync(featDisc, 'utf-8'));
+                    const cand = role === 'dev' ? disc.devSessionId : disc.reviewSessionId;
+                    const sanitized = sanitizeSessionId(cand);
+                    if (sanitized) return { sessionId: sanitized, source: 'discussion' };
+                } catch {}
+            }
+        }
+
+        // Check Root Discussion
         const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
         if (fs.existsSync(discPath)) {
             try {
@@ -290,16 +303,22 @@ function resolveStudioSessionIds(options = {}) {
 function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, feature = null) {
     if (!workspaceRoot || !fs.existsSync(workspaceRoot)) return false;
 
-    // 1. Update requirement-discussion.json in workspace root
+    // 1. Update or create requirement-discussion.json in workspace root
     try {
         const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
+        let disc = {};
         if (fs.existsSync(discPath)) {
-            const disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
-            disc.devSessionId = devSessionId;
-            disc.reviewSessionId = reviewSessionId;
-            fs.writeFileSync(discPath, JSON.stringify(disc, null, 2), 'utf-8');
+            try {
+                disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
+            } catch {}
         }
-    } catch {}
+        disc.savedAt = disc.savedAt || new Date().toISOString();
+        disc.devSessionId = devSessionId;
+        disc.reviewSessionId = reviewSessionId;
+        fs.writeFileSync(discPath, JSON.stringify(disc, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('Failed to persist to requirement-discussion.json:', e);
+    }
 
     // 2. Update feature discussion-history.json and review-mailbox.json if feature specs exist
     const featBase = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features');
@@ -309,7 +328,8 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
             for (const d of subdirs) {
                 if (d.isDirectory()) {
                     if (!feature || feature === d.name) {
-                        const fDiscPath = path.join(featBase, d.name, 'discussion-history.json');
+                        const featDir = path.join(featBase, d.name);
+                        const fDiscPath = path.join(featDir, 'discussion-history.json');
                         if (fs.existsSync(fDiscPath)) {
                             try {
                                 const fDisc = JSON.parse(fs.readFileSync(fDiscPath, 'utf-8'));
@@ -318,7 +338,7 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
                                 fs.writeFileSync(fDiscPath, JSON.stringify(fDisc, null, 2), 'utf-8');
                             } catch {}
                         }
-                        const fMbPath = path.join(featBase, d.name, 'review-mailbox.json');
+                        const fMbPath = path.join(featDir, 'review-mailbox.json');
                         if (fs.existsSync(fMbPath)) {
                             try {
                                 const mb = JSON.parse(fs.readFileSync(fMbPath, 'utf-8'));
@@ -332,7 +352,9 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
                     }
                 }
             }
-        } catch {}
+        } catch (e) {
+            console.error('Failed to persist feature specs:', e);
+        }
     }
 
     // 3. Update sop review-mailbox.json or root review-mailbox.json
@@ -689,6 +711,14 @@ Conclude with your verdict:
             return;
         }
 
+        if (!devProposal || !reviewerFeedback || discussionHistory.length === 0) {
+            appendLog(`❌ 需求推演未产出完整方案，跳过生成实施计划。`, 'stderr');
+            if (token === discussionGeneration) {
+                broadcast('discussion_error', { error: '需求推演未产出完整的开发与审查方案。' });
+            }
+            return;
+        }
+
         // Final Blueprint
         const finalSynthesizedPlan = `${devProposal}\n\n---\n\n### 📋 审查方确认之约束与测试门禁\n${reviewerFeedback}`;
         appendLog(`🏁 需求多轮推演完成（共 ${discussionHistory.length} 轮次交互）！已生成综合可执行任务方案，等待人工确认...`, 'system');
@@ -830,6 +860,9 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/sessions' && req.method === 'GET') {
         const queryWs = url.searchParams.get('workspace') || url.searchParams.get('workspaceRoot');
         const queryFeature = url.searchParams.get('feature');
+        const queryMailbox = url.searchParams.get('mailboxPath');
+        const queryDevSessionId = url.searchParams.get('devSessionId');
+        const queryReviewSessionId = url.searchParams.get('reviewSessionId') || url.searchParams.get('copilotSessionId');
         const forceNew = url.searchParams.get('forceNew') === 'true' || url.searchParams.get('forceNew') === '1';
         if (!queryWs || !fs.existsSync(queryWs)) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -838,8 +871,11 @@ const server = http.createServer(async (req, res) => {
         }
 
         const sessionInfo = resolveStudioSessionIds({
+            devSessionId: queryDevSessionId,
+            reviewSessionId: queryReviewSessionId,
             workspaceRoot: queryWs,
             feature: queryFeature,
+            mailboxPath: queryMailbox,
             forceNew
         });
 

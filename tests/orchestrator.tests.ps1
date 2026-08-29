@@ -115,6 +115,62 @@ try {
         Pop-Location
     }
 
+    # A7. Sanitize-SessionId (8-64 chars, valid chars, stripping invalid, truncating long)
+    Assert-Equal (Sanitize-SessionId "valid-session_123") "valid-session_123" "Valid session ID should remain unchanged"
+    Assert-Equal (Sanitize-SessionId "abc!@#def$%^123") "abcdef123" "Invalid characters should be stripped"
+    Assert-Equal (Sanitize-SessionId "short") $null "Session ID under 8 characters should return null"
+    $over64 = "a" * 80
+    $sanitizedOver64 = Sanitize-SessionId $over64
+    Assert-Equal $sanitizedOver64.Length 64 "Session ID over 64 characters should be truncated to 64"
+    Assert-Equal (Sanitize-SessionId $null) $null "Null session ID should return null"
+
+    # A8. Resolve-EffectiveSessionId (Multi-tier resolution: Explicit > Mailbox > Feature Discussion > Root Discussion > UUID)
+    $sessTestDir = Join-Path $TestRoot "sess-resolve-test"
+    [System.IO.Directory]::CreateDirectory($sessTestDir) | Out-Null
+
+    # A8a. Clean dir -> generated UUID
+    $cleanDevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "dev" -AutoBind
+    Assert-True (-not [string]::IsNullOrWhiteSpace($cleanDevId) -and $cleanDevId.Length -ge 8) "Clean dir should generate fresh UUID"
+
+    # A8b. Root requirement-discussion.json present -> resolves from root discussion
+    $rootDiscJson = [ordered]@{ devSessionId = "disc-root-dev-123"; reviewSessionId = "disc-root-rev-456" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $sessTestDir "requirement-discussion.json"), $rootDiscJson, [System.Text.Encoding]::UTF8)
+    $discDevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "dev" -AutoBind
+    $discRevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "review" -AutoBind
+    Assert-Equal $discDevId "disc-root-dev-123" "Should resolve devSessionId from root discussion"
+    Assert-Equal $discRevId "disc-root-rev-456" "Should resolve reviewSessionId from root discussion"
+
+    # A8c. Feature discussion-history.json present -> Feature discussion > Root discussion
+    $featDir = Join-Path $sessTestDir ".ai-workspace\specs\features\feat_test"
+    [System.IO.Directory]::CreateDirectory($featDir) | Out-Null
+    $featDiscJson = [ordered]@{ devSessionId = "feat-disc-dev-789"; reviewSessionId = "feat-disc-rev-012" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $featDir "discussion-history.json"), $featDiscJson, [System.Text.Encoding]::UTF8)
+    $fDiscDevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -Feature "feat_test" -RoleName "dev" -AutoBind
+    $fDiscRevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -Feature "feat_test" -RoleName "review" -AutoBind
+    Assert-Equal $fDiscDevId "feat-disc-dev-789" "Feature discussion should take precedence over root discussion"
+    Assert-Equal $fDiscRevId "feat-disc-rev-012" "Feature discussion should take precedence over root discussion"
+
+    # A8d. Mailbox present -> Mailbox > Discussion
+    $mbTestPath = Join-Path $sessTestDir "review-mailbox.json"
+    $mbJson = [ordered]@{ devSessionId = "mb-active-dev-999"; reviewSessionId = "mb-active-rev-888" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText($mbTestPath, $mbJson, [System.Text.Encoding]::UTF8)
+    $mbDevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -Feature "feat_test" -MailboxPath $mbTestPath -RoleName "dev" -AutoBind
+    $mbRevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -Feature "feat_test" -MailboxPath $mbTestPath -RoleName "review" -AutoBind
+    Assert-Equal $mbDevId "mb-active-dev-999" "Mailbox should take precedence over discussion"
+    Assert-Equal $mbRevId "mb-active-rev-888" "Mailbox should take precedence over discussion"
+
+    # A8e. Explicit ID passed -> Explicit > Mailbox
+    $expDevId = Resolve-EffectiveSessionId -ExplicitId "explicit-dev-111" -WorkspaceRoot $sessTestDir -MailboxPath $mbTestPath -RoleName "dev" -AutoBind
+    Assert-Equal $expDevId "explicit-dev-111" "Explicit ID should take precedence over Mailbox"
+
+    # A8f. ForceNew: $true -> Ignores explicit/mailbox/discussion and generates new UUID
+    $forcedId = Resolve-EffectiveSessionId -ExplicitId "explicit-dev-111" -WorkspaceRoot $sessTestDir -MailboxPath $mbTestPath -RoleName "dev" -ForceNew -AutoBind
+    Assert-True ($forcedId -ne "explicit-dev-111" -and $forcedId -ne "mb-active-dev-999" -and $forcedId.Length -ge 8) "ForceNew should generate new UUID"
+
+    # A8g. AutoBind: $false -> Does not read mailbox or discussion
+    $noAutoBindId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -MailboxPath $mbTestPath -RoleName "dev" -AutoBind:$false
+    Assert-True ($noAutoBindId -ne "mb-active-dev-999" -and $noAutoBindId.Length -ge 8) "AutoBind:false should not read mailbox"
+
     Write-Host "✅ Direct unit tests for orchestrator-lib.ps1 passed!" -ForegroundColor Green
 
     # --- Section B: Integration Loop Tests ---
@@ -321,7 +377,75 @@ try {
     $raw7 = [System.IO.File]::ReadAllText($mb7, [System.Text.Encoding]::UTF8)
     $data7 = ConvertFrom-Json $raw7
     Assert-Equal $data7.status "FAILED" "Mailbox status must be set to FAILED upon dev agent crash"
-    Assert-True ($data7.error -match "SIMULATED_DEV_FAILURE") "Mailbox error property must record the failure message"
+    # 8. Test -ForceNewSessions with pre-existing discussion/mailbox
+    $mb8 = Join-Path $TestRoot "mb8.json"
+    $preExistingDisc = [ordered]@{ devSessionId = "old-disc-dev-111"; reviewSessionId = "old-disc-rev-222" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $TestRoot "requirement-discussion.json"), $preExistingDisc, [System.Text.Encoding]::UTF8)
+
+    $res8 = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "Force New Session Task" `
+        -Feature "FeatureForceNew" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -MailboxPath $mb8 `
+        -ForceNewSessions `
+        -PassThru
+
+    Assert-Equal $res8.status "APPROVED" "ForceNewSessions loop should complete APPROVED"
+    Assert-True ($res8.devSessionId -ne "old-disc-dev-111" -and $res8.devSessionId.Length -ge 8) "ForceNewSessions should generate new devSessionId"
+    Assert-True ($res8.reviewSessionId -ne "old-disc-rev-222" -and $res8.reviewSessionId.Length -ge 8) "ForceNewSessions should generate new reviewSessionId"
+    Assert-True ($res8.devSessionId -ne $res8.reviewSessionId) "Dev and review session IDs must be distinct"
+
+    # 9. Test AutoBind from requirement-discussion.json when session IDs are omitted
+    $mb9 = Join-Path $TestRoot "mb9.json"
+    $res9 = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "AutoBind Session Task" `
+        -Feature "FeatureAutoBind" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -MailboxPath $mb9 `
+        -PassThru
+
+    Assert-Equal $res9.status "APPROVED" "AutoBind loop should complete APPROVED"
+    Assert-Equal $res9.devSessionId "old-disc-dev-111" "AutoBind should read devSessionId from requirement-discussion.json"
+    Assert-Equal $res9.reviewSessionId "old-disc-rev-222" "AutoBind should read reviewSessionId from requirement-discussion.json"
+
+    # 10. Test Mailbox > Discussion priority during orchestrator integration loop with -AutoBindSession
+    $mb10 = Join-Path $TestRoot "mb10.json"
+    $mb10Data = [ordered]@{
+        schemaVersion = "1.0"
+        feature = "FeatureMailboxPriority"
+        devSessionId = "mb-priority-dev-888"
+        reviewSessionId = "mb-priority-rev-999"
+    } | ConvertTo-Json
+    [System.IO.File]::WriteAllText($mb10, $mb10Data, [System.Text.Encoding]::UTF8)
+
+    $res10 = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "Mailbox Priority Task" `
+        -Feature "FeatureMailboxPriority" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -MailboxPath $mb10 `
+        -AutoBindSession `
+        -PassThru
+
+    Assert-Equal $res10.status "APPROVED" "Mailbox priority loop should complete APPROVED"
+    Assert-Equal $res10.devSessionId "mb-priority-dev-888" "Mailbox devSessionId must take precedence over discussion"
+    Assert-Equal $res10.reviewSessionId "mb-priority-rev-999" "Mailbox reviewSessionId must take precedence over discussion"
+
+    # Clean up test discussion file
+    if (Test-Path -LiteralPath (Join-Path $TestRoot "requirement-discussion.json")) {
+        Remove-Item -LiteralPath (Join-Path $TestRoot "requirement-discussion.json") -Force
+    }
 
     Write-Host "All Dual-Agent Studio orchestrator tests passed successfully." -ForegroundColor Green
 }

@@ -57,7 +57,11 @@ function Invoke-CliWithTimeout {
         foreach ($arg in $Arguments) { $pinfo.ArgumentList.Add($arg) }
     }
 
-    # 2. Environment Variables Injection
+    # 2. Environment Variables Injection & Proxy Guarantee
+    $proxy = if ($env:http_proxy) { $env:http_proxy } else { "http://127.0.0.1:10809" }
+    foreach ($pk in @("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "grpc_proxy", "GRPC_PROXY")) {
+        $pinfo.EnvironmentVariables[$pk] = $proxy
+    }
     foreach ($k in $EnvironmentVariables.Keys) {
         $pinfo.EnvironmentVariables[$k] = [string]$EnvironmentVariables[$k]
     }
@@ -183,9 +187,10 @@ function Resolve-EffectiveSessionId {
         [Parameter(Mandatory=$false)][string]$ExplicitId = "",
         [Parameter(Mandatory=$false)][string]$MailboxPath = "",
         [Parameter(Mandatory=$false)][string]$WorkspaceRoot = "",
+        [Parameter(Mandatory=$false)][string]$Feature = "",
         [Parameter(Mandatory=$false)][string]$RoleName = "dev",
         [Parameter(Mandatory=$false)][switch]$ForceNew,
-        [Parameter(Mandatory=$false)][switch]$AutoBind
+        [Parameter(Mandatory=$false)][switch]$AutoBind = $true
     )
 
     # 1. Explicit ID takes precedence if not forced new
@@ -197,7 +202,9 @@ function Resolve-EffectiveSessionId {
     }
 
     # 2. Multi-tier resolution: Mailbox > requirement-discussion.json
-    if (-not $ForceNew -and ($AutoBind.IsPresent -or $AutoBind)) {
+    $isAutoBind = if ($AutoBind -is [System.Management.Automation.SwitchParameter]) { $AutoBind.IsPresent } else { [bool]$AutoBind }
+    if (-not $ForceNew -and $isAutoBind) {
+        # Check Mailbox
         if (-not [string]::IsNullOrWhiteSpace($MailboxPath) -and (Test-Path -LiteralPath $MailboxPath)) {
             try {
                 $raw = [System.IO.File]::ReadAllText($MailboxPath, [System.Text.Encoding]::UTF8)
@@ -214,7 +221,25 @@ function Resolve-EffectiveSessionId {
             } catch {}
         }
 
+        # Check Feature & Root Discussion
         if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot) -and (Test-Path -LiteralPath $WorkspaceRoot)) {
+            if (-not [string]::IsNullOrWhiteSpace($Feature)) {
+                $featDiscPath = Join-Path $WorkspaceRoot ".ai-workspace\specs\features\$Feature\discussion-history.json"
+                if (Test-Path -LiteralPath $featDiscPath) {
+                    try {
+                        $fRaw = [System.IO.File]::ReadAllText($featDiscPath, [System.Text.Encoding]::UTF8)
+                        $fDisc = $fRaw | ConvertFrom-Json
+                        $cand = if ($RoleName -eq "dev") { $fDisc.devSessionId } else { $fDisc.reviewSessionId }
+                        if (-not [string]::IsNullOrWhiteSpace($cand)) {
+                            $cleanCand = Sanitize-SessionId $cand
+                            if (-not [string]::IsNullOrWhiteSpace($cleanCand)) {
+                                return $cleanCand
+                            }
+                        }
+                    } catch {}
+                }
+            }
+
             $discPath = Join-Path $WorkspaceRoot "requirement-discussion.json"
             if (Test-Path -LiteralPath $discPath) {
                 try {
@@ -540,6 +565,11 @@ function Invoke-DevTurn {
             $argsList += @("--print", $Prompt)
 
             $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+            if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
+                Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+            }
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
         }
         "cursor" {
@@ -682,6 +712,11 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             $argsList += @("--print", $systemInstruction)
 
             $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+            if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
+                Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+            }
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
             if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }

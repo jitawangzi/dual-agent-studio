@@ -38,7 +38,7 @@ param(
     [string]$ReviewSessionId,
     [string]$CopilotSessionId, # Backwards compatibility alias for ReviewSessionId
     [switch]$ForceNewSessions,
-    [switch]$AutoBindSession,
+    [switch]$AutoBindSession = $true,
 
     [string]$VerifyCommand = "exit 0",
     [int]$MaxRounds = 4,
@@ -135,6 +135,7 @@ $effectiveDevSessionId = Resolve-EffectiveSessionId `
     -ExplicitId $DevSessionId `
     -MailboxPath $effectiveMailboxPath `
     -WorkspaceRoot $wsPhysical `
+    -Feature $effectiveFeature `
     -RoleName "dev" `
     -ForceNew:$ForceNewSessions `
     -AutoBind:$AutoBindSession
@@ -144,6 +145,7 @@ $effectiveReviewSessionId = Resolve-EffectiveSessionId `
     -ExplicitId $rawReviewId `
     -MailboxPath $effectiveMailboxPath `
     -WorkspaceRoot $wsPhysical `
+    -Feature $effectiveFeature `
     -RoleName "review" `
     -ForceNew:$ForceNewSessions `
     -AutoBind:$AutoBindSession
@@ -185,7 +187,16 @@ if ($targetMailboxScript) {
     }
 } else {
     $existingMb = Read-MailboxState -MailboxPath $effectiveMailboxPath
-    if ($null -ne $existingMb -and $existingMb.feature -eq $effectiveFeature -and $existingMb.status -eq "WAITING_DEV" -and [int]$existingMb.round -gt 1 -and $existingMb.history.Count -gt 0) {
+    $canResume = $false
+    if ($null -ne $existingMb) {
+        $hasFeature = ($null -ne $existingMb.PSObject.Properties['feature']) -and ($existingMb.feature -eq $effectiveFeature)
+        $hasStatus = ($null -ne $existingMb.PSObject.Properties['status']) -and ($existingMb.status -eq "WAITING_DEV")
+        $hasRound = ($null -ne $existingMb.PSObject.Properties['round']) -and ([int]$existingMb.round -gt 1)
+        $hasHistory = ($null -ne $existingMb.PSObject.Properties['history']) -and ($existingMb.history.Count -gt 0)
+        $canResume = ($hasFeature -and $hasStatus -and $hasRound -and $hasHistory)
+    }
+
+    if ($canResume) {
         Write-Host "🔄 Resuming existing dual-agent loop for feature '$effectiveFeature' at Round $($existingMb.round)..." -ForegroundColor Cyan
         $lastReview = $existingMb.history[-1].reviewVerdict
         $currentPrompt = "Round $($existingMb.round - 1) Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"

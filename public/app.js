@@ -59,6 +59,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchStatus();
   setInterval(fetchStatus, 3000);
 
+  // Auto-refresh sessions when feature changes
+  document.getElementById('featureName')?.addEventListener('change', () => {
+    const ws = document.getElementById('workspaceRoot')?.value?.trim();
+    const feat = document.getElementById('featureName')?.value?.trim();
+    if (ws) {
+      fetchSessions(ws, feat);
+      fetchStatus();
+    }
+  });
+
   // Auto-save preferences on input changes
   document.querySelectorAll('input, select, textarea').forEach(el => {
     el.addEventListener('change', saveUserPreferences);
@@ -79,11 +89,13 @@ function saveUserPreferences() {
       devModel: document.getElementById('devModel')?.value || '',
       devModelCustom: document.getElementById('devModelCustom')?.value || '',
       devReasoningEffort: document.getElementById('devReasoningEffort')?.value || '',
+      devSessionId: document.getElementById('devSessionId')?.value || '',
       reviewProvider: document.getElementById('reviewProvider')?.value || 'copilot',
       reviewSeries: document.getElementById('reviewSeries')?.value || '',
       reviewModel: document.getElementById('reviewModel')?.value || '',
       reviewModelCustom: document.getElementById('reviewModelCustom')?.value || '',
       reviewReasoningEffort: document.getElementById('reviewReasoningEffort')?.value || '',
+      reviewSessionId: document.getElementById('reviewSessionId')?.value || '',
       vaguePrompt: document.getElementById('vaguePrompt')?.value || '',
       taskPrompt: document.getElementById('taskPrompt')?.value || ''
     };
@@ -113,6 +125,8 @@ function loadUserPreferences() {
     setVal('maxSelfHealAttempts', p.maxSelfHealAttempts);
     setChecked('autoCommit', p.autoCommit);
     setVal('verifyCommand', p.verifyCommand);
+    setVal('devSessionId', p.devSessionId);
+    setVal('reviewSessionId', p.reviewSessionId);
     setVal('vaguePrompt', p.vaguePrompt);
     setVal('taskPrompt', p.taskPrompt);
 
@@ -838,6 +852,13 @@ async function loadWorkspaceDiscussion(wsPath) {
         }
         gate.style.display = 'block';
       }
+
+      if (disc.devSessionId && document.getElementById('devSessionId')) {
+        document.getElementById('devSessionId').value = disc.devSessionId;
+      }
+      if (disc.reviewSessionId && document.getElementById('reviewSessionId')) {
+        document.getElementById('reviewSessionId').value = disc.reviewSessionId;
+      }
     }
   } catch (e) {
     console.error('Failed to load saved discussion:', e);
@@ -1025,6 +1046,12 @@ function initSSE() {
         }
         gate.style.display = 'block';
         setTimeout(() => gate.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
+      }
+      if (data.devSessionId && document.getElementById('devSessionId')) {
+        document.getElementById('devSessionId').value = data.devSessionId;
+      }
+      if (data.reviewSessionId && document.getElementById('reviewSessionId')) {
+        document.getElementById('reviewSessionId').value = data.reviewSessionId;
       }
       const btn = document.getElementById('btnStartDiscuss');
       if (btn) {
