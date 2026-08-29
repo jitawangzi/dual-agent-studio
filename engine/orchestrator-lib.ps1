@@ -179,6 +179,20 @@ function Format-ClaudeModel {
     return $Model
 }
 
+function Get-ClaudeExecutable {
+    $nativeCandidates = @(
+        "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe",
+        "$env:LOCALAPPDATA\Programs\claude\claude.exe",
+        "$env:USERPROFILE\.claude\bin\claude.exe"
+    )
+    foreach ($cand in $nativeCandidates) {
+        if (Test-Path -LiteralPath $cand) { return $cand }
+    }
+    $claudeCmd = Get-Command "claude.exe", "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($claudeCmd) { return $claudeCmd.Source }
+    return $null
+}
+
 function Sanitize-SessionId {
     param([string]$SessionId)
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return $null }
@@ -564,8 +578,8 @@ function Invoke-DevTurn {
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Copilot CLI exited with code $($res.ExitCode)." }
         }
         "claude" {
-            $claudeCmd = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $claudeCmd) { throw "PROVIDER_UNAVAILABLE: Claude Code CLI is not found in PATH." }
+            $claudeExe = Get-ClaudeExecutable
+            if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude Code CLI is not found in PATH." }
 
             $argsList = @("--print", "--dangerously-skip-permissions")
             $cModel = Format-ClaudeModel $Model
@@ -577,7 +591,7 @@ function Invoke-DevTurn {
                 }
             }
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $claudeCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Dev (Claude)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Dev (Claude)"
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Claude CLI exited with code $($res.ExitCode)." }
         }
         "antigravity" {
@@ -709,7 +723,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $($res.Combined)"
         }
         { $_ -in @("claude", "claude_code") } {
-            $claudeExe = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
+            $claudeExe = Get-ClaudeExecutable
             if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH." }
             
             $argsList = @("--print", "--dangerously-skip-permissions")
@@ -722,7 +736,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                 }
             }
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Reviewer (Claude)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Reviewer (Claude)"
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
             if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Claude CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
