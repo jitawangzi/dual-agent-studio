@@ -167,6 +167,18 @@ function Format-AgyReasoningEffort {
     }
 }
 
+function Format-ClaudeModel {
+    param([string]$Model)
+    if ([string]::IsNullOrWhiteSpace($Model)) { return "" }
+    $m = $Model.ToLowerInvariant().Trim()
+    if ($m -match "3-7-sonnet" -or $m -match "3.7-sonnet" -or $m -match "sonnet-5" -or $m -match "sonnet-4" -or $m -match "sonnet") {
+        return "sonnet"
+    }
+    if ($m -match "opus") { return "opus" }
+    if ($m -match "haiku") { return "haiku" }
+    return $Model
+}
+
 function Sanitize-SessionId {
     param([string]$SessionId)
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return $null }
@@ -543,7 +555,8 @@ function Invoke-DevTurn {
             if (-not $claudeCmd) { throw "PROVIDER_UNAVAILABLE: Claude Code CLI is not found in PATH." }
 
             $argsList = @("--print")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+            $cModel = Format-ClaudeModel $Model
+            if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
             $envMap = @{}
             if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
                 $envMap["MAX_THINKING_TOKENS"] = switch ($ReasoningEffort.ToLowerInvariant()) {
@@ -687,7 +700,8 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH." }
             
             $argsList = @("--print")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+            $cModel = Format-ClaudeModel $Model
+            if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
             $envMap = @{}
             if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
                 $envMap["MAX_THINKING_TOKENS"] = switch ($ReasoningEffort.ToLowerInvariant()) {

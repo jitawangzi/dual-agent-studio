@@ -45,6 +45,12 @@ try {
     Assert-Equal (Format-AgyReasoningEffort "max") "high" "Agy max mapped to high"
     Assert-Equal (Format-AgyReasoningEffort "off") "" "Agy off mapped to empty"
 
+    # A2.1 Format-ClaudeModel
+    Assert-Equal (Format-ClaudeModel "claude-3-7-sonnet-20250219") "sonnet" "Claude 3.7 mapped to sonnet"
+    Assert-Equal (Format-ClaudeModel "claude-sonnet-5") "sonnet" "Claude Sonnet 5 mapped to sonnet"
+    Assert-Equal (Format-ClaudeModel "claude-opus-5") "opus" "Claude Opus 5 mapped to opus"
+    Assert-Equal (Format-ClaudeModel "") "" "Empty model preserved"
+
     # A3. Extract-TestFailureSummary (8192 chars limit & keyword matching)
     $longLog = (1..500 | ForEach-Object { "Normal line $_" }) -join "`n"
     $longLog += "`nFAILED: AssertionError in module TestA line 42`n"
