@@ -344,7 +344,10 @@ try {
         } else {
             $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
             $verdict = [string]$reviewResult.verdict
-            $isApproved = ($verdict -eq "APPROVED")
+            if ($verdict -notin @("APPROVED", "REJECTED")) {
+                throw "INVALID_REVIEW_VERDICT: Reviewer returned an invalid verdict '$verdict'. Allowed verdicts are 'APPROVED' or 'REJECTED'."
+            }
+            $isApproved = ($verdict -eq "APPROVED" -and $mailbox.currentDevSubmission.testGateStatus -eq "PASS")
             $isMax = ($round -ge $MaxRounds)
             
             $newStatus = if ($isApproved) {

@@ -277,33 +277,33 @@ function Extract-JsonFromText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
 
+    $candidates = @()
+
     # 1. Try markdown code block extraction ```json ... ```
     if ($Text -match '(?ms)```(?:json)?\s*(\{\s*".*?"\s*:.*?\})\s*```') {
-        try {
-            $parsed = $Matches[1] | ConvertFrom-Json
-            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-                return $parsed
-            }
-        } catch {}
+        $candidates += $Matches[1]
     }
 
     # 2. Try outer { ... } extraction
     if ($Text -match '(?ms)(\{.*\})') {
+        $candidates += $Matches[1]
+    }
+
+    # 3. Direct JSON candidate
+    $candidates += $Text
+
+    foreach ($cand in $candidates) {
         try {
-            $parsed = $Matches[1] | ConvertFrom-Json
-            if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-                return $parsed
+            $parsed = $cand | ConvertFrom-Json
+            if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['verdict'] -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
+                $normVerdict = [string]$parsed.verdict.ToString().Trim().ToUpperInvariant()
+                if ($normVerdict -in @("APPROVED", "REJECTED")) {
+                    $parsed.verdict = $normVerdict
+                    return $parsed
+                }
             }
         } catch {}
     }
-
-    # 3. Direct JSON parse
-    try {
-        $parsed = $Text | ConvertFrom-Json
-        if ($null -ne $parsed -and -not [string]::IsNullOrWhiteSpace($parsed.verdict)) {
-            return $parsed
-        }
-    } catch {}
 
     return $null
 }
@@ -383,55 +383,68 @@ function Get-SafeWorkspaceDiff {
         '\.lock$', 'package-lock\.json$', 'pnpm-lock\.yaml$',
         '\.jar$', '\.exe$', '\.dll$', '\.png$', '\.jpg$', '\.jpeg$', '\.gif$', '\.ico$',
         'node_modules[\\/]', '\.git[\\/]', 'build[\\/]', 'target[\\/]', 'dist[\\/]',
-        'review-mailbox\.json$', 'projects\.json$'
+        'review-mailbox\.json$', 'projects\.json$', '\.log$', '\.tmp$'
     )
 
     Push-Location $WorkspacePath
     try {
+        # Check if workspace is a git repo
+        [void](git rev-parse --is-inside-work-tree 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            return "[Workspace is not a git repository or has no version control initialized. Diff inspection skipped.]"
+        }
+
+        # Check if HEAD exists (first commit created)
+        $hasHead = $false
+        [void](git rev-parse --verify HEAD 2>&1)
+        if ($LASTEXITCODE -eq 0) { $hasHead = $true }
+
         # 1. Tracked Changes - File by File Stream using standard line output (avoiding NUL truncation)
-        $changedFilesRaw = git diff --name-only HEAD 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($changedFilesRaw)) {
-            $filesList = $changedFilesRaw -split "\r?\n"
-            foreach ($relFile in $filesList) {
-                $relFile = $relFile.Trim()
-                if ([string]::IsNullOrWhiteSpace($relFile)) { continue }
-                $normalized = $relFile.Replace('\', '/')
+        if ($hasHead) {
+            $changedFilesRaw = git diff --name-only HEAD 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($changedFilesRaw)) {
+                $filesList = $changedFilesRaw -split "\r?\n"
+                foreach ($relFile in $filesList) {
+                    $relFile = $relFile.Trim()
+                    if ([string]::IsNullOrWhiteSpace($relFile)) { continue }
+                    $normalized = $relFile.Replace('\', '/')
 
-                $isBlacklisted = $false
-                foreach ($p in $blacklistPatterns) {
-                    if ($normalized -match $p) { $isBlacklisted = $true; break }
-                }
-                if ($isBlacklisted) { continue }
-
-                $fullPath = Join-Path $WorkspacePath $relFile
-                if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
-                    $item = Get-Item -LiteralPath $fullPath
-                    if ($item.Length -gt $MaxFileBytes) {
-                        [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Size: $($item.Length) bytes) - Exceeded 256KB limit, diff skipped ===")
-                        continue
+                    $isBlacklisted = $false
+                    foreach ($p in $blacklistPatterns) {
+                        if ($normalized -match $p) { $isBlacklisted = $true; break }
                     }
-                } else {
-                    # File deleted or moved; check size in HEAD via git cat-file -s
-                    $headSizeRaw = git cat-file -s "HEAD:$normalized" 2>&1 | Out-String
-                    if ($LASTEXITCODE -eq 0 -and [int64]::TryParse($headSizeRaw.Trim(), [ref]$null)) {
-                        $headSize = [int64]$headSizeRaw.Trim()
-                        if ($headSize -gt $MaxFileBytes) {
-                            [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Deleted from HEAD, Size: $headSize bytes) - Exceeded 256KB limit, diff skipped ===")
+                    if ($isBlacklisted) { continue }
+
+                    $fullPath = Join-Path $WorkspacePath $relFile
+                    if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+                        $item = Get-Item -LiteralPath $fullPath
+                        if ($item.Length -gt $MaxFileBytes) {
+                            [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Size: $($item.Length) bytes) - Exceeded 256KB limit, diff skipped ===")
                             continue
                         }
-                    }
-                }
-
-                $fileDiff = git diff HEAD -- $relFile 2>&1 | Out-String
-                if (-not [string]::IsNullOrWhiteSpace($fileDiff)) {
-                    if ($fileDiff.Length -gt $MaxFileBytes) {
-                        [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Diff size: $($fileDiff.Length) chars) - Exceeded 256KB limit, diff skipped ===")
                     } else {
-                        [void]$diffOutput.AppendLine($fileDiff)
+                        # File deleted or moved; check size in HEAD via git cat-file -s
+                        $headSizeRaw = git cat-file -s "HEAD:$normalized" 2>&1 | Out-String
+                        if ($LASTEXITCODE -eq 0 -and [int64]::TryParse($headSizeRaw.Trim(), [ref]$null)) {
+                            $headSize = [int64]$headSizeRaw.Trim()
+                            if ($headSize -gt $MaxFileBytes) {
+                                [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Deleted from HEAD, Size: $headSize bytes) - Exceeded 256KB limit, diff skipped ===")
+                                continue
+                            }
+                        }
                     }
-                }
 
-                if ($diffOutput.Length -ge $MaxTotalChars) { break }
+                    $fileDiff = git diff HEAD -- $relFile 2>&1 | Out-String
+                    if (-not [string]::IsNullOrWhiteSpace($fileDiff)) {
+                        if ($fileDiff.Length -gt $MaxFileBytes) {
+                            [void]$diffOutput.AppendLine("`n=== Tracked File: $relFile (Diff size: $($fileDiff.Length) chars) - Exceeded 256KB limit, diff skipped ===")
+                        } else {
+                            [void]$diffOutput.AppendLine($fileDiff)
+                        }
+                    }
+
+                    if ($diffOutput.Length -ge $MaxTotalChars) { break }
+                }
             }
         }
 
@@ -554,7 +567,7 @@ function Invoke-DevTurn {
             $claudeCmd = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $claudeCmd) { throw "PROVIDER_UNAVAILABLE: Claude Code CLI is not found in PATH." }
 
-            $argsList = @("--print")
+            $argsList = @("--print", "--dangerously-skip-permissions")
             $cModel = Format-ClaudeModel $Model
             if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
             $envMap = @{}
@@ -575,13 +588,13 @@ function Invoke-DevTurn {
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $Prompt)
+            $argsList += @("--print", "-")
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
                 Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 2
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             }
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
         }
@@ -699,7 +712,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             $claudeExe = Get-Command "claude", "claude.cmd", "claude.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH." }
             
-            $argsList = @("--print")
+            $argsList = @("--print", "--dangerously-skip-permissions")
             $cModel = Format-ClaudeModel $Model
             if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
             $envMap = @{}
@@ -723,13 +736,13 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $systemInstruction)
+            $argsList += @("--print", "-")
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
             if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
                 Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 2
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
             }
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }

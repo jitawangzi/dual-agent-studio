@@ -22,6 +22,7 @@ process.on('unhandledRejection', (reason, promise) => {
 // In-Memory Studio State
 let activeProcess = null;             // Orchestrator child process
 let activeDiscussionProcess = null;   // Active discussion agent child process
+let activeDiscussionAbortController = null; // AbortController for active discussion
 let activeConfig = null;
 let currentMailbox = null;
 let isDiscussing = false;
@@ -386,8 +387,8 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
 }
 
 // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation with 600s watchdog
-async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token }) {
-    if (token !== undefined && token !== discussionGeneration) {
+async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token, signal }) {
+    if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
         return '';
     }
 
@@ -410,7 +411,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             if (reasoningEffort && reasoningEffort !== 'none') {
                 env.MAX_THINKING_TOKENS = reasoningEffort;
             }
-            psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print`;
+            psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print --dangerously-skip-permissions`;
             if (model) psCmd += ` --model '${model}'`;
         } else if (provLower === 'antigravity' || provLower === 'agy') {
             let agyArgs = "--dangerously-skip-permissions";
@@ -419,7 +420,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
                 const agyEffort = ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase()) ? reasoningEffort.toLowerCase() : 'high';
                 agyArgs += ` --effort '${agyEffort}'`;
             }
-            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { $promptText = Get-Content -Raw -LiteralPath '${safeTmp}'; & agy ${agyArgs} --print $promptText } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
+            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & agy ${agyArgs} --print - } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'aider') {
             psCmd = `if (Get-Command aider, aider.exe, aider.cmd -ErrorAction SilentlyContinue) { & aider --message-file '${safeTmp}' --no-auto-commits --yes-always } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'cursor') {
@@ -440,14 +441,26 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             }
         }
 
-        if (token !== undefined && token !== discussionGeneration) {
+        if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
             return '';
         }
 
         if (psCmd) {
             await new Promise((resolve) => {
+                let proc = null;
+                let watchdogTimer = null;
+                let onAbort = null;
+
+                const cleanup = () => {
+                    if (watchdogTimer) clearTimeout(watchdogTimer);
+                    if (signal && onAbort) {
+                        try { signal.removeEventListener('abort', onAbort); } catch {}
+                    }
+                    if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
+                };
+
                 try {
-                    const proc = spawn('pwsh', ['-NoProfile', '-Command', psCmd], {
+                    proc = spawn('pwsh', ['-NoProfile', '-Command', psCmd], {
                         cwd: ws,
                         env,
                         shell: false
@@ -455,8 +468,34 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
 
                     activeDiscussionProcess = proc;
 
+                    if (signal) {
+                        if (signal.aborted) {
+                            try {
+                                if (process.platform === 'win32') {
+                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
+                                } else {
+                                    proc.kill('SIGKILL');
+                                }
+                            } catch {}
+                            cleanup();
+                            return resolve();
+                        }
+                        onAbort = () => {
+                            try {
+                                if (process.platform === 'win32') {
+                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
+                                } else {
+                                    proc.kill('SIGKILL');
+                                }
+                            } catch {}
+                            cleanup();
+                            resolve();
+                        };
+                        signal.addEventListener('abort', onAbort, { once: true });
+                    }
+
                     // 600s watchdog timer
-                    const watchdogTimer = setTimeout(() => {
+                    watchdogTimer = setTimeout(() => {
                         appendLog(`[${role} ${provider}] 运行超时 (${timeoutSeconds} 秒)，正在终止进程...`, 'stderr');
                         try {
                             if (process.platform === 'win32') {
@@ -468,8 +507,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
                     }, timeoutSeconds * 1000);
 
                     proc.on('error', (err) => {
-                        clearTimeout(watchdogTimer);
-                        if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
+                        cleanup();
                         appendLog(`[${role} ${provider}] 调度提示: ${err.message}`, 'info');
                         resolve();
                     });
@@ -487,12 +525,11 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
                     }
 
                     proc.on('close', () => {
-                        clearTimeout(watchdogTimer);
-                        if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
+                        cleanup();
                         resolve();
                     });
                 } catch (e) {
-                    if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
+                    cleanup();
                     appendLog(`[${role} ${provider}] 异常: ${e.message}`, 'info');
                     resolve();
                 }
@@ -509,7 +546,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
     return output.trim();
 }
 
-async function runBackgroundDiscussion(params, token) {
+async function runBackgroundDiscussion(params, token, signal) {
     try {
         const {
             workspaceRoot,
@@ -559,8 +596,8 @@ async function runBackgroundDiscussion(params, token) {
         let consensusReached = false;
 
         for (let r = 1; r <= totalRounds; r++) {
-            // Check abort signal via scoped token at the start of each round
-            if (token !== discussionGeneration || !isDiscussing) {
+            // Check abort signal via scoped token and AbortSignal at the start of each round
+            if (signal?.aborted || token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮被中止。`, 'system');
                 return;
             }
@@ -614,18 +651,19 @@ Address the Reviewer's feedback in a rigorous, constructive engineering dialogue
                 workspaceRoot,
                 role: `Dev-R${r}`,
                 timeoutSeconds: 600,
-                token
+                token,
+                signal
             });
 
             // Check abort after dev turn
-            if (token !== discussionGeneration || !isDiscussing) {
+            if (signal?.aborted || token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮开发方响应后被中止。`, 'system');
                 return;
             }
 
             if (!devOut) {
                 appendLog(`❌ [Round ${r}] 开发方 Agent (${devProvider}) 未返回任何有效输出，需求推演失败。`, 'stderr');
-                if (token === discussionGeneration) {
+                if (token === discussionGeneration && !signal?.aborted) {
                     broadcast('discussion_error', { error: `开发方 Agent (${devProvider}) 在第 ${r} 轮未返回任何有效输出。` });
                 }
                 return;
@@ -671,18 +709,19 @@ Conclude with your verdict:
                 workspaceRoot,
                 role: `Reviewer-R${r}`,
                 timeoutSeconds: 600,
-                token
+                token,
+                signal
             });
 
             // Check abort after reviewer turn
-            if (token !== discussionGeneration || !isDiscussing) {
+            if (signal?.aborted || token !== discussionGeneration || !isDiscussing) {
                 appendLog(`⚠️ 需求推演在第 ${r} 轮审查方响应后被中止。`, 'system');
                 return;
             }
 
             if (!revOut) {
                 appendLog(`❌ [Round ${r}] 审查方 Agent (${reviewProvider}) 未返回任何有效输出，需求推演失败。`, 'stderr');
-                if (token === discussionGeneration) {
+                if (token === discussionGeneration && !signal?.aborted) {
                     broadcast('discussion_error', { error: `审查方 Agent (${reviewProvider}) 在第 ${r} 轮未返回任何有效输出。` });
                 }
                 return;
@@ -707,13 +746,13 @@ Conclude with your verdict:
             }
         }
 
-        if (token !== discussionGeneration || !isDiscussing) {
+        if (signal?.aborted || token !== discussionGeneration || !isDiscussing) {
             return;
         }
 
         if (!devProposal || !reviewerFeedback || discussionHistory.length === 0) {
             appendLog(`❌ 需求推演未产出完整方案，跳过生成实施计划。`, 'stderr');
-            if (token === discussionGeneration) {
+            if (token === discussionGeneration && !signal?.aborted) {
                 broadcast('discussion_error', { error: '需求推演未产出完整的开发与审查方案。' });
             }
             return;
@@ -767,11 +806,11 @@ Conclude with your verdict:
             console.error('Failed to persist discussion plan:', e);
         }
 
-        if (token === discussionGeneration) {
+        if (token === discussionGeneration && !signal?.aborted) {
             broadcast('discussion_complete', responseData);
         }
     } catch (err) {
-        if (token === discussionGeneration) {
+        if (token === discussionGeneration && !signal?.aborted) {
             appendLog(`❌ 需求讨论异常: ${err.message}`, 'stderr');
             broadcast('discussion_error', { error: err.message });
         }
@@ -779,6 +818,7 @@ Conclude with your verdict:
         if (token === discussionGeneration) {
             isDiscussing = false;
             activeDiscussionProcess = null;
+            activeDiscussionAbortController = null;
         }
     }
 }
@@ -1050,12 +1090,14 @@ const server = http.createServer(async (req, res) => {
 
                 isDiscussing = true;
                 const token = ++discussionGeneration;
+                activeDiscussionAbortController = new AbortController();
+                const signal = activeDiscussionAbortController.signal;
 
                 res.writeHead(202, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, message: 'Discussion initiated in background.', discussionToken: token }));
 
-                // Run background discussion asynchronously with generation token
-                runBackgroundDiscussion(params, token);
+                // Run background discussion asynchronously with generation token and abort signal
+                runBackgroundDiscussion(params, token, signal);
             } catch (err) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
@@ -1224,10 +1266,14 @@ const server = http.createServer(async (req, res) => {
             stoppedSomething = true;
         }
 
-        if (activeDiscussionProcess || isDiscussing) {
+        if (activeDiscussionProcess || isDiscussing || activeDiscussionAbortController) {
             appendLog('⚠️ 用户主动中止运行中的需求推演与讨论...', 'system');
             discussionGeneration++;
             isDiscussing = false;
+            if (activeDiscussionAbortController) {
+                try { activeDiscussionAbortController.abort(); } catch {}
+                activeDiscussionAbortController = null;
+            }
             if (activeDiscussionProcess) {
                 const dPid = activeDiscussionProcess.pid;
                 try {

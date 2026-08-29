@@ -963,107 +963,144 @@ function approvePlanAndStart() {
 }
 
 // --- SSE EVENT HANDLING ---
+let currentEventSource = null;
+let sseReconnectTimer = null;
+
 function initSSE() {
+  if (currentEventSource) {
+    try { currentEventSource.close(); } catch {}
+    currentEventSource = null;
+  }
+
   const eventSource = new EventSource('/api/events');
+  currentEventSource = eventSource;
+
+  eventSource.onopen = () => {
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
+    fetchStatus();
+  };
 
   eventSource.addEventListener('log', (e) => {
-    const data = JSON.parse(e.data);
-    appendLogLine(data);
+    try {
+      const data = JSON.parse(e.data);
+      appendLogLine(data);
+    } catch {}
   });
 
   eventSource.addEventListener('state_change', (e) => {
-    const data = JSON.parse(e.data);
-    updateRunningState(data.isRunning);
-    if (data.mailbox) {
-      renderTimeline(data.mailbox);
-    }
+    try {
+      const data = JSON.parse(e.data);
+      updateRunningState(data.isRunning);
+      if (data.mailbox) {
+        renderTimeline(data.mailbox);
+      }
+    } catch {}
   });
 
   eventSource.addEventListener('mailbox_update', (e) => {
-    const mailbox = JSON.parse(e.data);
-    if (mailbox) {
-      renderTimeline(mailbox);
-    }
+    try {
+      const mailbox = JSON.parse(e.data);
+      if (mailbox) {
+        renderTimeline(mailbox);
+      }
+    } catch {}
   });
 
   eventSource.addEventListener('discussion_message', (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg) {
-      const container = document.getElementById('discussionMessages');
-      if (container) {
-        const empty = container.querySelector('.empty-state');
-        if (empty) empty.remove();
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg) {
+        const container = document.getElementById('discussionMessages');
+        if (container) {
+          const empty = container.querySelector('.empty-state');
+          if (empty) empty.remove();
 
-        const isDev = msg.sender === 'DEV';
-        const card = document.createElement('div');
-        card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
-        card.innerHTML = `
-          <div class="discussion-card-header">
-            <span class="sender-tag">
-              ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
-            </span>
-            <div class="round-badge-group">
-              <span class="round-chip">Round ${msg.round}</span>
-              ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+          const isDev = msg.sender === 'DEV';
+          const card = document.createElement('div');
+          card.className = `discussion-card ${isDev ? 'dev' : 'reviewer'} ${msg.consensus ? 'consensus' : ''}`;
+          card.innerHTML = `
+            <div class="discussion-card-header">
+              <span class="sender-tag">
+                ${isDev ? '🛠️ ' : '🔍 '}${escapeHtml(msg.role || (isDev ? '开发方' : '审查方'))}
+              </span>
+              <div class="round-badge-group">
+                <span class="round-chip">Round ${msg.round}</span>
+                ${msg.consensus ? '<span class="consensus-chip">🏆 达成共识</span>' : ''}
+              </div>
             </div>
-          </div>
-          <div class="discussion-body">${renderMarkdown(msg.content)}</div>
-        `;
-        container.appendChild(card);
+            <div class="discussion-body">${renderMarkdown(msg.content)}</div>
+          `;
+          container.appendChild(card);
+        }
       }
-    }
+    } catch {}
   });
 
   eventSource.addEventListener('discussion_error', (e) => {
-    const data = JSON.parse(e.data);
-    const btn = document.getElementById('btnStartDiscuss');
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
-    }
-    const statusBadge = document.getElementById('discussionStatusBadge');
-    if (statusBadge) {
-      statusBadge.className = 'discussion-status-badge error';
-      statusBadge.textContent = '推演异常/已中止';
-    }
-    showToast(data.error || '需求推演异常', 'error');
-  });
-
-  eventSource.addEventListener('discussion_complete', (e) => {
-    const data = JSON.parse(e.data);
-    if (data) {
-      const statusBadge = document.getElementById('discussionStatusBadge');
-      if (statusBadge) {
-        statusBadge.className = 'discussion-status-badge success';
-        statusBadge.textContent = data.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
-      }
-      const gate = document.getElementById('humanDecisionGate');
-      const editor = document.getElementById('finalPlanEditor');
-      if (gate && editor && data.finalPlan) {
-        editor.value = data.finalPlan;
-        if (data.suggestedFeature && !document.getElementById('featureName').value) {
-          document.getElementById('featureName').value = data.suggestedFeature;
-        }
-        gate.style.display = 'block';
-        setTimeout(() => gate.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
-      }
-      if (data.devSessionId && document.getElementById('devSessionId')) {
-        document.getElementById('devSessionId').value = data.devSessionId;
-      }
-      if (data.reviewSessionId && document.getElementById('reviewSessionId')) {
-        document.getElementById('reviewSessionId').value = data.reviewSessionId;
-      }
+    try {
+      const data = JSON.parse(e.data);
       const btn = document.getElementById('btnStartDiscuss');
       if (btn) {
         btn.disabled = false;
         btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
       }
-      showToast(data.consensusReached ? '双 Agent 达成共识方案！' : '需求推演完成！', 'success');
-    }
+      const statusBadge = document.getElementById('discussionStatusBadge');
+      if (statusBadge) {
+        statusBadge.className = 'discussion-status-badge error';
+        statusBadge.textContent = '推演异常/已中止';
+      }
+      showToast(data.error || '需求推演异常', 'error');
+    } catch {}
+  });
+
+  eventSource.addEventListener('discussion_complete', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data) {
+        const statusBadge = document.getElementById('discussionStatusBadge');
+        if (statusBadge) {
+          statusBadge.className = 'discussion-status-badge success';
+          statusBadge.textContent = data.consensusReached ? '🏆 双方已达成共识' : '🏁 推演完成';
+        }
+        const gate = document.getElementById('humanDecisionGate');
+        const editor = document.getElementById('finalPlanEditor');
+        if (gate && editor && data.finalPlan) {
+          editor.value = data.finalPlan;
+          if (data.suggestedFeature && !document.getElementById('featureName').value) {
+            document.getElementById('featureName').value = data.suggestedFeature;
+          }
+          gate.style.display = 'block';
+          setTimeout(() => gate.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
+        }
+        if (data.devSessionId && document.getElementById('devSessionId')) {
+          document.getElementById('devSessionId').value = data.devSessionId;
+        }
+        if (data.reviewSessionId && document.getElementById('reviewSessionId')) {
+          document.getElementById('reviewSessionId').value = data.reviewSessionId;
+        }
+        const btn = document.getElementById('btnStartDiscuss');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+        }
+        showToast(data.consensusReached ? '双 Agent 达成共识方案！' : '需求推演完成！', 'success');
+      }
+    } catch {}
   });
 
   eventSource.onerror = () => {
     console.warn('SSE connection lost, reconnecting...');
+    if (eventSource.readyState === EventSource.CLOSED) {
+      if (!sseReconnectTimer) {
+        sseReconnectTimer = setTimeout(() => {
+          sseReconnectTimer = null;
+          initSSE();
+        }, 3000);
+      }
+    }
   };
 }
 
@@ -1395,6 +1432,8 @@ async function fetchDiff() {
         return `<span class="diff-line-del">${escapeHtml(line)}</span>`;
       } else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('=== Tracked File:') || line.startsWith('=== Untracked File:')) {
         return `<span class="diff-line-hdr">${escapeHtml(line)}</span>`;
+      } else if (line.includes('[WARNING: Git diff truncated') || line.includes('Exceeded 256KB limit')) {
+        return `<span class="diff-line-warn" style="color: #f59e0b; font-weight: bold;">${escapeHtml(line)}</span>`;
       }
       return escapeHtml(line);
     }).join('\n');

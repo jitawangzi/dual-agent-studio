@@ -448,6 +448,37 @@ try {
     Assert-Equal $res10.devSessionId "mb-priority-dev-888" "Mailbox devSessionId must take precedence over discussion"
     Assert-Equal $res10.reviewSessionId "mb-priority-rev-999" "Mailbox reviewSessionId must take precedence over discussion"
 
+    # 11. Test Prevent Fake Approval: Invalid Review Verdicts Must Throw
+    $mb11 = Join-Path $TestRoot "mb11.json"
+    $invalidVerdictHook = {
+        param($OriginalTask, $GitDiff, $Round)
+        return [ordered]@{
+            verdict = "MAYBE_OK"
+            highestSeverity = "NONE"
+            summary = "Not sure"
+            issues = @()
+            nextPromptForDev = ""
+        }
+    }
+    $invalidVerdictCaught = $false
+    try {
+        & $OrchestratorScript `
+            -WorkspaceRoot $TestRoot `
+            -TaskPrompt "Invalid Verdict Task" `
+            -Feature "FeatureInvalidVerdict" `
+            -DevProvider "mock" `
+            -ReviewProvider "custom" `
+            -ReviewerCustomHook $invalidVerdictHook `
+            -VerifyCommand "exit 0" `
+            -MaxRounds 1 `
+            -MailboxPath $mb11 | Out-Null
+    } catch {
+        if ($_.Exception.Message -match "INVALID_REVIEW_VERDICT") {
+            $invalidVerdictCaught = $true
+        }
+    }
+    Assert-True $invalidVerdictCaught "Reviewer returning non-APPROVED/non-REJECTED verdict must be rejected with INVALID_REVIEW_VERDICT"
+
     # Clean up test discussion file
     if (Test-Path -LiteralPath (Join-Path $TestRoot "requirement-discussion.json")) {
         Remove-Item -LiteralPath (Join-Path $TestRoot "requirement-discussion.json") -Force
