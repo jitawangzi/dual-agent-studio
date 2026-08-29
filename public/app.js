@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     autoDetectWorkspace(currentWs);
     fetchDiff();
     loadWorkspaceDiscussion(currentWs);
+    fetchSessions(currentWs);
   }
   fetchStatus();
   setInterval(fetchStatus, 3000);
@@ -394,6 +395,9 @@ function setWorkspace(wsPath, updateServerProjects = true) {
 
   // Load saved discussion & blueprint for this workspace
   loadWorkspaceDiscussion(wsPath);
+
+  // Load active sessions for this workspace
+  fetchSessions(wsPath);
 
   // Register in recent projects on backend
   if (updateServerProjects) {
@@ -840,6 +844,59 @@ async function loadWorkspaceDiscussion(wsPath) {
   }
 }
 
+// --- WORKSPACE SESSION RESOLUTION & RESET ---
+async function fetchSessions(wsPath, feature) {
+  if (!wsPath) return;
+  try {
+    const feat = feature || document.getElementById('featureName')?.value?.trim() || '';
+    const res = await fetch(`/api/sessions?workspace=${encodeURIComponent(wsPath)}${feat ? `&feature=${encodeURIComponent(feat)}` : ''}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success) {
+        const devInput = document.getElementById('devSessionId');
+        const revInput = document.getElementById('reviewSessionId');
+        if (devInput && data.devSessionId) {
+          devInput.value = data.devSessionId;
+        }
+        if (revInput && data.reviewSessionId) {
+          revInput.value = data.reviewSessionId;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch sessions:', e);
+  }
+}
+
+async function resetWorkspaceSessions() {
+  const ws = document.getElementById('workspaceRoot')?.value?.trim();
+  if (!ws) {
+    showToast('请先选择或输入工作区物理根目录！', 'warning');
+    return;
+  }
+  const feat = document.getElementById('featureName')?.value?.trim() || '';
+  try {
+    const res = await fetch('/api/sessions/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceRoot: ws, feature: feat })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      const devInput = document.getElementById('devSessionId');
+      const revInput = document.getElementById('reviewSessionId');
+      if (devInput) devInput.value = data.devSessionId;
+      if (revInput) revInput.value = data.reviewSessionId;
+      showToast('Agent 会话 ID 已成功重置并持久化到工作区！', 'success');
+      saveUserPreferences();
+    } else {
+      showToast(`重置会话失败: ${data.error || '未知错误'}`, 'error');
+    }
+  } catch (e) {
+    showToast(`重置会话请求异常: ${e.message}`, 'error');
+  }
+}
+
 function renderDiscussionRounds(rounds) {
   const container = document.getElementById('discussionMessages');
   if (!rounds || rounds.length === 0 || !container) return;
@@ -1061,19 +1118,29 @@ function renderTimeline(mb) {
   if (statusBadge && statusText) {
     if (mb.status === 'APPROVED') {
       statusBadge.className = 'status-badge approved';
-      statusText.textContent = '审核通过 (APPROVED)';
+      statusText.textContent = '🏆 审核通过 (APPROVED)';
     } else if (mb.status === 'REJECTED_MAX_ROUNDS') {
       statusBadge.className = 'status-badge rejected';
-      statusText.textContent = '达到最大轮次 (REJECTED)';
+      statusText.textContent = '🚫 达到最大轮次 (REJECTED)';
     } else if (mb.status === 'FAILED' || mb.status === 'ERROR') {
       statusBadge.className = 'status-badge rejected';
-      statusText.textContent = '任务执行失败 (FAILED)';
+      statusText.textContent = '❌ 任务执行失败 (FAILED)';
     } else if (mb.status === 'WAITING_DEV') {
-      statusBadge.className = 'status-badge waiting';
-      statusText.textContent = '等待开发方调整 (WAITING_DEV)';
+      if (isRunning) {
+        statusBadge.className = 'status-badge running';
+        statusText.textContent = `🛠️ 正在进行第 ${mb.round} 轮开发方自主编码中...`;
+      } else {
+        statusBadge.className = 'status-badge waiting';
+        statusText.textContent = `⏸️ 第 ${mb.round} 轮就绪 (点击启动继续闭环)`;
+      }
     } else if (mb.status === 'WAITING_REVIEW') {
-      statusBadge.className = 'status-badge waiting';
-      statusText.textContent = '等待审查方评估 (WAITING_REVIEW)';
+      if (isRunning) {
+        statusBadge.className = 'status-badge running';
+        statusText.textContent = `🔍 正在进行第 ${mb.round} 轮审查方深度评审中...`;
+      } else {
+        statusBadge.className = 'status-badge waiting';
+        statusText.textContent = `⏸️ 第 ${mb.round} 轮待审查 (点击启动继续)`;
+      }
     }
   }
 
@@ -1345,4 +1412,6 @@ if (typeof window !== 'undefined') {
   window.closeModelManager = closeModelManager;
   window.saveModelsManager = saveModelsManager;
   window.clearLogs = clearLogs;
+  window.fetchSessions = fetchSessions;
+  window.resetWorkspaceSessions = resetWorkspaceSessions;
 }

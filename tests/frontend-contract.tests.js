@@ -32,12 +32,14 @@ const requiredIds = [
     'devModel',
     'devModelCustom',
     'devSessionId',
+    'btnResetDevSession',
     'reviewProvider',
     'reviewSeries',
     'reviewReasoningEffort',
     'reviewModel',
     'reviewModelCustom',
     'reviewSessionId',
+    'btnResetReviewSession',
     'btnStart',
     'btnStop',
     'statusBadge',
@@ -92,6 +94,8 @@ const requiredFunctions = [
     'fetchDiff',
     'copyDiffToClipboard',
     'autoDetectWorkspace',
+    'fetchSessions',
+    'resetWorkspaceSessions',
     'loadUserPreferences',
     'saveUserPreferences'
 ];

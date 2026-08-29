@@ -163,6 +163,79 @@ function Format-AgyReasoningEffort {
     }
 }
 
+function Sanitize-SessionId {
+    param([string]$SessionId)
+    if ([string]::IsNullOrWhiteSpace($SessionId)) { return $null }
+    $trimmed = $SessionId.Trim()
+    if ($trimmed -match '^[a-zA-Z0-9_-]{8,64}$') {
+        return $trimmed
+    }
+    $cleaned = ($trimmed -replace '[^a-zA-Z0-9_-]', '')
+    if ($cleaned.Length -ge 8) {
+        if ($cleaned.Length -gt 64) { $cleaned = $cleaned.Substring(0, 64) }
+        return $cleaned
+    }
+    return $null
+}
+
+function Resolve-EffectiveSessionId {
+    param(
+        [Parameter(Mandatory=$false)][string]$ExplicitId = "",
+        [Parameter(Mandatory=$false)][string]$MailboxPath = "",
+        [Parameter(Mandatory=$false)][string]$WorkspaceRoot = "",
+        [Parameter(Mandatory=$false)][string]$RoleName = "dev",
+        [Parameter(Mandatory=$false)][switch]$ForceNew,
+        [Parameter(Mandatory=$false)][switch]$AutoBind
+    )
+
+    # 1. Explicit ID takes precedence if not forced new
+    if (-not $ForceNew -and -not [string]::IsNullOrWhiteSpace($ExplicitId)) {
+        $sanitized = Sanitize-SessionId $ExplicitId
+        if (-not [string]::IsNullOrWhiteSpace($sanitized)) {
+            return $sanitized
+        }
+    }
+
+    # 2. Multi-tier resolution: Mailbox > requirement-discussion.json
+    if (-not $ForceNew -and ($AutoBind.IsPresent -or $AutoBind)) {
+        if (-not [string]::IsNullOrWhiteSpace($MailboxPath) -and (Test-Path -LiteralPath $MailboxPath)) {
+            try {
+                $raw = [System.IO.File]::ReadAllText($MailboxPath, [System.Text.Encoding]::UTF8)
+                $mb = $raw | ConvertFrom-Json
+                $cand = if ($RoleName -eq "dev") { $mb.devSessionId } else {
+                    if ($mb.reviewSessionId) { $mb.reviewSessionId } else { $mb.reviewerSessionId }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($cand)) {
+                    $cleanCand = Sanitize-SessionId $cand
+                    if (-not [string]::IsNullOrWhiteSpace($cleanCand)) {
+                        return $cleanCand
+                    }
+                }
+            } catch {}
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot) -and (Test-Path -LiteralPath $WorkspaceRoot)) {
+            $discPath = Join-Path $WorkspaceRoot "requirement-discussion.json"
+            if (Test-Path -LiteralPath $discPath) {
+                try {
+                    $discRaw = [System.IO.File]::ReadAllText($discPath, [System.Text.Encoding]::UTF8)
+                    $disc = $discRaw | ConvertFrom-Json
+                    $cand = if ($RoleName -eq "dev") { $disc.devSessionId } else { $disc.reviewSessionId }
+                    if (-not [string]::IsNullOrWhiteSpace($cand)) {
+                        $cleanCand = Sanitize-SessionId $cand
+                        if (-not [string]::IsNullOrWhiteSpace($cleanCand)) {
+                            return $cleanCand
+                        }
+                    }
+                } catch {}
+            }
+        }
+    }
+
+    # 3. Fallback to fresh UUIDv4
+    return [guid]::NewGuid().ToString()
+}
+
 function Extract-JsonFromText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }

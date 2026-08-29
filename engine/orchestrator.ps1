@@ -33,10 +33,12 @@ param(
     [string]$DevReasoningEffort,
     [string]$ReviewReasoningEffort,
 
-    # Session ID Tracking
+    # Session ID Tracking & Auto-Binding
     [string]$DevSessionId,
     [string]$ReviewSessionId,
     [string]$CopilotSessionId, # Backwards compatibility alias for ReviewSessionId
+    [switch]$ForceNewSessions,
+    [switch]$AutoBindSession,
 
     [string]$VerifyCommand = "exit 0",
     [int]$MaxRounds = 4,
@@ -128,19 +130,27 @@ $mappedRev = switch ($ReviewProvider.ToLowerInvariant()) {
     default { if ($mappedDev -eq "CUSTOM") { "COPILOT" } else { "CUSTOM" } }
 }
 
-# Resolve Dev and Reviewer Session IDs
-$effectiveDevSessionId = if (-not [string]::IsNullOrWhiteSpace($DevSessionId)) {
-    $DevSessionId
-} else {
-    [guid]::NewGuid().ToString()
-}
+# Resolve Dev and Reviewer Session IDs (Multi-tier: Explicit > Mailbox > Discussion > UUID)
+$effectiveDevSessionId = Resolve-EffectiveSessionId `
+    -ExplicitId $DevSessionId `
+    -MailboxPath $effectiveMailboxPath `
+    -WorkspaceRoot $wsPhysical `
+    -RoleName "dev" `
+    -ForceNew:$ForceNewSessions `
+    -AutoBind:$AutoBindSession
 
-$effectiveReviewSessionId = if (-not [string]::IsNullOrWhiteSpace($ReviewSessionId)) {
-    $ReviewSessionId
-} elseif (-not [string]::IsNullOrWhiteSpace($CopilotSessionId)) {
-    $CopilotSessionId
-} else {
-    [guid]::NewGuid().ToString()
+$rawReviewId = if (-not [string]::IsNullOrWhiteSpace($ReviewSessionId)) { $ReviewSessionId } else { $CopilotSessionId }
+$effectiveReviewSessionId = Resolve-EffectiveSessionId `
+    -ExplicitId $rawReviewId `
+    -MailboxPath $effectiveMailboxPath `
+    -WorkspaceRoot $wsPhysical `
+    -RoleName "review" `
+    -ForceNew:$ForceNewSessions `
+    -AutoBind:$AutoBindSession
+
+# Dual-Agent Session Isolation: Ensure Dev and Reviewer session IDs never collide
+if ($effectiveDevSessionId -eq $effectiveReviewSessionId) {
+    $effectiveReviewSessionId = [guid]::NewGuid().ToString()
 }
 
 Write-Host "================================================================================" -ForegroundColor Cyan
@@ -174,27 +184,34 @@ if ($targetMailboxScript) {
         Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mbInit
     }
 } else {
-    $initObj = [ordered]@{
-        schemaVersion = "1.0"
-        feature = $effectiveFeature
-        round = 1
-        maxRounds = $MaxRounds
-        status = "INITIALIZED"
-        error = ""
-        devAgent = $mappedDev
-        reviewerAgent = $mappedRev
-        devSessionId = $effectiveDevSessionId
-        reviewSessionId = $effectiveReviewSessionId
-        reviewerSessionId = $effectiveReviewSessionId
-        updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
-        currentDevSubmission = $null
-        currentReviewVerdict = $null
-        history = @()
+    $existingMb = Read-MailboxState -MailboxPath $effectiveMailboxPath
+    if ($null -ne $existingMb -and $existingMb.feature -eq $effectiveFeature -and $existingMb.status -eq "WAITING_DEV" -and [int]$existingMb.round -gt 1 -and $existingMb.history.Count -gt 0) {
+        Write-Host "🔄 Resuming existing dual-agent loop for feature '$effectiveFeature' at Round $($existingMb.round)..." -ForegroundColor Cyan
+        $lastReview = $existingMb.history[-1].reviewVerdict
+        $currentPrompt = "Round $($existingMb.round - 1) Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"
+    } else {
+        $initObj = [ordered]@{
+            schemaVersion = "1.0"
+            feature = $effectiveFeature
+            round = 1
+            maxRounds = $MaxRounds
+            status = "INITIALIZED"
+            error = ""
+            devAgent = $mappedDev
+            reviewerAgent = $mappedRev
+            devSessionId = $effectiveDevSessionId
+            reviewSessionId = $effectiveReviewSessionId
+            reviewerSessionId = $effectiveReviewSessionId
+            updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            currentDevSubmission = $null
+            currentReviewVerdict = $null
+            history = @()
+        }
+        Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $initObj
+        $currentPrompt = $TaskPrompt
     }
-    Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $initObj
 }
 
-$currentPrompt = $TaskPrompt
 $selfHealAttempts = 0
 
 try {

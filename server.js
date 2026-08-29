@@ -204,6 +204,165 @@ function sanitizeCopilotEffort(effort) {
     return 'high';
 }
 
+const SESSION_ID_REGEX = /^[A-Za-z0-9_-]{8,64}$/;
+
+function sanitizeSessionId(id) {
+    if (!id || typeof id !== 'string') return null;
+    const trimmed = id.trim();
+    if (SESSION_ID_REGEX.test(trimmed)) {
+        return trimmed;
+    }
+    const cleaned = trimmed.replace(/[^A-Za-z0-9_-]/g, '');
+    if (cleaned.length >= 8) {
+        return cleaned.substring(0, 64);
+    }
+    return null;
+}
+
+function resolveEffectiveSessionId({ explicitId, workspaceRoot, feature, mailboxPath, role = 'dev', forceNew = false, autoBind = true }) {
+    // 1. Explicit ID
+    if (!forceNew && explicitId) {
+        const sanitized = sanitizeSessionId(explicitId);
+        if (sanitized) return { sessionId: sanitized, source: 'explicit' };
+    }
+
+    // 2. Multi-tier resolution: Mailbox > requirement-discussion.json
+    if (!forceNew && autoBind && workspaceRoot && fs.existsSync(workspaceRoot)) {
+        // Check Mailbox
+        const mb = getMailbox(workspaceRoot, mailboxPath, feature);
+        if (mb) {
+            const cand = role === 'dev' ? mb.devSessionId : (mb.reviewSessionId || mb.reviewerSessionId);
+            const sanitized = sanitizeSessionId(cand);
+            if (sanitized) return { sessionId: sanitized, source: 'mailbox' };
+        }
+
+        // Check Discussion
+        const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
+        if (fs.existsSync(discPath)) {
+            try {
+                const disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
+                const cand = role === 'dev' ? disc.devSessionId : disc.reviewSessionId;
+                const sanitized = sanitizeSessionId(cand);
+                if (sanitized) return { sessionId: sanitized, source: 'discussion' };
+            } catch {}
+        }
+    }
+
+    // 3. Fallback to fresh UUID
+    return { sessionId: crypto.randomUUID(), source: 'generated' };
+}
+
+function resolveStudioSessionIds(options = {}) {
+    const devRes = resolveEffectiveSessionId({
+        explicitId: options.devSessionId,
+        workspaceRoot: options.workspaceRoot,
+        feature: options.feature,
+        mailboxPath: options.mailboxPath,
+        role: 'dev',
+        forceNew: !!options.forceNew,
+        autoBind: options.autoBind !== false
+    });
+
+    let reviewRes = resolveEffectiveSessionId({
+        explicitId: options.reviewSessionId || options.copilotSessionId,
+        workspaceRoot: options.workspaceRoot,
+        feature: options.feature,
+        mailboxPath: options.mailboxPath,
+        role: 'review',
+        forceNew: !!options.forceNew,
+        autoBind: options.autoBind !== false
+    });
+
+    // Dual-Agent Session Isolation: Ensure Dev and Reviewer session IDs never collide
+    if (devRes.sessionId === reviewRes.sessionId) {
+        reviewRes = { sessionId: crypto.randomUUID(), source: 'generated' };
+    }
+
+    return {
+        devSessionId: devRes.sessionId,
+        devSource: devRes.source,
+        reviewSessionId: reviewRes.sessionId,
+        reviewSource: reviewRes.source,
+        source: (devRes.source === reviewRes.source) ? devRes.source : `${devRes.source}/${reviewRes.source}`
+    };
+}
+
+function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, feature = null) {
+    if (!workspaceRoot || !fs.existsSync(workspaceRoot)) return false;
+
+    // 1. Update requirement-discussion.json in workspace root
+    try {
+        const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
+        if (fs.existsSync(discPath)) {
+            const disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
+            disc.devSessionId = devSessionId;
+            disc.reviewSessionId = reviewSessionId;
+            fs.writeFileSync(discPath, JSON.stringify(disc, null, 2), 'utf-8');
+        }
+    } catch {}
+
+    // 2. Update feature discussion-history.json and review-mailbox.json if feature specs exist
+    const featBase = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features');
+    if (fs.existsSync(featBase)) {
+        try {
+            const subdirs = fs.readdirSync(featBase, { withFileTypes: true });
+            for (const d of subdirs) {
+                if (d.isDirectory()) {
+                    if (!feature || feature === d.name) {
+                        const fDiscPath = path.join(featBase, d.name, 'discussion-history.json');
+                        if (fs.existsSync(fDiscPath)) {
+                            try {
+                                const fDisc = JSON.parse(fs.readFileSync(fDiscPath, 'utf-8'));
+                                fDisc.devSessionId = devSessionId;
+                                fDisc.reviewSessionId = reviewSessionId;
+                                fs.writeFileSync(fDiscPath, JSON.stringify(fDisc, null, 2), 'utf-8');
+                            } catch {}
+                        }
+                        const fMbPath = path.join(featBase, d.name, 'review-mailbox.json');
+                        if (fs.existsSync(fMbPath)) {
+                            try {
+                                const mb = JSON.parse(fs.readFileSync(fMbPath, 'utf-8'));
+                                mb.devSessionId = devSessionId;
+                                mb.reviewSessionId = reviewSessionId;
+                                mb.reviewerSessionId = reviewSessionId;
+                                mb.updatedAt = new Date().toISOString();
+                                fs.writeFileSync(fMbPath, JSON.stringify(mb, null, 2), 'utf-8');
+                            } catch {}
+                        }
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    // 3. Update sop review-mailbox.json or root review-mailbox.json
+    const sopMb = path.join(workspaceRoot, '.ai-sop', 'review-mailbox.json');
+    if (fs.existsSync(sopMb)) {
+        try {
+            const mb = JSON.parse(fs.readFileSync(sopMb, 'utf-8'));
+            mb.devSessionId = devSessionId;
+            mb.reviewSessionId = reviewSessionId;
+            mb.reviewerSessionId = reviewSessionId;
+            mb.updatedAt = new Date().toISOString();
+            fs.writeFileSync(sopMb, JSON.stringify(mb, null, 2), 'utf-8');
+        } catch {}
+    }
+
+    const rootMb = path.join(workspaceRoot, 'review-mailbox.json');
+    if (fs.existsSync(rootMb)) {
+        try {
+            const mb = JSON.parse(fs.readFileSync(rootMb, 'utf-8'));
+            mb.devSessionId = devSessionId;
+            mb.reviewSessionId = reviewSessionId;
+            mb.reviewerSessionId = reviewSessionId;
+            mb.updatedAt = new Date().toISOString();
+            fs.writeFileSync(rootMb, JSON.stringify(mb, null, 2), 'utf-8');
+        } catch {}
+    }
+
+    return true;
+}
+
 // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation with 600s watchdog
 async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token }) {
     if (token !== undefined && token !== discussionGeneration) {
@@ -251,8 +410,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             // Default / copilot / gpt / grok / gemini
             psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
             if (model) psCmd += ` --model '${model}'`;
-            const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-            const validSession = (sessionId && UUID_REGEX.test(sessionId.trim())) ? sessionId.trim() : crypto.randomUUID();
+            const validSession = sanitizeSessionId(sessionId) || crypto.randomUUID();
             psCmd += ` --session-id='${validSession}'`;
             const safeEffort = sanitizeCopilotEffort(reasoningEffort);
             if (safeEffort && safeEffort !== 'none') {
@@ -356,9 +514,23 @@ async function runBackgroundDiscussion(params, token) {
 
         const totalRounds = Math.min(Math.max(parseInt(maxDiscussionRounds, 10) || 2, 1), 4);
         appendLog(`💬 发起双 Agent 多轮需求对齐与架构共识推演 (最大 ${totalRounds} 轮): "${vaguePrompt}"`, 'system');
-        broadcast('discussion_start', { prompt: vaguePrompt, maxRounds: totalRounds });
 
-        const effectiveReviewSessionId = reviewSessionId || copilotSessionId;
+        const resolvedSessions = resolveStudioSessionIds({
+            devSessionId,
+            reviewSessionId: reviewSessionId || copilotSessionId,
+            workspaceRoot,
+            forceNew: !!params.forceNewSessions
+        });
+        const effectiveDevSessionId = resolvedSessions.devSessionId;
+        const effectiveReviewSessionId = resolvedSessions.reviewSessionId;
+
+        broadcast('discussion_start', {
+            prompt: vaguePrompt,
+            maxRounds: totalRounds,
+            devSessionId: effectiveDevSessionId,
+            reviewSessionId: effectiveReviewSessionId
+        });
+
         const discussionHistory = [];
         let devProposal = '';
         let reviewerFeedback = '';
@@ -415,7 +587,7 @@ Address the Reviewer's feedback in a rigorous, constructive engineering dialogue
                 provider: devProvider,
                 model: devModel,
                 reasoningEffort: devReasoningEffort,
-                sessionId: devSessionId,
+                sessionId: effectiveDevSessionId,
                 prompt: devPrompt,
                 workspaceRoot,
                 role: `Dev-R${r}`,
@@ -430,7 +602,11 @@ Address the Reviewer's feedback in a rigorous, constructive engineering dialogue
             }
 
             if (!devOut) {
-                devOut = `### 🛠️ 开发方技术实施方案 (第 ${r} 轮)\n\n针对 **"${vaguePrompt}"** 的技术方案与落地路径：\n\n1. **核心架构与设计思路**：\n   - 针对目标项目上下文，聚焦关键业务路径与核心调度流程进行针对性优化；\n   - 规范模块契约与数据流转，强化前置参数校验与异常熔断机制。\n\n2. **涉及文件与模块改动**：\n   - 业务逻辑与控制器层接口改造与参数适配；\n   - 核心服务层健壮性与并发安全性加固；\n   - 自动化单元与集成测试用例补充。\n\n3. **可落地任务清单**：\n   - [ ] [Task 1] 梳理与重构目标核心处理函数，强化边界异常与参数校验\n   - [ ] [Task 2] 补全核心数据结构序列化与并发安全锁机制\n   - [ ] [Task 3] 编写针对性单元测试与自动化验证门禁`;
+                appendLog(`❌ [Round ${r}] 开发方 Agent (${devProvider}) 未返回任何有效输出，需求推演失败。`, 'stderr');
+                if (token === discussionGeneration) {
+                    broadcast('discussion_error', { error: `开发方 Agent (${devProvider}) 在第 ${r} 轮未返回任何有效输出。` });
+                }
+                return;
             }
 
             devProposal = devOut;
@@ -483,15 +659,15 @@ Conclude with your verdict:
             }
 
             if (!revOut) {
-                if (r < totalRounds) {
-                    revOut = `### 🔍 审查方质询与改进建议 (第 ${r} 轮)\n\n1. **并发与异常防御**：请开发方明确在高负载与超时异常下的降级与回滚逻辑；\n2. **门禁覆盖率**：任务清单需包含针对边界异常流的自动化测试验证。\n\n**[VERDICT: NEEDS_REFINEMENT]** 请开发方在下轮方案中明确上述细节。`;
-                } else {
-                    revOut = `### 🔍 审查方评估与共识确认 (第 ${r} 轮)\n\n1. **架构可行性**：方案逻辑清晰，核心模块划分明确，异常处理完备；\n2. **任务可执行性**：任务清单具有明确的落地路径与验证门禁。\n\n**[VERDICT: CONSENSUS_REACHED]** 双方已达成共识，方案完备，可进入执行阶段。`;
+                appendLog(`❌ [Round ${r}] 审查方 Agent (${reviewProvider}) 未返回任何有效输出，需求推演失败。`, 'stderr');
+                if (token === discussionGeneration) {
+                    broadcast('discussion_error', { error: `审查方 Agent (${reviewProvider}) 在第 ${r} 轮未返回任何有效输出。` });
                 }
+                return;
             }
 
             reviewerFeedback = revOut;
-            const isConsensus = revOut.includes('CONSENSUS_REACHED') || revOut.includes('共识达成') || r >= totalRounds;
+            const isConsensus = (revOut.includes('CONSENSUS_REACHED') || revOut.includes('共识达成')) && !revOut.includes('NEEDS_REFINEMENT');
             const revMsg = {
                 round: r,
                 sender: 'REVIEWER',
@@ -524,7 +700,9 @@ Conclude with your verdict:
             devProposal,
             reviewerFeedback,
             finalPlan: finalSynthesizedPlan,
-            suggestedFeature: 'feature_' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '_' + Math.random().toString(36).substring(2,6)
+            suggestedFeature: 'feature_' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '_' + Math.random().toString(36).substring(2,6),
+            devSessionId: effectiveDevSessionId,
+            reviewSessionId: effectiveReviewSessionId
         };
 
         // Persist Discussion History & Implementation Blueprint to Workspace
@@ -534,6 +712,8 @@ Conclude with your verdict:
                     savedAt: new Date().toISOString(),
                     vaguePrompt,
                     consensusReached,
+                    devSessionId: effectiveDevSessionId,
+                    reviewSessionId: effectiveReviewSessionId,
                     rounds: discussionHistory,
                     finalPlan: finalSynthesizedPlan,
                     suggestedFeature: responseData.suggestedFeature
@@ -644,6 +824,74 @@ const server = http.createServer(async (req, res) => {
             });
             return;
         }
+    }
+
+    // 3.1 REST API: /api/sessions (Detect & Reset Workspace Sessions)
+    if (pathname === '/api/sessions' && req.method === 'GET') {
+        const queryWs = url.searchParams.get('workspace') || url.searchParams.get('workspaceRoot');
+        const queryFeature = url.searchParams.get('feature');
+        const forceNew = url.searchParams.get('forceNew') === 'true' || url.searchParams.get('forceNew') === '1';
+        if (!queryWs || !fs.existsSync(queryWs)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Workspace path is required and must exist.' }));
+            return;
+        }
+
+        const sessionInfo = resolveStudioSessionIds({
+            workspaceRoot: queryWs,
+            feature: queryFeature,
+            forceNew
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            workspace: queryWs,
+            feature: queryFeature || null,
+            devSessionId: sessionInfo.devSessionId,
+            reviewSessionId: sessionInfo.reviewSessionId,
+            devSource: sessionInfo.devSource,
+            reviewSource: sessionInfo.reviewSource,
+            source: sessionInfo.source
+        }));
+        return;
+    }
+
+    if (pathname === '/api/sessions/reset' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const params = body ? JSON.parse(body) : {};
+                const ws = params.workspaceRoot || params.workspace || url.searchParams.get('workspace') || url.searchParams.get('workspaceRoot');
+                if (!ws || !fs.existsSync(ws)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Workspace path is required and must exist.' }));
+                    return;
+                }
+
+                const newDevSessionId = sanitizeSessionId(params.devSessionId) || crypto.randomUUID();
+                let newReviewSessionId = sanitizeSessionId(params.reviewSessionId || params.copilotSessionId) || crypto.randomUUID();
+                if (newDevSessionId === newReviewSessionId) {
+                    newReviewSessionId = crypto.randomUUID();
+                }
+
+                const persisted = persistWorkspaceSessions(ws, newDevSessionId, newReviewSessionId, params.feature);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    workspace: ws,
+                    devSessionId: newDevSessionId,
+                    reviewSessionId: newReviewSessionId,
+                    persisted
+                }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return;
     }
 
     // 4. REST API: /api/list-dirs (Web Directory Explorer)
@@ -851,9 +1099,21 @@ const server = http.createServer(async (req, res) => {
                 if (config.reviewModel) psArgs.push('-ReviewModel', config.reviewModel);
                 if (config.devReasoningEffort) psArgs.push('-DevReasoningEffort', config.devReasoningEffort);
                 if (config.reviewReasoningEffort) psArgs.push('-ReviewReasoningEffort', config.reviewReasoningEffort);
-                if (config.devSessionId) psArgs.push('-DevSessionId', config.devSessionId);
-                if (config.reviewSessionId) psArgs.push('-ReviewSessionId', config.reviewSessionId);
-                else if (config.copilotSessionId) psArgs.push('-ReviewSessionId', config.copilotSessionId);
+
+                const sessionInfo = resolveStudioSessionIds({
+                    devSessionId: config.devSessionId,
+                    reviewSessionId: config.reviewSessionId || config.copilotSessionId,
+                    workspaceRoot: config.workspaceRoot,
+                    feature: config.feature,
+                    mailboxPath: config.mailboxPath,
+                    forceNew: !!config.forceNewSessions
+                });
+
+                if (sessionInfo.devSessionId) psArgs.push('-DevSessionId', sessionInfo.devSessionId);
+                if (sessionInfo.reviewSessionId) psArgs.push('-ReviewSessionId', sessionInfo.reviewSessionId);
+                if (config.forceNewSessions) psArgs.push('-ForceNewSessions');
+                else psArgs.push('-AutoBindSession');
+
                 if (config.verifyCommand) psArgs.push('-VerifyCommand', config.verifyCommand);
                 if (config.maxRounds) psArgs.push('-MaxRounds', String(config.maxRounds));
                 if (config.maxSelfHealAttempts) psArgs.push('-MaxSelfHealAttempts', String(config.maxSelfHealAttempts));
@@ -1062,6 +1322,10 @@ module.exports = {
     getProjects,
     getModelsConfig,
     sanitizeCopilotEffort,
+    sanitizeSessionId,
+    resolveEffectiveSessionId,
+    resolveStudioSessionIds,
+    persistWorkspaceSessions,
     listDrivesAndDirs,
     getMailbox
 };

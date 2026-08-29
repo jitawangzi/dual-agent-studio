@@ -158,10 +158,13 @@
           </div>
           <!-- ROW 4: Dev 会话 ID -->
           <div class="form-group" id="devSessionGroup" style="margin-top: 4px;">
-            <label for="devSessionId">
-              <span>🆔 开发会话 ID (Dev Session ID)</span>
-              <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话保持上下文)</span>
-            </label>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label for="devSessionId" style="margin-bottom: 0;">
+                <span>🆔 开发会话 ID (Dev Session ID)</span>
+                <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话)</span>
+              </label>
+              <button class="btn btn-sm btn-secondary" id="btnResetDevSession" style="padding: 2px 8px; font-size: 11px;" onclick="resetWorkspaceSessions()" title="重置工作区会话 ID 并持久化">🔄 重置会话</button>
+            </div>
             <input type="text" id="devSessionId" placeholder="任务启动后自动生成">
           </div>
         </div>
@@ -209,10 +212,13 @@
           </div>
           <!-- ROW 4: Reviewer 会话 ID -->
           <div class="form-group" id="reviewSessionGroup" style="margin-top: 4px;">
-            <label for="reviewSessionId">
-              <span>🆔 审查会话 ID (Reviewer Session ID)</span>
-              <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话保持上下文)</span>
-            </label>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label for="reviewSessionId" style="margin-bottom: 0;">
+                <span>🆔 审查会话 ID (Reviewer Session ID)</span>
+                <span style="font-size: 10px; color: #94a3b8; font-weight: normal; margin-left: 6px;">(启动后自动生成 / 可填入历史会话)</span>
+              </label>
+              <button class="btn btn-sm btn-secondary" id="btnResetReviewSession" style="padding: 2px 8px; font-size: 11px;" onclick="resetWorkspaceSessions()" title="重置工作区会话 ID 并持久化">🔄 重置会话</button>
+            </div>
             <input type="text" id="reviewSessionId" placeholder="任务启动后自动生成">
           </div>
         </div>
