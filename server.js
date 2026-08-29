@@ -411,16 +411,21 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             if (reasoningEffort && reasoningEffort !== 'none') {
                 env.MAX_THINKING_TOKENS = reasoningEffort;
             }
-            psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print --dangerously-skip-permissions`;
-            if (model) psCmd += ` --model '${model}'`;
+            let claudeModel = '';
+            if (model) {
+                const m = model.toLowerCase();
+                if (m.includes('sonnet')) claudeModel = ' --model sonnet';
+                else if (m.includes('opus')) claudeModel = ' --model opus';
+                else if (m.includes('haiku')) claudeModel = ' --model haiku';
+                else claudeModel = ` --model '${model}'`;
+            }
+            psCmd = `if (Test-Path "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe") { Get-Content -Raw -LiteralPath '${safeTmp}' | & "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" --print --dangerously-skip-permissions${claudeModel} } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print --dangerously-skip-permissions${claudeModel} }`;
         } else if (provLower === 'antigravity' || provLower === 'agy') {
             let agyArgs = "--dangerously-skip-permissions";
             if (model) agyArgs += ` --model '${model}'`;
-            if (reasoningEffort && reasoningEffort !== 'none') {
-                const agyEffort = ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase()) ? reasoningEffort.toLowerCase() : 'high';
-                agyArgs += ` --effort '${agyEffort}'`;
-            }
-            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & agy ${agyArgs} } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
+            const agyEffort = (reasoningEffort && ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase())) ? reasoningEffort.toLowerCase() : 'high';
+            agyArgs += ` --effort '${agyEffort}'`;
+            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { $txt = Get-Content -Raw -LiteralPath '${safeTmp}'; & agy ${agyArgs} --print $txt } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'aider') {
             psCmd = `if (Get-Command aider, aider.exe, aider.cmd -ErrorAction SilentlyContinue) { & aider --message-file '${safeTmp}' --no-auto-commits --yes-always } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
         } else if (provLower === 'cursor') {

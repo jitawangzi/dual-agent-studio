@@ -1137,7 +1137,7 @@ async function fetchStatus() {
     const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
     const res = await fetch(`/api/status${ws ? `?workspace=${encodeURIComponent(ws)}` : ''}`);
     const data = await res.json();
-    updateRunningState(data.isRunning);
+    updateRunningState(data.isRunning, data.isDiscussing);
     if (data.mailbox) {
       renderTimeline(data.mailbox);
     }
@@ -1146,12 +1146,13 @@ async function fetchStatus() {
   }
 }
 
-function updateRunningState(running) {
+function updateRunningState(running, discussing = false) {
   isRunning = running;
   const statusBadge = document.getElementById('statusBadge');
   const statusText = document.getElementById('statusText');
   const btnStart = document.getElementById('btnStart');
   const btnStop = document.getElementById('btnStop');
+  const btnStartDiscuss = document.getElementById('btnStartDiscuss');
 
   if (running) {
     if (statusBadge) statusBadge.className = 'status-badge running';
@@ -1160,7 +1161,17 @@ function updateRunningState(running) {
     if (btnStop) btnStop.disabled = false;
   } else {
     if (btnStart) btnStart.disabled = false;
-    if (btnStop) btnStop.disabled = true;
+    if (btnStop) btnStop.disabled = !discussing;
+  }
+
+  if (btnStartDiscuss) {
+    if (discussing) {
+      btnStartDiscuss.disabled = true;
+      btnStartDiscuss.textContent = '⏳ 双 Agent 正在多轮推演讨论中...';
+    } else {
+      btnStartDiscuss.disabled = false;
+      btnStartDiscuss.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+    }
   }
 }
 
