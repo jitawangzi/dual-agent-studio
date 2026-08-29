@@ -588,13 +588,13 @@ function Invoke-DevTurn {
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", "-")
+            $argsList += @("--print", $Prompt)
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
                 Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 2
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
             }
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
         }
@@ -736,13 +736,13 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", "-")
+            $argsList += @("--print", $systemInstruction)
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
             if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
                 Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 2
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
             }
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
