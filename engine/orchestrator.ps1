@@ -170,6 +170,8 @@ Write-Host " Mailbox File  : $effectiveMailboxPath" -ForegroundColor White
 Write-Host "================================================================================" -ForegroundColor Cyan
 
 # 1. Initialize Mailbox
+$currentPrompt = $TaskPrompt
+
 if ($targetMailboxScript) {
     & $targetMailboxScript -Operation Init `
         -Feature $effectiveFeature `
