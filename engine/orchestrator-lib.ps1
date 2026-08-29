@@ -601,6 +601,9 @@ function Invoke-DevTurn {
             $argsList = @("--dangerously-skip-permissions")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
+                $agyEffort = "high"
+            }
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
             $argsList += @("--print", $Prompt)
 
@@ -749,6 +752,9 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             $argsList = @("--dangerously-skip-permissions")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
+                $agyEffort = "high"
+            }
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
             $argsList += @("--print", $systemInstruction)
 
