@@ -607,13 +607,20 @@ function Invoke-DevTurn {
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
             $argsList += @("--print", $Prompt)
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
-            if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
-                Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 2
+            $maxAttempts = 3
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                 $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+                if ($res.ExitCode -eq 0) { break }
+
+                $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
+                if ($isTransient -and $attempt -lt $maxAttempts) {
+                    Write-Host "⚠️ Transient network glitch from Antigravity ($($res.Combined.Trim())). Retrying attempt $($attempt + 1)/$maxAttempts in 3 seconds..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 3
+                } else {
+                    break
+                }
             }
-            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode)." }
+            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode): $($res.Combined)" }
         }
         "cursor" {
             $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -758,14 +765,20 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
             $argsList += @("--print", $systemInstruction)
 
-            $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
-            if ($res.ExitCode -ne 0 -and $res.Combined -match "Eligibility check failed") {
-                Write-Host "⚠️ Transient network glitch on profile check. Retrying in 2 seconds..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 2
+            $maxAttempts = 3
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                 $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+                $jsonObj = Extract-JsonFromText -Text $res.Combined
+                if ($null -ne $jsonObj) { return $jsonObj }
+
+                $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
+                if ($isTransient -and $attempt -lt $maxAttempts) {
+                    Write-Host "⚠️ Transient network glitch from Antigravity ($($res.Combined.Trim())). Retrying attempt $($attempt + 1)/$maxAttempts in 3 seconds..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 3
+                } else {
+                    break
+                }
             }
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
             if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
             throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
         }
