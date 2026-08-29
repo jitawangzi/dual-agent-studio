@@ -18,7 +18,7 @@ function Invoke-CliWithTimeout {
         [Parameter(Mandatory=$false)][string]$StdinText = "",
         [Parameter(Mandatory=$false)][string]$WorkingDirectory = $PWD.Path,
         [Parameter(Mandatory=$false)][hashtable]$EnvironmentVariables = @{},
-        [Parameter(Mandatory=$false)][int]$TimeoutSeconds = 600,
+        [Parameter(Mandatory=$false)][int]$TimeoutSeconds = 1800,
         [Parameter(Mandatory=$false)][string]$RoleName = "CLI"
     )
 
@@ -598,7 +598,7 @@ function Invoke-DevTurn {
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
             
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "10m")
+            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
@@ -609,7 +609,7 @@ function Invoke-DevTurn {
 
             $maxAttempts = 3
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)" -TimeoutSeconds 1800
                 if ($res.ExitCode -eq 0) { break }
 
                 $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
@@ -756,7 +756,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
             
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "10m")
+            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
@@ -767,7 +767,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
 
             $maxAttempts = 3
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)"
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)" -TimeoutSeconds 1800
                 $jsonObj = Extract-JsonFromText -Text $res.Combined
                 if ($null -ne $jsonObj) { return $jsonObj }
 
