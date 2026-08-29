@@ -598,7 +598,7 @@ function Invoke-DevTurn {
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
             
-            $argsList = @("--dangerously-skip-permissions")
+            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "10m")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
@@ -756,7 +756,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
             
-            $argsList = @("--dangerously-skip-permissions")
+            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "10m")
             if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
             $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
             if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {

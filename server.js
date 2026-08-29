@@ -421,7 +421,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             }
             psCmd = `if (Test-Path "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe") { Get-Content -Raw -LiteralPath '${safeTmp}' | & "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" --print --dangerously-skip-permissions${claudeModel} } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print --dangerously-skip-permissions${claudeModel} }`;
         } else if (provLower === 'antigravity' || provLower === 'agy') {
-            let agyArgs = "--dangerously-skip-permissions";
+            let agyArgs = "--dangerously-skip-permissions --print-timeout 10m";
             if (model) agyArgs += ` --model '${model}'`;
             const agyEffort = (reasoningEffort && ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase())) ? reasoningEffort.toLowerCase() : 'high';
             agyArgs += ` --effort '${agyEffort}'`;
