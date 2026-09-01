@@ -30,7 +30,9 @@ const {
     buildOrchestratorArgs,
     buildDiscussionAgentCommand,
     detectWorkspace,
-    getStudioProxyUrl
+    getStudioProxyUrl,
+    interpretDiscussionAgentExit,
+    isDiscussionReviewRole
 } = core;
 
 const PORT = process.env.PORT || 3700;
@@ -205,7 +207,8 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
             model,
             reasoningEffort,
             sessionId,
-            safeTmp
+            safeTmp,
+            role
         });
 
         if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
@@ -213,17 +216,43 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
         }
 
         if (psCmd) {
+            let timedOut = false;
+            let spawnError = null;
+            let exitCode = 0;
+
             await new Promise((resolve) => {
                 let proc = null;
                 let watchdogTimer = null;
                 let onAbort = null;
+                let settled = false;
 
                 const cleanup = () => {
-                    if (watchdogTimer) clearTimeout(watchdogTimer);
+                    if (watchdogTimer) {
+                        clearTimeout(watchdogTimer);
+                        watchdogTimer = null;
+                    }
                     if (signal && onAbort) {
                         try { signal.removeEventListener('abort', onAbort); } catch {}
                     }
                     if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
+                };
+
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve();
+                };
+
+                const killProc = () => {
+                    try {
+                        if (!proc || proc.killed) return;
+                        if (process.platform === 'win32') {
+                            spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
+                        } else {
+                            proc.kill('SIGKILL');
+                        }
+                    } catch {}
                 };
 
                 try {
@@ -237,46 +266,27 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
 
                     if (signal) {
                         if (signal.aborted) {
-                            try {
-                                if (process.platform === 'win32') {
-                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                                } else {
-                                    proc.kill('SIGKILL');
-                                }
-                            } catch {}
-                            cleanup();
-                            return resolve();
+                            killProc();
+                            finish();
+                            return;
                         }
                         onAbort = () => {
-                            try {
-                                if (process.platform === 'win32') {
-                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                                } else {
-                                    proc.kill('SIGKILL');
-                                }
-                            } catch {}
-                            cleanup();
-                            resolve();
+                            killProc();
+                            finish();
                         };
                         signal.addEventListener('abort', onAbort, { once: true });
                     }
 
-                    // 600s watchdog timer
                     watchdogTimer = setTimeout(() => {
+                        timedOut = true;
                         appendLog(`[${role} ${provider}] 运行超时 (${timeoutSeconds} 秒)，正在终止进程...`, 'stderr');
-                        try {
-                            if (process.platform === 'win32') {
-                                spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                            } else {
-                                proc.kill('SIGKILL');
-                            }
-                        } catch {}
+                        killProc();
                     }, timeoutSeconds * 1000);
 
                     proc.on('error', (err) => {
-                        cleanup();
+                        spawnError = err.message;
                         appendLog(`[${role} ${provider}] 调度提示: ${err.message}`, 'info');
-                        resolve();
+                        finish();
                     });
 
                     if (proc.stdout) {
@@ -291,19 +301,36 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
                         });
                     }
 
-                    proc.on('close', () => {
-                        cleanup();
-                        resolve();
+                    proc.on('close', (code) => {
+                        exitCode = code;
+                        finish();
                     });
                 } catch (e) {
-                    cleanup();
+                    spawnError = e.message;
                     appendLog(`[${role} ${provider}] 异常: ${e.message}`, 'info');
-                    resolve();
+                    finish();
                 }
+            });
+
+            if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
+                return '';
+            }
+
+            interpretDiscussionAgentExit({
+                aborted: false,
+                timedOut,
+                spawnError,
+                exitCode,
+                role,
+                provider: provLower
             });
         }
     } catch (e) {
         appendLog(`[${role}] 执行异常: ${e.message}`, 'stderr');
+        if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
+            return '';
+        }
+        throw e;
     } finally {
         try {
             if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
@@ -1086,5 +1113,7 @@ module.exports = {
     getStudioProxyUrl,
     buildDiscussionAgentCommand,
     detectWorkspace,
-    CONTENT_SECURITY_POLICY
+    CONTENT_SECURITY_POLICY,
+    interpretDiscussionAgentExit,
+    isDiscussionReviewRole
 };

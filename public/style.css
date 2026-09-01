@@ -1100,6 +1100,29 @@ body {
   border-color: #3b82f6;
 }
 
+.session-cli-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.session-cli-hint.is-copilot {
+  color: #86efac;
+}
+
+.session-cli-hint.is-mailbox-only,
+#devSessionGroup.is-mailbox-only .session-cli-hint,
+#reviewSessionGroup.is-mailbox-only .session-cli-hint {
+  color: var(--accent-yellow);
+}
+
+#devSessionGroup.is-mailbox-only input,
+#reviewSessionGroup.is-mailbox-only input {
+  opacity: 0.78;
+}
+
 @keyframes toast-slide-in {
   from {
     opacity: 0;

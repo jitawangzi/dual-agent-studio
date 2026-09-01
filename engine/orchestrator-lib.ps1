@@ -384,6 +384,24 @@ function Build-CodexExecArgs {
     return $argsList
 }
 
+function Build-AgyPrintArgs {
+    param(
+        [string]$Model,
+        [string]$ReasoningEffort,
+        [string]$PrintTimeout = "25m"
+    )
+    $argsList = @("--dangerously-skip-permissions", "--print-timeout", $PrintTimeout)
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+    $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
+    if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
+        $agyEffort = "high"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
+    # Prompt must stay on stdin (never `--print $Prompt`) to avoid the Windows ~32K CreateProcess limit.
+    $argsList += "--print"
+    return $argsList
+}
+
 function Build-PiAgentArgs {
     param(
         [string]$Model,
@@ -493,6 +511,22 @@ function Resolve-EffectiveSessionId {
 
     # 3. Fallback to fresh UUIDv4
     return [guid]::NewGuid().ToString()
+}
+
+function Convert-ReviewerCliResult {
+    param(
+        [Parameter(Mandatory=$true)]$Result,
+        [Parameter(Mandatory=$true)][string]$ProviderLabel
+    )
+    $exitCode = [int](Get-ObjectPropertyValue -Object $Result -Name "ExitCode" -Default 1)
+    $combined = [string](Get-ObjectPropertyValue -Object $Result -Name "Combined" -Default "")
+    # Exit code first: a crashed CLI that printed an APPROVED blob must not pass review.
+    if ($exitCode -ne 0) {
+        throw "REVIEWER_EXECUTION_FAILED: $($ProviderLabel) failed with exit code $($exitCode): $combined"
+    }
+    $jsonObj = Extract-JsonFromText -Text $combined
+    if ($null -ne $jsonObj) { return $jsonObj }
+    throw "PROVIDER_OUTPUT_INVALID: $($ProviderLabel) returned non-JSON review output: $combined"
 }
 
 function Extract-JsonFromText {
@@ -912,19 +946,12 @@ function Invoke-DevTurn {
         "antigravity" {
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
-            
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
-                $agyEffort = "high"
-            }
-            if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $Prompt)
+
+            $argsList = Build-AgyPrintArgs -Model $Model -ReasoningEffort $ReasoningEffort
 
             $maxAttempts = 3
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)" -TimeoutSeconds 1800
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)" -TimeoutSeconds 1800
                 if ($res.ExitCode -eq 0) { break }
 
                 $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
@@ -1038,10 +1065,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") { $argsList += @("--reasoning-effort", $copilotEffort) }
 
             $res = Invoke-CliWithTimeout -ExecutablePath $copilotCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Copilot)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: GitHub Copilot CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "GitHub Copilot CLI")
         }
         { $_ -in @("claude", "claude_code") } {
             $claudeExe = Get-ClaudeExecutable
@@ -1058,29 +1082,18 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             }
 
             $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Reviewer (Claude)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Claude CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Claude CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "Claude CLI")
         }
         "antigravity" {
             $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
-            
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
-                $agyEffort = "high"
-            }
-            if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $systemInstruction)
 
+            $argsList = Build-AgyPrintArgs -Model $Model -ReasoningEffort $ReasoningEffort
             $maxAttempts = 3
+            $res = $null
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)" -TimeoutSeconds 1800
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
+                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)" -TimeoutSeconds 1800
+                if ($res.ExitCode -eq 0) { break }
 
                 $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
                 if ($isTransient -and $attempt -lt $maxAttempts) {
@@ -1090,8 +1103,7 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
                     break
                 }
             }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "Antigravity CLI")
         }
         "cursor" {
             $cursorExe = Get-CursorAgentExecutable
@@ -1100,30 +1112,21 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             }
             $argsList = Build-CursorAgentArgs -Model $Model -WorkspaceRoot $WorkspaceRoot -AskMode
             $res = Invoke-CliWithTimeout -ExecutablePath $cursorExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Cursor Agent CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Cursor Agent CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "Cursor Agent CLI")
         }
         "codex" {
             $codexExe = Get-CodexExecutable
             if (-not $codexExe) { throw "PROVIDER_UNAVAILABLE: OpenAI Codex CLI ('codex') is not found in PATH." }
             $argsList = Build-CodexExecArgs -Model $Model -ReasoningEffort $ReasoningEffort -Role "review"
             $res = Invoke-CliWithTimeout -ExecutablePath $codexExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Codex CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Codex CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "Codex CLI")
         }
         "pi" {
             $piExe = Get-PiExecutable
             if (-not $piExe) { throw "PROVIDER_UNAVAILABLE: Pi coding agent CLI ('pi') is not found in PATH." }
             $argsList = Build-PiAgentArgs -Model $Model -ReasoningEffort $ReasoningEffort -ReadOnly
             $res = Invoke-CliWithTimeout -ExecutablePath $piExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Pi CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Pi CLI returned non-JSON review output: $($res.Combined)"
+            return (Convert-ReviewerCliResult -Result $res -ProviderLabel "Pi CLI")
         }
         default {
             throw "UNSUPPORTED_REVIEWER_PROVIDER: Provider '$Provider' is not configured for automatic review execution. Provide -ReviewerCustomHook or use -ReviewProvider 'mock'."

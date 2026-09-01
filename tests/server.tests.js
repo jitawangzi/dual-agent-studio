@@ -355,25 +355,68 @@ async function runServerTests() {
 
             const {
                 buildDiscussionAgentCommand,
-                detectWorkspace
+                detectWorkspace,
+                interpretDiscussionAgentExit,
+                isDiscussionReviewRole
             } = require('../server');
             const cursorCmd = buildDiscussionAgentCommand({ provider: 'cursor', model: 'gpt-5', safeTmp: '/tmp/p.txt' });
             assert(cursorCmd.includes('--print') && cursorCmd.includes('--trust') && cursorCmd.includes('--force'), 'Cursor discussion must use agent --print --trust --force');
             assert(cursorCmd.includes('cursor-agent'), 'Cursor discussion must resolve cursor-agent / agent, not the GUI');
             assert(!cursorCmd.includes('[CURSOR]'), 'Cursor discussion must not fake success when CLI is missing');
+            assert(!cursorCmd.includes('--mode ask'), 'Cursor discussion Dev turn must not force ask mode');
             const hugeDisc = 'y'.repeat(20000);
             assert(!cursorCmd.includes(hugeDisc), 'Discussion command must not embed the prompt in argv');
 
+            const cursorReviewCmd = buildDiscussionAgentCommand({ provider: 'cursor', model: 'gpt-5', safeTmp: '/tmp/p.txt', role: 'Reviewer-R1' });
+            assert(cursorReviewCmd.includes('--mode ask'), 'Cursor discussion Reviewer turn must use --mode ask (loop-aligned)');
+
             const codexCmd = buildDiscussionAgentCommand({ provider: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', safeTmp: '/tmp/p.txt' });
             assert(codexCmd.includes('codex exec'), 'Codex discussion must use `codex exec`');
-            assert(codexCmd.includes('-a never') && codexCmd.includes('-s workspace-write'), 'Codex discussion must be unattended workspace-write');
+            assert(codexCmd.includes('-a never') && codexCmd.includes('-s workspace-write'), 'Codex discussion Dev must be unattended workspace-write');
             assert(codexCmd.trim().endsWith('-') || codexCmd.includes(' -'), 'Codex discussion must read prompt from stdin via -');
             assert(!codexCmd.includes('[CODEX]'), 'Codex discussion must not fake success when CLI is missing');
+
+            const codexReviewCmd = buildDiscussionAgentCommand({ provider: 'codex', model: 'gpt-5.4', safeTmp: '/tmp/p.txt', role: 'review' });
+            assert(codexReviewCmd.includes('-s read-only'), 'Codex discussion Reviewer must use read-only sandbox');
+            assert(!codexReviewCmd.includes('workspace-write'), 'Codex discussion Reviewer must not use workspace-write');
 
             const piCmd = buildDiscussionAgentCommand({ provider: 'pi', model: 'openai/gpt-4o', reasoningEffort: 'high', safeTmp: '/tmp/p.txt' });
             assert(piCmd.includes('pi -p'), 'Pi discussion must use print mode (-p/--print), not a quoted --prompt');
             assert(piCmd.includes('--thinking high'), 'Pi discussion must map reasoning effort to --thinking');
             assert(!piCmd.includes('[PI]'), 'Pi discussion must not fake success when CLI is missing');
+
+            const piReviewCmd = buildDiscussionAgentCommand({ provider: 'pi', model: 'openai/gpt-4o', safeTmp: '/tmp/p.txt', role: 'Reviewer-R2' });
+            assert(piReviewCmd.includes('--tools read,grep,find,ls'), 'Pi discussion Reviewer must restrict tools like the coding loop');
+
+            const copilotCmd = buildDiscussionAgentCommand({ provider: 'copilot', model: 'gpt-5.4', sessionId: 'abcd1234', safeTmp: '/tmp/p.txt' });
+            assert(copilotCmd.includes('Get-Command copilot'), 'Copilot discussion must PATH-check like other engines');
+            assert(copilotCmd.includes("PROVIDER_UNAVAILABLE: GitHub Copilot CLI"), 'Missing Copilot CLI must fail-fast');
+            assert(copilotCmd.includes('--session-id='), 'Copilot discussion may pass --session-id');
+
+            const agyCmd = buildDiscussionAgentCommand({ provider: 'antigravity', model: 'gemini-3-flash', reasoningEffort: 'high', safeTmp: '/tmp/p.txt' });
+            assert(agyCmd.includes('Get-Content -Raw'), 'Antigravity discussion must read the prompt file');
+            assert(agyCmd.includes('| & agy'), 'Antigravity discussion must pipe the prompt to stdin');
+            assert(!agyCmd.includes('--print $txt'), 'Antigravity discussion must not put the prompt on argv via --print $txt');
+            assert(agyCmd.includes('--print'), 'Antigravity discussion still uses --print (headless)');
+            const hugeAgy = 'z'.repeat(20000);
+            assert(!agyCmd.includes(hugeAgy), 'Antigravity discussion command must not embed a huge prompt');
+
+            assert.strictEqual(isDiscussionReviewRole('Reviewer-R1'), true);
+            assert.strictEqual(isDiscussionReviewRole('dev'), false);
+
+            assert.throws(
+                () => interpretDiscussionAgentExit({ exitCode: 1, role: 'Reviewer-R1', provider: 'copilot' }),
+                /DISCUSSION_AGENT_EXECUTION_FAILED/,
+                'Non-zero discussion exit must fail even if stdout looked like consensus'
+            );
+            assert.throws(
+                () => interpretDiscussionAgentExit({ timedOut: true, exitCode: 0, role: 'Dev-R1', provider: 'cursor' }),
+                /DISCUSSION_AGENT_TIMEOUT/
+            );
+            assert.deepStrictEqual(interpretDiscussionAgentExit({ aborted: true, exitCode: 1 }), { aborted: true });
+            assert.deepStrictEqual(interpretDiscussionAgentExit({ exitCode: 0 }), { aborted: false });
+            console.log('✅ Cursor/Codex/Pi discussion commands fail-fast and pass prompts via stdin.');
+            console.log('✅ Discussion Copilot PATH check, Antigravity stdin, review sandbox, and exit-code fail-fast.');
 
             const detected = detectWorkspace(path.join(__dirname, '..'));
             assert.strictEqual(detected.success, true);

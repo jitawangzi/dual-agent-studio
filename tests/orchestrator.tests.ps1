@@ -199,6 +199,33 @@ try {
     Assert-Equal (Format-CodexReasoningEffort "64000") "xhigh" "Codex max maps to xhigh"
     Assert-Equal (Format-PiThinking "off") "off" "Pi off thinking"
 
+    # A7.5 Convert-ReviewerCliResult: exit code wins over APPROVED JSON (no false success)
+    $approvedBlob = '{"verdict":"APPROVED","highestSeverity":"NONE","summary":"looks fine","issues":[],"nextPromptForDev":""}'
+    $falsePassCaught = $false
+    try {
+        [void](Convert-ReviewerCliResult -Result ([ordered]@{ ExitCode = 1; Combined = $approvedBlob }) -ProviderLabel "Copilot")
+    } catch {
+        if ($_.Exception.Message -match "REVIEWER_EXECUTION_FAILED") { $falsePassCaught = $true }
+    }
+    Assert-True $falsePassCaught "Non-zero reviewer exit with APPROVED JSON must not approve"
+
+    $okReview = Convert-ReviewerCliResult -Result ([ordered]@{ ExitCode = 0; Combined = $approvedBlob }) -ProviderLabel "Copilot"
+    Assert-Equal ([string]$okReview.verdict) "APPROVED" "Zero-exit reviewer JSON should parse"
+
+    $invalidCaught = $false
+    try {
+        [void](Convert-ReviewerCliResult -Result ([ordered]@{ ExitCode = 0; Combined = "not json at all" }) -ProviderLabel "Copilot")
+    } catch {
+        if ($_.Exception.Message -match "PROVIDER_OUTPUT_INVALID") { $invalidCaught = $true }
+    }
+    Assert-True $invalidCaught "Zero-exit non-JSON reviewer output must fail"
+
+    $agyArgs = Build-AgyPrintArgs -Model "gemini-3-flash" -ReasoningEffort "high"
+    Assert-True ($agyArgs -contains "--print") "Antigravity must use --print"
+    Assert-True ($agyArgs -contains "--print-timeout") "Antigravity must set --print-timeout"
+    Assert-Equal $agyArgs[-1] "--print" "Antigravity --print must be flag-only; prompt stays on stdin"
+    Assert-True ($agyArgs -notcontains "Implement the feature") "Antigravity args must not embed the task prompt"
+
     if (-not (Get-CursorAgentExecutable)) {
         $cursorMissing = $false
         try {

@@ -501,6 +501,35 @@ function getSeriesForEngine(engine) {
   return (modelsConfig.series || []).filter(s => allowed.includes(s.id));
 }
 
+function engineSupportsCliSession(engine) {
+  return String(engine || '').trim().toLowerCase() === 'copilot';
+}
+
+function syncSessionCliHints() {
+  const apply = (providerId, groupId, inputId, hintId) => {
+    const engine = document.getElementById(providerId)?.value;
+    const supported = engineSupportsCliSession(engine);
+    const group = document.getElementById(groupId);
+    const input = document.getElementById(inputId);
+    const hint = document.getElementById(hintId);
+    if (group) group.classList.toggle('is-mailbox-only', !supported);
+    if (input) {
+      input.title = supported
+        ? '此 ID 会传给 Copilot CLI --session-id，用于续聊。'
+        : '当前引擎不支持 CLI 会话续聊；此 ID 仅写入 mailbox，不会传给 CLI。';
+    }
+    if (hint) {
+      hint.classList.toggle('is-copilot', supported);
+      hint.classList.toggle('is-mailbox-only', !supported);
+      hint.textContent = supported
+        ? '会传给 Copilot CLI --session-id，可用于续聊。'
+        : '当前引擎不会把此 ID 传给 CLI（仅 mailbox 记录）。Cursor / Codex / Claude / Pi 续聊尚未接入。';
+    }
+  };
+  apply('devProvider', 'devSessionGroup', 'devSessionId', 'devSessionCliHint');
+  apply('reviewProvider', 'reviewSessionGroup', 'reviewSessionId', 'reviewSessionCliHint');
+}
+
 function onDevEngineChange() {
   const engineEl = document.getElementById('devProvider');
   const devSeries = document.getElementById('devSeries');
@@ -520,6 +549,7 @@ function onDevEngineChange() {
     devSeries.value = allowedSeries[0].id;
   }
   onDevSeriesChange();
+  syncSessionCliHints();
 }
 
 function onDevSeriesChange() {
@@ -640,6 +670,7 @@ function onReviewEngineChange() {
     reviewSeries.value = allowedSeries[0].id;
   }
   onReviewSeriesChange();
+  syncSessionCliHints();
 }
 
 function onReviewSeriesChange() {

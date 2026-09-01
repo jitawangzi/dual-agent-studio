@@ -32,6 +32,7 @@ const requiredIds = [
     'devModel',
     'devModelCustom',
     'devSessionId',
+    'devSessionCliHint',
     'btnResetDevSession',
     'reviewProvider',
     'reviewSeries',
@@ -39,6 +40,7 @@ const requiredIds = [
     'reviewModel',
     'reviewModelCustom',
     'reviewSessionId',
+    'reviewSessionCliHint',
     'btnResetReviewSession',
     'btnStart',
     'btnStop',
@@ -118,9 +120,13 @@ assert(!htmlContent.includes('fonts.googleapis.com'), 'index.html must not load 
 assert(!htmlContent.includes('fonts.gstatic.com'), 'index.html must not preconnect to Google Font CDNs');
 assert(jsContent.includes("autoStartAfterConsensus"), 'app.js must persist autoStartAfterConsensus preference');
 assert(jsContent.includes('approvePlanAndStart()'), 'app.js must auto-launch coding loop from discussion consensus when the checkbox is enabled');
+assert(jsContent.includes('function engineSupportsCliSession'), 'app.js must declare Copilot-only CLI session support');
+assert(jsContent.includes('function syncSessionCliHints'), 'app.js must refresh session-id honesty hints when the engine changes');
+assert(jsContent.includes("=== 'copilot'"), 'CLI session resume must be Copilot-only (other engines only store mailbox IDs)');
 console.log('✅ Native alert() Elimination Verified (100% replaced by Toast system).');
 console.log('✅ Autonomous round continuation copy verified (no manual click-to-continue prompts).');
 console.log('✅ Optional auto-start after discussion consensus verified.');
 console.log('✅ Google Fonts removed (local system font stack + CSP).');
+console.log('✅ Session ID honesty: Copilot CLI --session-id only; other engines mailbox-only.');
 
 console.log('🎉 All Frontend Contract Tests Passed Successfully!\n');

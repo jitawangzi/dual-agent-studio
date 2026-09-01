@@ -61,14 +61,15 @@ d:\project\dual-agent-studio\
   - `GET /api/projects` & `POST /api/projects`: Reads/writes recent workspace history in `projects.json`.
   - `POST /api/detect-workspace`: Auto-detects project stack (Maven, Gradle, npm, Go, Cargo, Python, etc.) and infers default test gate commands.
   - `GET /api/models`: Serves `models-config.json` for frontend model/reasoning dropdowns.
-  - `GET /api/logs`: SSE event stream transmitting real-time stdout/stderr/system logs to web clients.
+  - `GET /api/events`: SSE event stream transmitting real-time stdout/stderr/system logs to web clients.
+  - `GET /api/logs`: JSON snapshot of in-memory logs (used on page refresh / SSE reconnect).
   - `POST /api/browse-folder`: Launches native Windows folder selection dialog via `engine/browse-folder.ps1`.
 
 ### 3.2 Orchestrator Engine (`engine/orchestrator.ps1`)
 - Drives the multi-round iterative loop:
   1. **Phase 1 (Dev Turn)**: Invokes Dev Provider (`Invoke-DevTurn`) with initial prompt or previous review feedback.
   2. **Phase 2 (Test Gate Verification)**: Executes `-VerifyCommand` (e.g., `.\gradlew test` or `npm test`). If failed, triggers local self-healing retries.
-  3. **Phase 3 (Reviewer Turn)**: Collects `git diff HEAD` and invokes Reviewer Agent (`Invoke-ReviewerTurn`) for architectural and security review.
+  3. **Phase 3 (Reviewer Turn)**: Collects `git diff HEAD` and invokes Reviewer Agent (`Invoke-ReviewerTurn`) for architectural and security review. Reviewer **must check CLI exit code before** parsing JSON — a crashed CLI that printed an `APPROVED` blob is `REVIEWER_EXECUTION_FAILED`, never a false pass.
   4. **Phase 4 (Verdict & Decision Gate)**: If `APPROVED`, optionally runs auto-commit; if `REJECTED`, auto-advances to the next round; if max rounds exceeded, halts with `REJECTED_MAX_ROUNDS`.
   5. **Exception Interception**: Catches CLI crashes or uncaught exceptions, records `status = "FAILED"`, persists `$mailbox.error`, and terminates cleanly.
 
@@ -117,10 +118,12 @@ When extending or maintaining this project, AI agents **MUST** follow these Wind
 
 ### 4.1 Multi-Line Prompt Passing to CLI Agents (Never Use `-p` with Quotes)
 - **Problem**: In Windows PowerShell and `cmd.exe`, passing multi-line strings containing newlines and double quotes via `-p "<text>"` causes npm wrapper scripts (`copilot.ps1`, `claude.cmd`) to truncate arguments at the first newline, triggering `error: option '-p, --prompt <text>' argument missing`.
-- **Rule**: Always pass prompts via standard input (Pipeline / Stdin) or temp files:
+- **Rule**: Always pass prompts via standard input (Pipeline / Stdin) or temp files. This includes Antigravity: use `--print` **without** putting `$Prompt` on argv (`--print $Prompt` hits the Windows ~32K CreateProcess limit).
   ```powershell
   # Recommended for PowerShell:
   $Prompt | & $copilotCmd.Source @argsList
+  # Antigravity:
+  $Prompt | & agy --dangerously-skip-permissions --print-timeout 25m --print
 
   # Recommended for Node.js child_process:
   Get-Content -Raw -LiteralPath '$safeTmp' | & copilot -s --allow-all
@@ -139,6 +142,9 @@ When extending or maintaining this project, AI agents **MUST** follow these Wind
 - In double-quoted PowerShell strings, never use `$var:` without wrapping in `$($var):`, because `$var:` is parsed as a namespace scope prefix (e.g. `$global:`).
   - ❌ Incorrect: `"Error code $code: $msg"`
   - ✅ Correct: `"Error code $($code): $msg"`
+
+### 4.4 Session IDs are Copilot-only at the CLI
+Studio still generates and persists `devSessionId` / `reviewSessionId` in the mailbox for every engine. **Only GitHub Copilot CLI** receives `--session-id`. Cursor / Codex / Claude / Pi / Antigravity ignore the field today; the cockpit must not imply they resume chat.
 
 ---
 
@@ -166,6 +172,9 @@ The test suite validates:
 10. Engine proxy inherit (no hardcoded 10809) and safe `/api/diff` budgets.
 11. Cursor Agent / Codex exec / Pi print-mode builders; missing CLIs throw `PROVIDER_UNAVAILABLE`.
 12. Local CSP (no Google Fonts) and `lib/studio-core.js` helper extraction.
+13. Reviewer JSON is ignored when CLI exit code ≠ 0 (no false `APPROVED`).
+14. Discussion turns fail-fast on non-zero process exit; Copilot discussion PATH-checks like other engines.
+15. Antigravity `--print` is flag-only (prompt on stdin); discussion reviewer sandboxes match the coding loop (`--mode ask` / `read-only` / restricted Pi tools).
 
 ### 5.2 Server Process Management
 - If modifying `server.js`, restart the node process so that changes take effect immediately:

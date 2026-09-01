@@ -10,7 +10,9 @@
 - 🎯 **跨项目通用（Workspace-Agnostic）**：可指向任何本地代码仓库（如 `D:\project\agent-sop`、`D:\svn\server_new` 等）。讨论记录、默认 mailbox 与实施计划写入目标仓的 `.ai-workspace/`，不污染仓库根目录。
 - 🤖 **多引擎与模型深度调优**：
   - **Dev Agent**：Claude Code CLI、GitHub Copilot CLI、Aider、Antigravity、**Cursor Agent CLI**（`agent` / `cursor-agent`，不是 GUI 的 `cursor`）、**OpenAI Codex CLI**（`codex exec`）、**Pi Coding Agent**（`pi -p`）。提示词一律走 stdin / 临时文件，CLI 不在 PATH 时立即失败而不是假装成功。
-  - **Reviewer Agent**：同上；Codex 审查使用 `read-only` sandbox，Cursor 使用 `--mode ask`，Pi 限制为只读工具。
+  - **Reviewer Agent**：同上；Codex 审查使用 `read-only` sandbox，Cursor 使用 `--mode ask`，Pi 限制为只读工具。CLI 非 0 退出即使打印了 `APPROVED` JSON 也判定失败。
+  - **会话 ID**：目前只有 GitHub Copilot CLI 会把 Session ID 传给 `--session-id`；其他引擎的字段仅写入 mailbox，不会续聊。
+  - **需求讨论**：审查方使用与编码闭环相同的只读沙箱；讨论进程非 0 退出立即失败，不会拿半截输出当共识。
 - 📊 **可视化多轮流转时间轴（Round Timeline）**：直观展示每一轮 Dev 提交、自动化测试状态、Reviewer 审查判定（APPROVED / REJECTED）、缺陷清单与下轮自愈指令。
 - 🔍 **实时 Git 变更查看器（Diff Viewer）**：无需跳出浏览器即可查看未提交变更与文件增删高亮。
 - 💻 **实时日志流（Live SSE Logs）**：双 Agent 与测试门禁的实时终端控制台输出。
