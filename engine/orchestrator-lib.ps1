@@ -528,6 +528,113 @@ function Read-MailboxState {
     return ($raw | ConvertFrom-Json -Depth 100)
 }
 
+function Get-ObjectPropertyValue {
+    param(
+        [Parameter(Mandatory=$false)]$Object,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$false)]$Default = ""
+    )
+    if ($null -eq $Object) { return $Default }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) {
+            $val = $Object[$Name]
+            if ($null -eq $val) { return $Default }
+            return $val
+        }
+    }
+
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -eq $prop -or $null -eq $prop.Value) { return $Default }
+    return $prop.Value
+}
+
+function Get-MailboxResumeKind {
+    param(
+        [Parameter(Mandatory=$false)]$Mailbox,
+        [Parameter(Mandatory=$false)][string]$ExpectedFeature = ""
+    )
+    if ($null -eq $Mailbox) { return "none" }
+
+    $feature = [string](Get-ObjectPropertyValue -Object $Mailbox -Name "feature" -Default "")
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedFeature) -and -not [string]::IsNullOrWhiteSpace($feature) -and $feature -ne $ExpectedFeature) {
+        return "none"
+    }
+
+    $status = [string](Get-ObjectPropertyValue -Object $Mailbox -Name "status" -Default "")
+    switch ($status) {
+        "WAITING_DEV" { return "dev" }
+        "WAITING_REVIEW" { return "review" }
+        default { return "none" }
+    }
+}
+
+function Get-NextRoundDevPrompt {
+    param(
+        [Parameter(Mandatory=$true)]$Mailbox,
+        [Parameter(Mandatory=$false)][int]$CompletedRound = 0
+    )
+    $lastReview = $null
+    $history = Get-ObjectPropertyValue -Object $Mailbox -Name "history" -Default @()
+    $histArr = @($history)
+    if ($histArr.Count -gt 0) {
+        $lastEntry = $histArr[-1]
+        $lastReview = Get-ObjectPropertyValue -Object $lastEntry -Name "reviewVerdict" -Default $null
+    }
+
+    $sev = [string](Get-ObjectPropertyValue -Object $lastReview -Name "highestSeverity" -Default "NONE")
+    $sum = [string](Get-ObjectPropertyValue -Object $lastReview -Name "summary" -Default "")
+    $next = [string](Get-ObjectPropertyValue -Object $lastReview -Name "nextPromptForDev" -Default "")
+    $roundLabel = if ($CompletedRound -gt 0) { $CompletedRound } else { "previous" }
+    return "Round $roundLabel Review REJECTED (Highest Severity: $sev).`nSummary: $sum`n`nInstructions for next round:`n$next"
+}
+
+function Invoke-MailboxScriptIsolated {
+    param(
+        [Parameter(Mandatory=$true)][string]$ScriptPath,
+        [Parameter(Mandatory=$true)][hashtable]$Parameters,
+        [Parameter(Mandatory=$false)][string]$WorkingDirectory = $PWD.Path,
+        [Parameter(Mandatory=$false)][int]$TimeoutSeconds = 120
+    )
+
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+        throw "MAILBOX_SCRIPT_NOT_FOUND: Target mailbox script '$ScriptPath' does not exist."
+    }
+
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("mbx_params_" + [guid]::NewGuid().ToString("N") + ".json")
+    try {
+        $json = $Parameters | ConvertTo-Json -Depth 20 -Compress
+        [System.IO.File]::WriteAllText($payloadPath, $json, [System.Text.UTF8Encoding]::new($false))
+
+        $safePayload = $payloadPath.Replace("'", "''")
+        $safeScript = $ScriptPath.Replace("'", "''")
+        $cmd = @"
+`$ErrorActionPreference = 'Stop'
+`$raw = [System.IO.File]::ReadAllText('$safePayload', [System.Text.Encoding]::UTF8)
+`$obj = `$raw | ConvertFrom-Json
+`$ht = @{}
+foreach (`$p in `$obj.PSObject.Properties) { `$ht[`$p.Name] = `$p.Value }
+& '$safeScript' @ht
+"@
+
+        $pwshCmd = Get-Command "pwsh" -ErrorAction SilentlyContinue
+        $pwshPath = if ($pwshCmd) { $pwshCmd.Source } else { "pwsh" }
+
+        $res = Invoke-CliWithTimeout `
+            -ExecutablePath $pwshPath `
+            -Arguments @("-NoProfile", "-Command", $cmd) `
+            -WorkingDirectory $WorkingDirectory `
+            -RoleName "MailboxScript" `
+            -TimeoutSeconds $TimeoutSeconds
+
+        return $res
+    } finally {
+        if (Test-Path -LiteralPath $payloadPath) {
+            Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-DevTurn {
     param(
         [Parameter(Mandatory=$true)][string]$Provider,

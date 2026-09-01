@@ -251,6 +251,22 @@ async function runServerTests() {
             assert.strictEqual(expSess.reviewSource, 'mailbox');
             console.log('✅ resolveStudioSessionIds unit contract verified (explicit > mailbox > discussion > UUID).');
 
+            // 10b. Discussion verdict parser must ignore Chinese "共识达成" without an explicit token
+            const { detectDiscussionVerdict, shouldAutoResumeLoop } = require('../server');
+            const falseConsensus = detectDiscussionVerdict('方案尚未共识达成，请继续修改边界条件。');
+            assert.strictEqual(falseConsensus.consensus, false, 'Substring 共识达成 must not count as consensus');
+            const realConsensus = detectDiscussionVerdict('Looks good.\n**[VERDICT: CONSENSUS_REACHED]**');
+            assert.strictEqual(realConsensus.consensus, true);
+            const needsWork = detectDiscussionVerdict('**[VERDICT: NEEDS_REFINEMENT]** (共识达成 is mentioned in instructions)');
+            assert.strictEqual(needsWork.consensus, false);
+            assert.strictEqual(needsWork.needsRefinement, true);
+
+            assert.strictEqual(shouldAutoResumeLoop({ status: 'WAITING_DEV', round: 2, maxRounds: 4 }), true);
+            assert.strictEqual(shouldAutoResumeLoop({ status: 'WAITING_REVIEW', round: 1, maxRounds: 4 }), true);
+            assert.strictEqual(shouldAutoResumeLoop({ status: 'APPROVED', round: 1, maxRounds: 4 }), false);
+            assert.strictEqual(shouldAutoResumeLoop({ status: 'WAITING_DEV', round: 5, maxRounds: 4 }), false);
+            console.log('✅ Discussion verdict parser and auto-resume gate verified.');
+
             // 11. Test POST /api/start session resolution and auto-bind from workspace
             const startRes = await httpRequest('POST', '/api/start', {
                 workspaceRoot: tempTestWs,

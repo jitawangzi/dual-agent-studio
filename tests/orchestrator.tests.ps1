@@ -130,6 +130,13 @@ try {
     Assert-Equal $sanitizedOver64.Length 64 "Session ID over 64 characters should be truncated to 64"
     Assert-Equal (Sanitize-SessionId $null) $null "Null session ID should return null"
 
+    # A7.1 Get-ObjectPropertyValue must read both PSCustomObject and OrderedDictionary keys
+    $orderedVerdict = [ordered]@{ verdict = "APPROVED"; summary = "ok" }
+    Assert-Equal ([string](Get-ObjectPropertyValue -Object $orderedVerdict -Name "verdict" -Default "")) "APPROVED" "OrderedDictionary verdict must be readable"
+    $customVerdict = [pscustomobject]@{ verdict = "REJECTED" }
+    Assert-Equal ([string](Get-ObjectPropertyValue -Object $customVerdict -Name "verdict" -Default "")) "REJECTED" "PSCustomObject verdict must be readable"
+    Assert-Equal ([string](Get-ObjectPropertyValue -Object $null -Name "verdict" -Default "NONE")) "NONE" "Null object should return default"
+
     # A8. Resolve-EffectiveSessionId (Multi-tier resolution: Explicit > Mailbox > Feature Discussion > Root Discussion > UUID)
     $sessTestDir = Join-Path $TestRoot "sess-resolve-test"
     [System.IO.Directory]::CreateDirectory($sessTestDir) | Out-Null
@@ -448,7 +455,204 @@ try {
     Assert-Equal $res10.devSessionId "mb-priority-dev-888" "Mailbox devSessionId must take precedence over discussion"
     Assert-Equal $res10.reviewSessionId "mb-priority-rev-999" "Mailbox reviewSessionId must take precedence over discussion"
 
-    # 11. Test Prevent Fake Approval: Invalid Review Verdicts Must Throw
+    # 11. Isolated mailbox script `exit 0` must not stop the autonomous multi-round loop
+    $sopWs = Join-Path $TestRoot "sop-exit-workspace"
+    [System.IO.Directory]::CreateDirectory((Join-Path $sopWs "scripts")) | Out-Null
+    $mbScript = Join-Path $sopWs "scripts\review-mailbox.ps1"
+    $mbScriptBody = @'
+param(
+    [string]$Operation,
+    [string]$Feature,
+    [string]$DevAgent,
+    [string]$ReviewerAgent,
+    [int]$MaxRounds = 4,
+    [string]$MailboxPath,
+    [string]$ProjectRoot,
+    [string]$Summary,
+    [string]$TestGateStatus,
+    [string]$TestOutput,
+    [string]$Verdict,
+    [string]$HighestSeverity,
+    [string]$IssuesJson,
+    [string]$NextPromptForDev,
+    [int]$ExpectedRound,
+    [string]$ExpectedSubmittedAt,
+    [string]$ReviewerIdentity
+)
+$ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($MailboxPath)) { $MailboxPath = Join-Path $ProjectRoot "review-mailbox.json" }
+
+function Read-Mb { if (Test-Path -LiteralPath $MailboxPath) { return (Get-Content -Raw -LiteralPath $MailboxPath | ConvertFrom-Json -Depth 100) } ; return $null }
+function Write-Mb($obj) { $obj.updatedAt = [DateTimeOffset]::UtcNow.ToString("o"); [System.IO.File]::WriteAllText($MailboxPath, ($obj | ConvertTo-Json -Depth 100), [System.Text.UTF8Encoding]::new($false)) }
+
+switch ($Operation) {
+    "Init" {
+        $existing = Read-Mb
+        if ($existing -and $existing.status -in @("WAITING_DEV","WAITING_REVIEW")) { exit 0 }
+        Write-Mb ([ordered]@{
+            schemaVersion = "1.0"; feature = $Feature; round = 1; maxRounds = $MaxRounds
+            status = "INITIALIZED"; error = ""; devAgent = $DevAgent; reviewerAgent = $ReviewerAgent
+            currentDevSubmission = $null; currentReviewVerdict = $null; history = @()
+        })
+        exit 0
+    }
+    "DevSubmit" {
+        $mb = Read-Mb
+        $mb.status = if ($TestGateStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }
+        $mb.currentDevSubmission = [ordered]@{
+            submittedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            summary = $Summary
+            testGateStatus = $TestGateStatus
+            testOutput = $TestOutput
+        }
+        Write-Mb $mb
+        exit 0
+    }
+    "ReviewSubmit" {
+        $mb = Read-Mb
+        $round = [int]$mb.round
+        $isApproved = ($Verdict -eq "APPROVED")
+        $isMax = ($round -ge [int]$mb.maxRounds)
+        $verdictObj = [ordered]@{
+            reviewedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            verdict = $Verdict
+            highestSeverity = $HighestSeverity
+            summary = $Summary
+            issues = @()
+            nextPromptForDev = $NextPromptForDev
+        }
+        $mb.currentReviewVerdict = $verdictObj
+        $hist = @($mb.history)
+        $mb.history = $hist + @([ordered]@{ round = $round; devSubmission = $mb.currentDevSubmission; reviewVerdict = $verdictObj })
+        if ($isApproved) { $mb.status = "APPROVED" }
+        elseif ($isMax) { $mb.status = "REJECTED_MAX_ROUNDS" }
+        else {
+            $mb.status = "WAITING_DEV"
+            $mb.round = $round + 1
+            $mb.currentDevSubmission = $null
+            $mb.currentReviewVerdict = $null
+        }
+        Write-Mb $mb
+        exit 0
+    }
+}
+exit 0
+'@
+    [System.IO.File]::WriteAllText($mbScript, $mbScriptBody, [System.Text.UTF8Encoding]::new($false))
+
+    $mb11sop = Join-Path $sopWs "review-mailbox.json"
+    $sopRejectThenApprove = {
+        param($OriginalTask, $GitDiff, $Round)
+        if ($Round -eq 1) {
+            return [ordered]@{
+                verdict = "REJECTED"
+                highestSeverity = "HIGH"
+                summary = "Mailbox-script round 1 rejected"
+                issues = @()
+                nextPromptForDev = "Fix the isolated mailbox-script path"
+            }
+        }
+        return [ordered]@{
+            verdict = "APPROVED"
+            highestSeverity = "NONE"
+            summary = "Mailbox-script round 2 approved"
+            issues = @()
+            nextPromptForDev = ""
+        }
+    }
+
+    $resSop = & $OrchestratorScript `
+        -WorkspaceRoot $sopWs `
+        -TaskPrompt "Survive mailbox script exit" `
+        -Feature "FeatureMailboxExit" `
+        -DevProvider "mock" `
+        -ReviewProvider "custom" `
+        -ReviewerCustomHook $sopRejectThenApprove `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 3 `
+        -MailboxPath $mb11sop `
+        -PassThru
+
+    Assert-Equal $resSop.status "APPROVED" "Mailbox script that calls exit 0 must not halt the parent multi-round loop"
+    Assert-Equal $resSop.round 2 "Isolated mailbox script loop should auto-advance to round 2"
+    Assert-Equal $resSop.history.Count 2 "Isolated mailbox script loop should record both rounds"
+
+    # 12. Resume WAITING_REVIEW without re-running Dev (process died after DevSubmit)
+    $mbResumeReview = Join-Path $TestRoot "mb-resume-review.json"
+    $resumeReviewState = [ordered]@{
+        schemaVersion = "1.0"
+        feature = "FeatureResumeReview"
+        round = 1
+        maxRounds = 3
+        status = "WAITING_REVIEW"
+        error = ""
+        devAgent = "ANTIGRAVITY"
+        reviewerAgent = "COPILOT"
+        currentDevSubmission = [ordered]@{
+            submittedAt = [DateTimeOffset]::UtcNow.ToString("o")
+            summary = "Pre-seeded submission"
+            testGateStatus = "PASS"
+            testOutput = ""
+        }
+        currentReviewVerdict = $null
+        history = @()
+        updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
+    }
+    Write-MailboxState -MailboxPath $mbResumeReview -StateObj $resumeReviewState
+
+    $resumeDevHook = {
+        param($Prompt, $Round)
+        throw "DEV_SHOULD_NOT_RUN_WHEN_RESUMING_WAITING_REVIEW"
+    }
+    $resumeReviewHook = {
+        param($OriginalTask, $GitDiff, $Round)
+        return [ordered]@{
+            verdict = "APPROVED"
+            highestSeverity = "NONE"
+            summary = "Resumed review approved"
+            issues = @()
+            nextPromptForDev = ""
+        }
+    }
+
+    $resResumeReview = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPrompt "Resume review phase" `
+        -Feature "FeatureResumeReview" `
+        -DevProvider "mock" `
+        -DevCustomHook $resumeDevHook `
+        -ReviewProvider "custom" `
+        -ReviewerCustomHook $resumeReviewHook `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 3 `
+        -MailboxPath $mbResumeReview `
+        -PassThru
+
+    Assert-Equal $resResumeReview.status "APPROVED" "WAITING_REVIEW resume should complete review without a manual restart"
+    Assert-Equal $resResumeReview.round 1 "WAITING_REVIEW resume should stay on round 1"
+
+    # 13. Helper unit tests for resume kind and next-round prompt
+    $resumeKindDev = Get-MailboxResumeKind -Mailbox ([pscustomobject]@{ feature = "F"; status = "WAITING_DEV"; round = 2 }) -ExpectedFeature "F"
+    $resumeKindReview = Get-MailboxResumeKind -Mailbox ([pscustomobject]@{ feature = "F"; status = "WAITING_REVIEW"; round = 1 }) -ExpectedFeature "F"
+    $resumeKindNone = Get-MailboxResumeKind -Mailbox ([pscustomobject]@{ feature = "Other"; status = "WAITING_DEV"; round = 2 }) -ExpectedFeature "F"
+    Assert-Equal $resumeKindDev "dev" "WAITING_DEV should resume in dev phase"
+    Assert-Equal $resumeKindReview "review" "WAITING_REVIEW should resume in review phase"
+    Assert-Equal $resumeKindNone "none" "Mismatched feature must not resume"
+
+    $promptObj = [pscustomobject]@{
+        history = @([pscustomobject]@{
+            reviewVerdict = [pscustomobject]@{
+                highestSeverity = "HIGH"
+                summary = "Need a guard"
+                nextPromptForDev = "Add the null check"
+            }
+        })
+    }
+    $nextPrompt = Get-NextRoundDevPrompt -Mailbox $promptObj -CompletedRound 1
+    Assert-True ($nextPrompt.Contains("Add the null check")) "Next-round prompt must include reviewer instructions"
+    Assert-True ($nextPrompt.Contains("HIGH")) "Next-round prompt must include severity"
+
+    # 14. Test Prevent Fake Approval: Invalid Review Verdicts Must Throw
     $mb11 = Join-Path $TestRoot "mb11.json"
     $invalidVerdictHook = {
         param($OriginalTask, $GitDiff, $Round)

@@ -52,12 +52,12 @@ d:\project\dual-agent-studio\
 - **Port**: Default `3700` (configurable via `PORT` env).
 - **REST Endpoints**:
   - `GET /api/status?workspace=...`: Returns current running state, process PID, and latest `mailbox` state.
-  - `POST /api/launch`: Spawns `pwsh -File engine/orchestrator.ps1` with user configuration.
+  - `POST /api/start`: Spawns `pwsh -File engine/orchestrator.ps1` with user configuration. If the process exits while mailbox status is still `WAITING_DEV` or `WAITING_REVIEW`, the server auto-respawns the loop (unless the user clicked Stop).
   - `POST /api/stop`: Gracefully terminates the running PowerShell orchestrator process tree.
   - `POST /api/discuss`: Runs multi-round collaborative requirements analysis between Dev and Reviewer before execution.
   - `GET /api/diff?workspace=...`: Executes `git diff HEAD` and `git status --porcelain` on the target workspace.
   - `GET /api/projects` & `POST /api/projects`: Reads/writes recent workspace history in `projects.json`.
-  - `POST /api/detect`: Auto-detects project stack (Maven, Gradle, npm, Go, Cargo, Python, etc.) and infers default test gate commands.
+  - `POST /api/detect-workspace`: Auto-detects project stack (Maven, Gradle, npm, Go, Cargo, Python, etc.) and infers default test gate commands.
   - `GET /api/models`: Serves `models-config.json` for frontend model/reasoning dropdowns.
   - `GET /api/logs`: SSE event stream transmitting real-time stdout/stderr/system logs to web clients.
   - `POST /api/browse-folder`: Launches native Windows folder selection dialog via `engine/browse-folder.ps1`.

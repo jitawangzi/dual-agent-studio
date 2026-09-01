@@ -169,39 +169,55 @@ Write-Host " Verify Command: $VerifyCommand" -ForegroundColor White
 Write-Host " Mailbox File  : $effectiveMailboxPath" -ForegroundColor White
 Write-Host "================================================================================" -ForegroundColor Cyan
 
-# 1. Initialize Mailbox
+# 1. Initialize or resume Mailbox. Target SOP scripts are invoked in an isolated
+# child pwsh so their `exit` cannot kill this orchestrator process.
 $currentPrompt = $TaskPrompt
+$skipDevPhase = $false
 
-if ($targetMailboxScript) {
-    & $targetMailboxScript -Operation Init `
-        -Feature $effectiveFeature `
-        -DevAgent $mappedDev `
-        -ReviewerAgent $mappedRev `
-        -MaxRounds $MaxRounds `
-        -MailboxPath $effectiveMailboxPath `
-        -ProjectRoot $wsPhysical | Out-Null
-    $mbInit = Read-MailboxState -MailboxPath $effectiveMailboxPath
-    if ($null -ne $mbInit) {
-        $mbInit | Add-Member -NotePropertyName "devSessionId" -NotePropertyValue $effectiveDevSessionId -Force
-        $mbInit | Add-Member -NotePropertyName "reviewSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
-        $mbInit | Add-Member -NotePropertyName "reviewerSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
-        Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mbInit
+function Invoke-StudioMailboxOperation {
+    param([hashtable]$Parameters)
+    if ($targetMailboxScript) {
+        [void](Invoke-MailboxScriptIsolated -ScriptPath $targetMailboxScript -Parameters $Parameters -WorkingDirectory $wsPhysical)
+    }
+}
+
+$existingMb = Read-MailboxState -MailboxPath $effectiveMailboxPath
+$resumeKind = Get-MailboxResumeKind -Mailbox $existingMb -ExpectedFeature $effectiveFeature
+
+if ($resumeKind -ne "none") {
+    Write-Host "🔄 Resuming existing dual-agent loop for feature '$effectiveFeature' at Round $($existingMb.round) (status=$($existingMb.status))..." -ForegroundColor Cyan
+    if ($resumeKind -eq "review") {
+        $skipDevPhase = $true
+        $currentPrompt = $TaskPrompt
+    } else {
+        $sub = Get-ObjectPropertyValue -Object $existingMb -Name "currentDevSubmission" -Default $null
+        $gate = [string](Get-ObjectPropertyValue -Object $sub -Name "testGateStatus" -Default "")
+        if (-not [string]::IsNullOrWhiteSpace($gate) -and $gate -ne "PASS") {
+            $failureSummary = Extract-TestFailureSummary -TestOutput ([string](Get-ObjectPropertyValue -Object $sub -Name "testOutput" -Default "")) -MaxChars 8192
+            $currentPrompt = "Your recent changes did not pass automated verification (status: $gate). Please inspect the test error output below and fix the implementation:`n`n" + $failureSummary
+        } else {
+            $completedRound = [Math]::Max(1, ([int]$existingMb.round) - 1)
+            $currentPrompt = Get-NextRoundDevPrompt -Mailbox $existingMb -CompletedRound $completedRound
+        }
     }
 } else {
-    $existingMb = Read-MailboxState -MailboxPath $effectiveMailboxPath
-    $canResume = $false
-    if ($null -ne $existingMb) {
-        $hasFeature = ($null -ne $existingMb.PSObject.Properties['feature']) -and ($existingMb.feature -eq $effectiveFeature)
-        $hasStatus = ($null -ne $existingMb.PSObject.Properties['status']) -and ($existingMb.status -eq "WAITING_DEV")
-        $hasRound = ($null -ne $existingMb.PSObject.Properties['round']) -and ([int]$existingMb.round -gt 1)
-        $hasHistory = ($null -ne $existingMb.PSObject.Properties['history']) -and ($existingMb.history.Count -gt 0)
-        $canResume = ($hasFeature -and $hasStatus -and $hasRound -and $hasHistory)
-    }
-
-    if ($canResume) {
-        Write-Host "🔄 Resuming existing dual-agent loop for feature '$effectiveFeature' at Round $($existingMb.round)..." -ForegroundColor Cyan
-        $lastReview = $existingMb.history[-1].reviewVerdict
-        $currentPrompt = "Round $($existingMb.round - 1) Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"
+    if ($targetMailboxScript) {
+        Invoke-StudioMailboxOperation -Parameters @{
+            Operation = "Init"
+            Feature = $effectiveFeature
+            DevAgent = $mappedDev
+            ReviewerAgent = $mappedRev
+            MaxRounds = $MaxRounds
+            MailboxPath = $effectiveMailboxPath
+            ProjectRoot = $wsPhysical
+        }
+        $mbInit = Read-MailboxState -MailboxPath $effectiveMailboxPath
+        if ($null -ne $mbInit) {
+            $mbInit | Add-Member -NotePropertyName "devSessionId" -NotePropertyValue $effectiveDevSessionId -Force
+            $mbInit | Add-Member -NotePropertyName "reviewSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
+            $mbInit | Add-Member -NotePropertyName "reviewerSessionId" -NotePropertyValue $effectiveReviewSessionId -Force
+            Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mbInit
+        }
     } else {
         $initObj = [ordered]@{
             schemaVersion = "1.0"
@@ -221,8 +237,8 @@ if ($targetMailboxScript) {
             history = @()
         }
         Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $initObj
-        $currentPrompt = $TaskPrompt
     }
+    $currentPrompt = $TaskPrompt
 }
 
 $selfHealAttempts = 0
@@ -235,6 +251,10 @@ try {
         }
         $round = [int]$mailbox.round
 
+        if ($skipDevPhase) {
+            Write-Host "`n====================== [ ROUND $round / $MaxRounds - RESUME REVIEW PHASE ] ======================" -ForegroundColor Magenta
+            $skipDevPhase = $false
+        } else {
         Write-Host "`n====================== [ ROUND $round / $MaxRounds - DEV PHASE ] ======================" -ForegroundColor Yellow
 
         # Phase 1: Dev Turn
@@ -247,9 +267,12 @@ try {
         $testStatus = "PASS"
         if (-not [string]::IsNullOrWhiteSpace($VerifyCommand) -and $VerifyCommand -ne "exit 0") {
             Push-Location $wsPhysical
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             try {
-                $testProcOut = pwsh -NoProfile -Command $VerifyCommand 2>&1 | Out-String
+                $testProcOut = & pwsh -NoProfile -Command $VerifyCommand 2>&1 | Out-String
                 $testExit = $LASTEXITCODE
+                if ($null -eq $testExit) { $testExit = 0 }
                 $testOut = $testProcOut
                 if ($testExit -ne 0) {
                     $testStatus = "FAIL"
@@ -258,12 +281,13 @@ try {
                 $testStatus = "FAIL"
                 $testOut = $_.Exception.ToString()
             } finally {
+                $ErrorActionPreference = $prevEap
                 Pop-Location
             }
         }
 
         if ($targetMailboxScript) {
-            $devSubmitParams = @{
+            Invoke-StudioMailboxOperation -Parameters @{
                 Operation = "DevSubmit"
                 MailboxPath = $effectiveMailboxPath
                 Summary = "Round $round code modifications completed."
@@ -271,39 +295,42 @@ try {
                 TestOutput = $testOut
                 ProjectRoot = $wsPhysical
             }
-            & $targetMailboxScript @devSubmitParams | Out-Null
         } else {
             $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
-            $mailbox.status = if ($testStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }
-            $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
-            $mailbox.currentDevSubmission = [ordered]@{
+            $mailbox | Add-Member -NotePropertyName "status" -NotePropertyValue $(if ($testStatus -eq "PASS") { "WAITING_REVIEW" } else { "WAITING_DEV" }) -Force
+            $mailbox | Add-Member -NotePropertyName "updatedAt" -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString("o")) -Force
+            $mailbox | Add-Member -NotePropertyName "currentDevSubmission" -NotePropertyValue ([ordered]@{
                 submittedAt = [DateTimeOffset]::UtcNow.ToString("o")
                 summary = "Round $round code modifications completed."
                 changedFiles = @()
                 testGateStatus = $testStatus
                 testOutput = $testOut
                 gitDiffDigest = ""
-            }
+            }) -Force
             Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mailbox
         }
 
         # Re-read mailbox after DevSubmit
         $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
 
-        if ($mailbox.currentDevSubmission.testGateStatus -ne "PASS") {
+        $gateNow = [string](Get-ObjectPropertyValue -Object $mailbox.currentDevSubmission -Name "testGateStatus" -Default "")
+        if ($gateNow -ne "PASS") {
             $selfHealAttempts++
             if ($selfHealAttempts -ge $MaxSelfHealAttempts) {
                 throw "TEST_GATE_SELF_HEAL_EXCEEDED: Test verification failed $selfHealAttempts consecutive attempts in round $round. Halting loop to prevent infinite retry."
             }
-            Write-Host "❌ Test Gate Verification did not pass (status: $($mailbox.currentDevSubmission.testGateStatus), attempt $selfHealAttempts/$MaxSelfHealAttempts). Self-healing triggered..." -ForegroundColor Red
+            Write-Host "❌ Test Gate Verification did not pass (status: $gateNow, attempt $selfHealAttempts/$MaxSelfHealAttempts). Self-healing triggered..." -ForegroundColor Red
             
-            $failureSummary = Extract-TestFailureSummary -TestOutput $mailbox.currentDevSubmission.testOutput -MaxChars 8192
-            $currentPrompt = "Your recent changes did not pass automated verification (status: $($mailbox.currentDevSubmission.testGateStatus)). Please inspect the test error output below and fix the implementation:`n`n" + $failureSummary
+            $failureSummary = Extract-TestFailureSummary -TestOutput ([string](Get-ObjectPropertyValue -Object $mailbox.currentDevSubmission -Name "testOutput" -Default "")) -MaxChars 8192
+            $currentPrompt = "Your recent changes did not pass automated verification (status: $gateNow). Please inspect the test error output below and fix the implementation:`n`n" + $failureSummary
             continue
         }
 
         $selfHealAttempts = 0
         Write-Host "✅ Test Gate Verification PASSED!" -ForegroundColor Green
+        } # end skipDevPhase else (Dev + test gate)
+
+        $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
 
         # Phase 3: Reviewer Turn
         Write-Host "`n====================== [ ROUND $round / $MaxRounds - REVIEW PHASE ] ======================" -ForegroundColor Magenta
@@ -322,34 +349,41 @@ try {
             -WorkspaceRoot $wsPhysical
 
         # Submit Review Verdict
-        $issuesJsonStr = if ($reviewResult.issues) {
-            $reviewResult.issues | ConvertTo-Json -Depth 10 -Compress
+        $reviewVerdict = [string](Get-ObjectPropertyValue -Object $reviewResult -Name "verdict" -Default "")
+        $reviewSeverity = [string](Get-ObjectPropertyValue -Object $reviewResult -Name "highestSeverity" -Default "NONE")
+        $reviewSummary = [string](Get-ObjectPropertyValue -Object $reviewResult -Name "summary" -Default "")
+        $reviewNextPrompt = [string](Get-ObjectPropertyValue -Object $reviewResult -Name "nextPromptForDev" -Default "")
+        $reviewIssues = Get-ObjectPropertyValue -Object $reviewResult -Name "issues" -Default @()
+        $issuesJsonStr = if ($reviewIssues) {
+            @($reviewIssues) | ConvertTo-Json -Depth 10 -Compress
         } else {
             "[]"
         }
 
         if ($targetMailboxScript) {
-            $reviewSubmitParams = @{
+            $submittedAtRaw = Get-ObjectPropertyValue -Object $mailbox.currentDevSubmission -Name "submittedAt" -Default ""
+            $expectedSubmittedAt = if ($submittedAtRaw -is [System.DateTime]) { $submittedAtRaw.ToString("o") } else { [string]$submittedAtRaw }
+            Invoke-StudioMailboxOperation -Parameters @{
                 Operation = "ReviewSubmit"
                 MailboxPath = $effectiveMailboxPath
-                Verdict = [string]$reviewResult.verdict
-                HighestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
-                Summary = [string]$reviewResult.summary
+                Verdict = $reviewVerdict
+                HighestSeverity = $reviewSeverity
+                Summary = $reviewSummary
                 IssuesJson = $issuesJsonStr
-                NextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
+                NextPromptForDev = $reviewNextPrompt
                 ExpectedRound = $round
-                ExpectedSubmittedAt = if ($mailbox.currentDevSubmission.submittedAt -is [System.DateTime]) { $mailbox.currentDevSubmission.submittedAt.ToString("o") } else { [string]$mailbox.currentDevSubmission.submittedAt }
+                ExpectedSubmittedAt = $expectedSubmittedAt
                 ReviewerIdentity = $mappedRev
                 ProjectRoot = $wsPhysical
             }
-            & $targetMailboxScript @reviewSubmitParams | Out-Null
         } else {
             $mailbox = Read-MailboxState -MailboxPath $effectiveMailboxPath
-            $verdict = [string]$reviewResult.verdict
+            $verdict = $reviewVerdict
             if ($verdict -notin @("APPROVED", "REJECTED")) {
                 throw "INVALID_REVIEW_VERDICT: Reviewer returned an invalid verdict '$verdict'. Allowed verdicts are 'APPROVED' or 'REJECTED'."
             }
-            $isApproved = ($verdict -eq "APPROVED" -and $mailbox.currentDevSubmission.testGateStatus -eq "PASS")
+            $gateStatus = [string](Get-ObjectPropertyValue -Object $mailbox.currentDevSubmission -Name "testGateStatus" -Default "")
+            $isApproved = ($verdict -eq "APPROVED" -and $gateStatus -eq "PASS")
             $isMax = ($round -ge $MaxRounds)
             
             $newStatus = if ($isApproved) {
@@ -363,10 +397,10 @@ try {
             $verdictObj = [ordered]@{
                 reviewedAt = [DateTimeOffset]::UtcNow.ToString("o")
                 verdict = $verdict
-                highestSeverity = if ($reviewResult.highestSeverity) { [string]$reviewResult.highestSeverity } else { "NONE" }
-                summary = [string]$reviewResult.summary
-                issues = if ($reviewResult.issues) { @($reviewResult.issues) } else { @() }
-                nextPromptForDev = if ($reviewResult.nextPromptForDev) { [string]$reviewResult.nextPromptForDev } else { "" }
+                highestSeverity = $reviewSeverity
+                summary = $reviewSummary
+                issues = if ($reviewIssues) { @($reviewIssues) } else { @() }
+                nextPromptForDev = $reviewNextPrompt
             }
 
             $historyEntry = [ordered]@{
@@ -375,14 +409,15 @@ try {
                 reviewVerdict = $verdictObj
             }
 
-            $mailbox.status = $newStatus
-            $mailbox.updatedAt = [DateTimeOffset]::UtcNow.ToString("o")
-            $mailbox.currentReviewVerdict = $verdictObj
-            $mailbox.history = @($mailbox.history) + @($historyEntry)
+            $existingHistory = Get-ObjectPropertyValue -Object $mailbox -Name "history" -Default @()
+            $mailbox | Add-Member -NotePropertyName "status" -NotePropertyValue $newStatus -Force
+            $mailbox | Add-Member -NotePropertyName "updatedAt" -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString("o")) -Force
+            $mailbox | Add-Member -NotePropertyName "currentReviewVerdict" -NotePropertyValue $verdictObj -Force
+            $mailbox | Add-Member -NotePropertyName "history" -NotePropertyValue (@($existingHistory) + @($historyEntry)) -Force
             if (-not $isApproved -and -not $isMax) {
-                $mailbox.round = $round + 1
-                $mailbox.currentDevSubmission = $null
-                $mailbox.currentReviewVerdict = $null
+                $mailbox | Add-Member -NotePropertyName "round" -NotePropertyValue ($round + 1) -Force
+                $mailbox | Add-Member -NotePropertyName "currentDevSubmission" -NotePropertyValue $null -Force
+                $mailbox | Add-Member -NotePropertyName "currentReviewVerdict" -NotePropertyValue $null -Force
             }
             Write-MailboxState -MailboxPath $effectiveMailboxPath -StateObj $mailbox
         }
@@ -393,7 +428,7 @@ try {
         if ($mailbox.status -eq "APPROVED") {
             Write-Host "`n================================================================================" -ForegroundColor Green
             Write-Host " 🏆 DUAL-AGENT LOOP COMPLETED SUCCESSFULLY (APPROVED at Round $round)!" -ForegroundColor Green
-            Write-Host " Summary: $($mailbox.history[-1].reviewVerdict.summary)" -ForegroundColor Cyan
+            Write-Host " Summary: $reviewSummary" -ForegroundColor Cyan
             Write-Host "================================================================================" -ForegroundColor Green
 
             if ($AutoCommit) {
@@ -423,18 +458,21 @@ try {
             Write-Host "`n================================================================================" -ForegroundColor Red
             Write-Host " 🚫 DUAL-AGENT LOOP HALTED: Max rounds ($MaxRounds) reached without approval." -ForegroundColor Red
             Write-Host " Latest Review Feedback:" -ForegroundColor Yellow
-            Write-Host " $($mailbox.history[-1].reviewVerdict.summary)"
+            Write-Host " $reviewSummary"
             Write-Host "================================================================================" -ForegroundColor Red
             if ($PassThru) { return $mailbox }
             exit 2
         }
 
-        # If WAITING_DEV, prepare next round prompt
+        # If WAITING_DEV, prepare next round prompt and immediately continue the same process.
         if ($mailbox.status -eq "WAITING_DEV") {
-            $lastReview = $mailbox.history[-1].reviewVerdict
-            $currentPrompt = "Round $round Review REJECTED (Highest Severity: $($lastReview.highestSeverity)).`nSummary: $($lastReview.summary)`n`nInstructions for next round:`n$($lastReview.nextPromptForDev)"
-            Write-Host "⚠️ Issues detected. Auto-advancing to Round $($mailbox.round)..." -ForegroundColor Yellow
+            $currentPrompt = Get-NextRoundDevPrompt -Mailbox $mailbox -CompletedRound $round
+            Write-Host "⚠️ Issues detected. Auto-advancing to Round $($mailbox.round) without waiting for a manual start..." -ForegroundColor Yellow
+            continue
         }
+
+        Write-Host "⚠️ Unexpected mailbox status '$($mailbox.status)' after review; continuing autonomous loop." -ForegroundColor Yellow
+        continue
     }
 } catch {
     $errMessage = $_.Exception.Message

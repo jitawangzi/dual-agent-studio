@@ -994,7 +994,7 @@ function initSSE() {
   eventSource.addEventListener('state_change', (e) => {
     try {
       const data = JSON.parse(e.data);
-      updateRunningState(data.isRunning);
+      updateRunningState(data.isRunning, data.isDiscussing);
       if (data.mailbox) {
         renderTimeline(data.mailbox);
       }
@@ -1221,16 +1221,16 @@ function renderTimeline(mb) {
         statusBadge.className = 'status-badge running';
         statusText.textContent = `🛠️ 正在进行第 ${mb.round} 轮开发方自主编码中...`;
       } else {
-        statusBadge.className = 'status-badge waiting';
-        statusText.textContent = `⏸️ 第 ${mb.round} 轮就绪 (点击启动继续闭环)`;
+        statusBadge.className = 'status-badge running';
+        statusText.textContent = `🔄 第 ${mb.round} 轮开发阶段将自动续跑（无需手动点击启动）`;
       }
     } else if (mb.status === 'WAITING_REVIEW') {
       if (isRunning) {
         statusBadge.className = 'status-badge running';
         statusText.textContent = `🔍 正在进行第 ${mb.round} 轮审查方深度评审中...`;
       } else {
-        statusBadge.className = 'status-badge waiting';
-        statusText.textContent = `⏸️ 第 ${mb.round} 轮待审查 (点击启动继续)`;
+        statusBadge.className = 'status-badge running';
+        statusText.textContent = `🔄 第 ${mb.round} 轮审查阶段将自动续跑（无需手动点击启动）`;
       }
     }
   }

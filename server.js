@@ -28,6 +28,8 @@ let currentMailbox = null;
 let isDiscussing = false;
 let discussionGeneration = 0;         // Incremented per discussion or on abort to invalidate stale discussions
 let logs = [];
+let stoppedByUser = false;
+let autoResumeAttempts = 0;
 const sseClients = new Set();
 
 function broadcast(eventType, data) {
@@ -386,6 +388,128 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
     return true;
 }
 
+function detectDiscussionVerdict(text) {
+    const src = String(text || '');
+    const needsRefinement = /\[VERDICT:\s*NEEDS_REFINEMENT\]/i.test(src);
+    const consensus = /\[VERDICT:\s*CONSENSUS_REACHED\]/i.test(src);
+    if (needsRefinement) return { consensus: false, needsRefinement: true };
+    if (consensus) return { consensus: true, needsRefinement: false };
+    return { consensus: false, needsRefinement: false };
+}
+
+function shouldAutoResumeLoop(mailbox, config = {}) {
+    if (!mailbox || typeof mailbox !== 'object') return false;
+    const status = String(mailbox.status || '');
+    if (status !== 'WAITING_DEV' && status !== 'WAITING_REVIEW') return false;
+    const round = Number(mailbox.round || 0);
+    const maxRounds = Number(config.maxRounds || mailbox.maxRounds || 4);
+    if (!Number.isFinite(round) || round < 1) return false;
+    if (!Number.isFinite(maxRounds) || round > maxRounds) return false;
+    return true;
+}
+
+function buildOrchestratorArgs(config, sessionInfo) {
+    const orchestratorScript = path.join(__dirname, 'engine', 'orchestrator.ps1');
+    const psArgs = [
+        '-NoProfile',
+        '-File', orchestratorScript,
+        '-WorkspaceRoot', config.workspaceRoot,
+        '-TaskPrompt', config.taskPrompt
+    ];
+
+    if (config.feature) psArgs.push('-Feature', config.feature);
+    if (config.devProvider) psArgs.push('-DevProvider', config.devProvider);
+    if (config.reviewProvider) psArgs.push('-ReviewProvider', config.reviewProvider);
+    if (config.devModel) psArgs.push('-DevModel', config.devModel);
+    if (config.reviewModel) psArgs.push('-ReviewModel', config.reviewModel);
+    if (config.devReasoningEffort) psArgs.push('-DevReasoningEffort', config.devReasoningEffort);
+    if (config.reviewReasoningEffort) psArgs.push('-ReviewReasoningEffort', config.reviewReasoningEffort);
+
+    if (sessionInfo.devSessionId) psArgs.push('-DevSessionId', sessionInfo.devSessionId);
+    if (sessionInfo.reviewSessionId) psArgs.push('-ReviewSessionId', sessionInfo.reviewSessionId);
+    if (config.forceNewSessions) psArgs.push('-ForceNewSessions');
+    else psArgs.push('-AutoBindSession');
+
+    if (config.verifyCommand) psArgs.push('-VerifyCommand', config.verifyCommand);
+    if (config.maxRounds) psArgs.push('-MaxRounds', String(config.maxRounds));
+    if (config.maxSelfHealAttempts) psArgs.push('-MaxSelfHealAttempts', String(config.maxSelfHealAttempts));
+    if (config.autoCommit) psArgs.push('-AutoCommit');
+    if (config.mailboxPath) psArgs.push('-MailboxPath', config.mailboxPath);
+    return psArgs;
+}
+
+function launchOrchestratorProcess(config, { isResume = false } = {}) {
+    const sessionInfo = resolveStudioSessionIds({
+        devSessionId: config.devSessionId,
+        reviewSessionId: config.reviewSessionId || config.copilotSessionId,
+        workspaceRoot: config.workspaceRoot,
+        feature: config.feature,
+        mailboxPath: config.mailboxPath,
+        forceNew: !!config.forceNewSessions
+    });
+
+    const psArgs = buildOrchestratorArgs(config, sessionInfo);
+    const procEnv = { ...process.env };
+    if (!procEnv.http_proxy) procEnv.http_proxy = 'http://127.0.0.1:10809';
+    if (!procEnv.https_proxy) procEnv.https_proxy = 'http://127.0.0.1:10809';
+    if (!procEnv.HTTP_PROXY) procEnv.HTTP_PROXY = 'http://127.0.0.1:10809';
+    if (!procEnv.HTTPS_PROXY) procEnv.HTTPS_PROXY = 'http://127.0.0.1:10809';
+    if (!procEnv.all_proxy) procEnv.all_proxy = 'http://127.0.0.1:10809';
+    if (!procEnv.ALL_PROXY) procEnv.ALL_PROXY = 'http://127.0.0.1:10809';
+
+    activeProcess = spawn('pwsh', psArgs, {
+        cwd: config.workspaceRoot,
+        env: procEnv,
+        shell: false
+    });
+
+    broadcast('state_change', { isRunning: true, isDiscussing, config, autoResume: isResume });
+
+    activeProcess.stdout.on('data', data => {
+        const text = data.toString('utf-8');
+        for (const line of text.split(/\r?\n/)) {
+            if (line.trim()) appendLog(line, 'stdout');
+        }
+        currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
+        broadcast('mailbox_update', currentMailbox);
+    });
+
+    activeProcess.stderr.on('data', data => {
+        const text = data.toString('utf-8');
+        for (const line of text.split(/\r?\n/)) {
+            if (line.trim()) appendLog(line, 'stderr');
+        }
+    });
+
+    activeProcess.on('close', code => {
+        currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
+        const maxRounds = Number(config.maxRounds || currentMailbox?.maxRounds || 4);
+        const canResume = !stoppedByUser
+            && shouldAutoResumeLoop(currentMailbox, config)
+            && autoResumeAttempts < Math.max(maxRounds, 1);
+
+        if (canResume) {
+            autoResumeAttempts += 1;
+            const nextRound = currentMailbox.round || autoResumeAttempts + 1;
+            appendLog(`🔄 检测到闭环停在 ${currentMailbox.status}（第 ${nextRound} 轮），正在自动续跑，无需手动点击启动...`, 'system');
+            broadcast('mailbox_update', currentMailbox);
+            activeProcess = null;
+            setTimeout(() => {
+                if (stoppedByUser || activeProcess) return;
+                launchOrchestratorProcess(config, { isResume: true });
+            }, 400);
+            return;
+        }
+
+        appendLog(`⏹️ 双 Agent 闭环进程结束，退出码: ${code}`, code === 0 ? 'success' : 'error');
+        activeProcess = null;
+        autoResumeAttempts = 0;
+        broadcast('state_change', { isRunning: false, isDiscussing, exitCode: code, mailbox: currentMailbox });
+    });
+
+    return sessionInfo;
+}
+
 // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation with 600s watchdog
 async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token, signal }) {
     if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
@@ -406,6 +530,31 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
         if (!env.https_proxy) env.https_proxy = 'http://127.0.0.1:10809';
 
         const provLower = (provider || 'copilot').toLowerCase();
+
+        if (provLower === 'mock') {
+            await new Promise(resolve => setTimeout(resolve, 250));
+            if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
+                return '';
+            }
+            const roundNum = parseInt((String(role).match(/R(\d+)/) || [])[1] || '1', 10);
+            const isDevRole = /^Dev/i.test(String(role || ''));
+            if (isDevRole) {
+                return [
+                    `Mock developer technical proposal (${role}).`,
+                    '',
+                    '1. **Target Architecture & Technical Strategy**: Implement the requested change in this workspace with focused, testable edits.',
+                    '2. **File & Module Modifications**: Touch only the modules required by the user goal.',
+                    '3. **Actionable Subtask Checklist**',
+                    '- [ ] [Task 1] Apply the core implementation',
+                    '- [ ] [Task 2] Cover the change with the existing test gate',
+                    '4. **Edge Cases & Test Gate**: Keep verify commands fast and deterministic.'
+                ].join('\n');
+            }
+            if (roundNum <= 1) {
+                return 'The first-round proposal still needs a stronger test-gate strategy.\n\n**[VERDICT: NEEDS_REFINEMENT]**';
+            }
+            return 'The revised plan is concrete and executable.\n\n**[VERDICT: CONSENSUS_REACHED]**';
+        }
 
         if (provLower === 'claude' || provLower === 'claude_code') {
             if (reasoningEffort && reasoningEffort !== 'none') {
@@ -733,7 +882,8 @@ Conclude with your verdict:
             }
 
             reviewerFeedback = revOut;
-            const isConsensus = (revOut.includes('CONSENSUS_REACHED') || revOut.includes('共识达成')) && !revOut.includes('NEEDS_REFINEMENT');
+            const verdictInfo = detectDiscussionVerdict(revOut);
+            const isConsensus = verdictInfo.consensus;
             const revMsg = {
                 round: r,
                 sender: 'REVIEWER',
@@ -1086,18 +1236,20 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        isDiscussing = true;
         let body = '';
         req.on('data', c => body += c);
+        req.on('error', () => { isDiscussing = false; });
         req.on('end', () => {
             try {
                 const params = JSON.parse(body);
                 if (!params.vaguePrompt) {
+                    isDiscussing = false;
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'vaguePrompt is required.' }));
                     return;
                 }
 
-                isDiscussing = true;
                 const token = ++discussionGeneration;
                 activeDiscussionAbortController = new AbortController();
                 const signal = activeDiscussionAbortController.signal;
@@ -1108,6 +1260,7 @@ const server = http.createServer(async (req, res) => {
                 // Run background discussion asynchronously with generation token and abort signal
                 runBackgroundDiscussion(params, token, signal);
             } catch (err) {
+                isDiscussing = false;
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -1162,6 +1315,8 @@ const server = http.createServer(async (req, res) => {
 
                 activeConfig = config;
                 logs = [];
+                stoppedByUser = false;
+                autoResumeAttempts = 0;
                 appendLog(`🚀 启动双 Agent 全自动闭环: ${config.workspaceRoot}`, 'system');
 
                 // Save to recent projects
@@ -1171,80 +1326,7 @@ const server = http.createServer(async (req, res) => {
                     saveProjects(projects);
                 }
 
-                const orchestratorScript = path.join(__dirname, 'engine', 'orchestrator.ps1');
-                const psArgs = [
-                    '-NoProfile',
-                    '-File', orchestratorScript,
-                    '-WorkspaceRoot', config.workspaceRoot,
-                    '-TaskPrompt', config.taskPrompt
-                ];
-
-                if (config.feature) psArgs.push('-Feature', config.feature);
-                if (config.devProvider) psArgs.push('-DevProvider', config.devProvider);
-                if (config.reviewProvider) psArgs.push('-ReviewProvider', config.reviewProvider);
-                if (config.devModel) psArgs.push('-DevModel', config.devModel);
-                if (config.reviewModel) psArgs.push('-ReviewModel', config.reviewModel);
-                if (config.devReasoningEffort) psArgs.push('-DevReasoningEffort', config.devReasoningEffort);
-                if (config.reviewReasoningEffort) psArgs.push('-ReviewReasoningEffort', config.reviewReasoningEffort);
-
-                const sessionInfo = resolveStudioSessionIds({
-                    devSessionId: config.devSessionId,
-                    reviewSessionId: config.reviewSessionId || config.copilotSessionId,
-                    workspaceRoot: config.workspaceRoot,
-                    feature: config.feature,
-                    mailboxPath: config.mailboxPath,
-                    forceNew: !!config.forceNewSessions
-                });
-
-                if (sessionInfo.devSessionId) psArgs.push('-DevSessionId', sessionInfo.devSessionId);
-                if (sessionInfo.reviewSessionId) psArgs.push('-ReviewSessionId', sessionInfo.reviewSessionId);
-                if (config.forceNewSessions) psArgs.push('-ForceNewSessions');
-                else psArgs.push('-AutoBindSession');
-
-                if (config.verifyCommand) psArgs.push('-VerifyCommand', config.verifyCommand);
-                if (config.maxRounds) psArgs.push('-MaxRounds', String(config.maxRounds));
-                if (config.maxSelfHealAttempts) psArgs.push('-MaxSelfHealAttempts', String(config.maxSelfHealAttempts));
-                if (config.autoCommit) psArgs.push('-AutoCommit');
-                if (config.mailboxPath) psArgs.push('-MailboxPath', config.mailboxPath);
-
-                const procEnv = { ...process.env };
-                if (!procEnv.http_proxy) procEnv.http_proxy = 'http://127.0.0.1:10809';
-                if (!procEnv.https_proxy) procEnv.https_proxy = 'http://127.0.0.1:10809';
-                if (!procEnv.HTTP_PROXY) procEnv.HTTP_PROXY = 'http://127.0.0.1:10809';
-                if (!procEnv.HTTPS_PROXY) procEnv.HTTPS_PROXY = 'http://127.0.0.1:10809';
-                if (!procEnv.all_proxy) procEnv.all_proxy = 'http://127.0.0.1:10809';
-                if (!procEnv.ALL_PROXY) procEnv.ALL_PROXY = 'http://127.0.0.1:10809';
-
-                activeProcess = spawn('pwsh', psArgs, {
-                    cwd: config.workspaceRoot,
-                    env: procEnv,
-                    shell: false
-                });
-
-                broadcast('state_change', { isRunning: true, config });
-
-                activeProcess.stdout.on('data', data => {
-                    const text = data.toString('utf-8');
-                    for (const line of text.split(/\r?\n/)) {
-                        if (line.trim()) appendLog(line, 'stdout');
-                    }
-                    currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
-                    broadcast('mailbox_update', currentMailbox);
-                });
-
-                activeProcess.stderr.on('data', data => {
-                    const text = data.toString('utf-8');
-                    for (const line of text.split(/\r?\n/)) {
-                        if (line.trim()) appendLog(line, 'stderr');
-                    }
-                });
-
-                activeProcess.on('close', code => {
-                    appendLog(`⏹️ 双 Agent 闭环进程结束，退出码: ${code}`, code === 0 ? 'success' : 'error');
-                    activeProcess = null;
-                    currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
-                    broadcast('state_change', { isRunning: false, exitCode: code, mailbox: currentMailbox });
-                });
+                launchOrchestratorProcess(config, { isResume: false });
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, message: 'Loop started successfully.' }));
@@ -1261,6 +1343,8 @@ const server = http.createServer(async (req, res) => {
         let stoppedSomething = false;
 
         if (activeProcess) {
+            stoppedByUser = true;
+            autoResumeAttempts = 0;
             appendLog('⚠️ 用户主动中止运行中的闭环任务...', 'system');
             const pid = activeProcess.pid;
             try {
@@ -1271,7 +1355,7 @@ const server = http.createServer(async (req, res) => {
                 }
             } catch {}
             activeProcess = null;
-            broadcast('state_change', { isRunning: false, stoppedByUser: true });
+            broadcast('state_change', { isRunning: false, isDiscussing, stoppedByUser: true });
             stoppedSomething = true;
         }
 
@@ -1418,5 +1502,8 @@ module.exports = {
     resolveStudioSessionIds,
     persistWorkspaceSessions,
     listDrivesAndDirs,
-    getMailbox
+    getMailbox,
+    detectDiscussionVerdict,
+    shouldAutoResumeLoop,
+    buildOrchestratorArgs
 };
