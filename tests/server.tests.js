@@ -415,7 +415,6 @@ async function runServerTests() {
             );
             assert.deepStrictEqual(interpretDiscussionAgentExit({ aborted: true, exitCode: 1 }), { aborted: true });
             assert.deepStrictEqual(interpretDiscussionAgentExit({ exitCode: 0 }), { aborted: false });
-            console.log('✅ Cursor/Codex/Pi discussion commands fail-fast and pass prompts via stdin.');
             console.log('✅ Discussion Copilot PATH check, Antigravity stdin, review sandbox, and exit-code fail-fast.');
 
             const detected = detectWorkspace(path.join(__dirname, '..'));
