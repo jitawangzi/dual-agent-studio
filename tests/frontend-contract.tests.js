@@ -66,7 +66,8 @@ const requiredIds = [
     'quickDrives',
     'folderList',
     'modelModal',
-    'modelsJsonEditor'
+    'modelsJsonEditor',
+    'autoStartAfterConsensus'
 ];
 
 for (const id of requiredIds) {
@@ -113,7 +114,10 @@ const alertMatch = jsContent.match(/(?<!showToast\([^)]*)\balert\s*\(/g);
 assert(!alertMatch, `app.js should not contain raw alert() calls; found ${alertMatch ? alertMatch.length : 0} occurrences. Use showToast() instead.`);
 assert(!jsContent.includes('点击启动继续闭环'), 'app.js must not instruct users to manually click start between autonomous rounds');
 assert(!jsContent.includes('点击启动继续'), 'app.js must not instruct users to manually click start to continue review');
+assert(jsContent.includes("autoStartAfterConsensus"), 'app.js must persist autoStartAfterConsensus preference');
+assert(jsContent.includes('approvePlanAndStart()'), 'app.js must auto-launch coding loop from discussion consensus when the checkbox is enabled');
 console.log('✅ Native alert() Elimination Verified (100% replaced by Toast system).');
 console.log('✅ Autonomous round continuation copy verified (no manual click-to-continue prompts).');
+console.log('✅ Optional auto-start after discussion consensus verified.');
 
 console.log('🎉 All Frontend Contract Tests Passed Successfully!\n');

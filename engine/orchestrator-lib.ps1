@@ -11,6 +11,23 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Get-StudioProxyUrl {
+    foreach ($k in @("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "DUAL_AGENT_PROXY", "ALL_PROXY", "all_proxy")) {
+        $v = [Environment]::GetEnvironmentVariable($k)
+        if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
+    }
+    return $null
+}
+
+function Apply-StudioProxyToProcessStartInfo {
+    param([Parameter(Mandatory=$true)]$ProcessStartInfo)
+    $proxy = Get-StudioProxyUrl
+    if ([string]::IsNullOrWhiteSpace($proxy)) { return }
+    foreach ($pk in @("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "grpc_proxy", "GRPC_PROXY")) {
+        $ProcessStartInfo.EnvironmentVariables[$pk] = $proxy
+    }
+}
+
 function Invoke-CliWithTimeout {
     param(
         [Parameter(Mandatory=$true)][string]$ExecutablePath,
@@ -19,7 +36,9 @@ function Invoke-CliWithTimeout {
         [Parameter(Mandatory=$false)][string]$WorkingDirectory = $PWD.Path,
         [Parameter(Mandatory=$false)][hashtable]$EnvironmentVariables = @{},
         [Parameter(Mandatory=$false)][int]$TimeoutSeconds = 1800,
-        [Parameter(Mandatory=$false)][string]$RoleName = "CLI"
+        [Parameter(Mandatory=$false)][string]$RoleName = "CLI",
+        [Parameter(Mandatory=$false)][scriptblock]$OnStdOutLine,
+        [Parameter(Mandatory=$false)][scriptblock]$OnStdErrLine
     )
 
     $pinfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -57,11 +76,8 @@ function Invoke-CliWithTimeout {
         foreach ($arg in $Arguments) { $pinfo.ArgumentList.Add($arg) }
     }
 
-    # 2. Environment Variables Injection & Proxy Guarantee
-    $proxy = if ($env:http_proxy) { $env:http_proxy } else { "http://127.0.0.1:10809" }
-    foreach ($pk in @("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "grpc_proxy", "GRPC_PROXY")) {
-        $pinfo.EnvironmentVariables[$pk] = $proxy
-    }
+    # 2. Inherit ambient proxy only — never inject a hardcoded 10809 fallback.
+    Apply-StudioProxyToProcessStartInfo -ProcessStartInfo $pinfo
     foreach ($k in $EnvironmentVariables.Keys) {
         $pinfo.EnvironmentVariables[$k] = [string]$EnvironmentVariables[$k]
     }
@@ -71,9 +87,60 @@ function Invoke-CliWithTimeout {
 
     [void]$process.Start()
 
-    # 3. Read stdout and stderr asynchronously via Task (safe from Runspace threading issues)
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
+    # 3. Live line streaming on the calling thread (Write-Host is Runspace-safe here).
+    $stdoutBuilder = [System.Text.StringBuilder]::new()
+    $stderrBuilder = [System.Text.StringBuilder]::new()
+    $stdoutLine = [System.Text.StringBuilder]::new()
+    $stderrLine = [System.Text.StringBuilder]::new()
+    $stdoutChars = New-Object char[] 2048
+    $stderrChars = New-Object char[] 2048
+    $stdoutRead = $process.StandardOutput.ReadAsync($stdoutChars, 0, $stdoutChars.Length)
+    $stderrRead = $process.StandardError.ReadAsync($stderrChars, 0, $stderrChars.Length)
+    $stdoutEof = $false
+    $stderrEof = $false
+
+    function Emit-CliChunk {
+        param(
+            [string]$Chunk,
+            [System.Text.StringBuilder]$FullBuilder,
+            [System.Text.StringBuilder]$LineBuilder,
+            [ConsoleColor]$Color,
+            [scriptblock]$OnLine
+        )
+        if ([string]::IsNullOrEmpty($Chunk)) { return }
+        [void]$FullBuilder.Append($Chunk)
+        [void]$LineBuilder.Append($Chunk)
+        while ($true) {
+            $buf = $LineBuilder.ToString()
+            $nl = $buf.IndexOf("`n")
+            if ($nl -lt 0) { break }
+            $line = $buf.Substring(0, $nl).TrimEnd("`r")
+            Write-Host $line -ForegroundColor $Color
+            if ($null -ne $OnLine) {
+                try { & $OnLine $line } catch {}
+            }
+            $rest = $buf.Substring($nl + 1)
+            [void]$LineBuilder.Clear()
+            [void]$LineBuilder.Append($rest)
+        }
+    }
+
+    function Flush-CliRemainder {
+        param(
+            [System.Text.StringBuilder]$LineBuilder,
+            [ConsoleColor]$Color,
+            [scriptblock]$OnLine
+        )
+        if ($LineBuilder.Length -le 0) { return }
+        $line = $LineBuilder.ToString().TrimEnd("`r")
+        if (-not [string]::IsNullOrEmpty($line)) {
+            Write-Host $line -ForegroundColor $Color
+            if ($null -ne $OnLine) {
+                try { & $OnLine $line } catch {}
+            }
+        }
+        [void]$LineBuilder.Clear()
+    }
 
     # 4. UTF-8 Stdin Pipeline Input
     if (-not [string]::IsNullOrEmpty($StdinText)) {
@@ -84,42 +151,82 @@ function Invoke-CliWithTimeout {
     }
     try { $process.StandardInput.Close() } catch {}
 
-    # 5. Process Timeout Watchdog & Tree Kill
-    $completed = $process.WaitForExit($TimeoutSeconds * 1000)
-    if (-not $completed) {
-        $pidToKill = $process.Id
-        Write-Warning "[$RoleName] Execution exceeded timeout of $TimeoutSeconds seconds. Terminating process tree (PID $pidToKill)..."
-        try {
-            if ($IsWindows -or $env:OS -eq "Windows_NT") {
-                & taskkill.exe /F /T /PID $pidToKill 2>&1 | Out-Null
+    # 5. Pump streams until exit or timeout
+    $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    $killed = $false
+    while ($true) {
+        if ([DateTime]::UtcNow -ge $deadline -and -not $process.HasExited) {
+            $killed = $true
+            $pidToKill = $process.Id
+            Write-Warning "[$RoleName] Execution exceeded timeout of $TimeoutSeconds seconds. Terminating process tree (PID $pidToKill)..."
+            try {
+                if ($IsWindows -or $env:OS -eq "Windows_NT") {
+                    & taskkill.exe /F /T /PID $pidToKill 2>&1 | Out-Null
+                } else {
+                    $process.Kill($true)
+                }
+            } catch {}
+            break
+        }
+
+        if (-not $stdoutEof -and $stdoutRead.IsCompleted) {
+            $n = $stdoutRead.GetAwaiter().GetResult()
+            if ($n -le 0) {
+                $stdoutEof = $true
             } else {
-                $process.Kill($true)
+                Emit-CliChunk -Chunk ([string]::new($stdoutChars, 0, $n)) -FullBuilder $stdoutBuilder -LineBuilder $stdoutLine -Color Gray -OnLine $OnStdOutLine
+                $stdoutRead = $process.StandardOutput.ReadAsync($stdoutChars, 0, $stdoutChars.Length)
             }
-        } catch {}
+        }
+        if (-not $stderrEof -and $stderrRead.IsCompleted) {
+            $n = $stderrRead.GetAwaiter().GetResult()
+            if ($n -le 0) {
+                $stderrEof = $true
+            } else {
+                Emit-CliChunk -Chunk ([string]::new($stderrChars, 0, $n)) -FullBuilder $stderrBuilder -LineBuilder $stderrLine -Color DarkGray -OnLine $OnStdErrLine
+                $stderrRead = $process.StandardError.ReadAsync($stderrChars, 0, $stderrChars.Length)
+            }
+        }
 
-        try {
-            [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 1000)
-        } catch {}
-        try { $stdoutTask.Dispose() } catch {}
-        try { $stderrTask.Dispose() } catch {}
-        try { $process.Dispose() } catch {}
-
-        throw "EXECUTION_TIMEOUT: $RoleName CLI timed out after $TimeoutSeconds seconds."
+        if ($process.HasExited -and $stdoutEof -and $stderrEof) { break }
+        [void]$process.WaitForExit(50)
     }
 
-    [System.Threading.Tasks.Task]::WaitAll($stdoutTask, $stderrTask)
-    $exitCode = $process.ExitCode
-    $stdoutStr = $stdoutTask.Result
-    $stderrStr = $stderrTask.Result
-    try { $stdoutTask.Dispose() } catch {}
-    try { $stderrTask.Dispose() } catch {}
+    if (-not $stdoutEof) {
+        try { [void]$stdoutRead.Wait(400) } catch {}
+        if ($stdoutRead.IsCompleted) {
+            try {
+                $n = $stdoutRead.GetAwaiter().GetResult()
+                if ($n -gt 0) {
+                    Emit-CliChunk -Chunk ([string]::new($stdoutChars, 0, $n)) -FullBuilder $stdoutBuilder -LineBuilder $stdoutLine -Color Gray -OnLine $OnStdOutLine
+                }
+            } catch {}
+        }
+    }
+    if (-not $stderrEof) {
+        try { [void]$stderrRead.Wait(400) } catch {}
+        if ($stderrRead.IsCompleted) {
+            try {
+                $n = $stderrRead.GetAwaiter().GetResult()
+                if ($n -gt 0) {
+                    Emit-CliChunk -Chunk ([string]::new($stderrChars, 0, $n)) -FullBuilder $stderrBuilder -LineBuilder $stderrLine -Color DarkGray -OnLine $OnStdErrLine
+                }
+            } catch {}
+        }
+    }
+
+    Flush-CliRemainder -LineBuilder $stdoutLine -Color Gray -OnLine $OnStdOutLine
+    Flush-CliRemainder -LineBuilder $stderrLine -Color DarkGray -OnLine $OnStdErrLine
+
+    $exitCode = 0
+    try { $exitCode = $process.ExitCode } catch { $exitCode = 1 }
     try { $process.Dispose() } catch {}
 
-    if (-not [string]::IsNullOrEmpty($stdoutStr)) {
-        Write-Host $stdoutStr.TrimEnd() -ForegroundColor Gray
-    }
-    if (-not [string]::IsNullOrEmpty($stderrStr)) {
-        Write-Host $stderrStr.TrimEnd() -ForegroundColor DarkGray
+    $stdoutStr = $stdoutBuilder.ToString()
+    $stderrStr = $stderrBuilder.ToString()
+
+    if ($killed) {
+        throw "EXECUTION_TIMEOUT: $RoleName CLI timed out after $TimeoutSeconds seconds."
     }
 
     return [ordered]@{
@@ -266,7 +373,10 @@ function Resolve-EffectiveSessionId {
                 }
             }
 
-            $discPath = Join-Path $WorkspaceRoot "requirement-discussion.json"
+            $discPath = Join-Path $WorkspaceRoot ".ai-workspace\requirement-discussion.json"
+            if (-not (Test-Path -LiteralPath $discPath)) {
+                $discPath = Join-Path $WorkspaceRoot "requirement-discussion.json"
+            }
             if (Test-Path -LiteralPath $discPath) {
                 try {
                     $discRaw = [System.IO.File]::ReadAllText($discPath, [System.Text.Encoding]::UTF8)

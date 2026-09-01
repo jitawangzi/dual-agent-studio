@@ -137,6 +137,43 @@ try {
     Assert-Equal ([string](Get-ObjectPropertyValue -Object $customVerdict -Name "verdict" -Default "")) "REJECTED" "PSCustomObject verdict must be readable"
     Assert-Equal ([string](Get-ObjectPropertyValue -Object $null -Name "verdict" -Default "NONE")) "NONE" "Null object should return default"
 
+    # A7.2 Get-StudioProxyUrl inherits ambient env and never hardcodes 10809
+    $proxyKeys = @("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "DUAL_AGENT_PROXY", "ALL_PROXY", "all_proxy")
+    $savedProxy = @{}
+    foreach ($k in $proxyKeys) { $savedProxy[$k] = [Environment]::GetEnvironmentVariable($k) }
+    try {
+        foreach ($k in $proxyKeys) { [Environment]::SetEnvironmentVariable($k, $null) }
+        Assert-True ([string]::IsNullOrWhiteSpace((Get-StudioProxyUrl))) "Get-StudioProxyUrl must be empty when no proxy env is set"
+        [Environment]::SetEnvironmentVariable("DUAL_AGENT_PROXY", "http://127.0.0.1:9")
+        Assert-Equal (Get-StudioProxyUrl) "http://127.0.0.1:9" "Get-StudioProxyUrl should read DUAL_AGENT_PROXY"
+    } finally {
+        foreach ($k in $proxyKeys) { [Environment]::SetEnvironmentVariable($k, $savedProxy[$k]) }
+    }
+
+    # A7.3 Invoke-CliWithTimeout must emit stdout lines live (not after process exit)
+    $streamScript = Join-Path $TestRoot "stream-echo.ps1"
+    @(
+        '[Console]::Out.WriteLine("STREAM_LINE_ONE")'
+        '[Console]::Out.Flush()'
+        'Start-Sleep -Milliseconds 600'
+        '[Console]::Out.WriteLine("STREAM_LINE_TWO")'
+        '[Console]::Out.Flush()'
+    ) | Set-Content -LiteralPath $streamScript -Encoding utf8
+    $script:streamHits = [System.Collections.Generic.List[object]]::new()
+    $pwshExe = Join-Path $PSHOME "pwsh"
+    if (-not (Test-Path -LiteralPath $pwshExe)) { $pwshExe = "pwsh" }
+    $streamRes = Invoke-CliWithTimeout -ExecutablePath $pwshExe -Arguments @("-NoProfile", "-File", $streamScript) -TimeoutSeconds 15 -OnStdOutLine {
+        param($line)
+        if ($line -match "STREAM_LINE_") {
+            $script:streamHits.Add([pscustomobject]@{ Line = $line.Trim(); At = [DateTime]::UtcNow })
+        }
+    }
+    Assert-Equal $streamRes.ExitCode 0 "Streaming echo script must exit 0"
+    Assert-True ($streamRes.Stdout.Contains("STREAM_LINE_ONE") -and $streamRes.Stdout.Contains("STREAM_LINE_TWO")) "Combined stdout must capture both live lines"
+    Assert-True ($script:streamHits.Count -ge 2) "OnStdOutLine must fire for both streamed lines"
+    $deltaMs = ($script:streamHits[1].At - $script:streamHits[0].At).TotalMilliseconds
+    Assert-True ($deltaMs -ge 300) "Live streaming must deliver LINE_ONE before LINE_TWO sleep completes (delta=$deltaMs ms)"
+
     # A8. Resolve-EffectiveSessionId (Multi-tier resolution: Explicit > Mailbox > Feature Discussion > Root Discussion > UUID)
     $sessTestDir = Join-Path $TestRoot "sess-resolve-test"
     [System.IO.Directory]::CreateDirectory($sessTestDir) | Out-Null
@@ -152,6 +189,16 @@ try {
     $discRevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "review" -AutoBind
     Assert-Equal $discDevId "disc-root-dev-123" "Should resolve devSessionId from root discussion"
     Assert-Equal $discRevId "disc-root-rev-456" "Should resolve reviewSessionId from root discussion"
+
+    # A8b.1 Isolated .ai-workspace discussion takes precedence over the legacy root file
+    $aiWsDir = Join-Path $sessTestDir ".ai-workspace"
+    [System.IO.Directory]::CreateDirectory($aiWsDir) | Out-Null
+    $isoDiscJson = [ordered]@{ devSessionId = "iso-disc-dev-321"; reviewSessionId = "iso-disc-rev-654" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $aiWsDir "requirement-discussion.json"), $isoDiscJson, [System.Text.Encoding]::UTF8)
+    $isoDevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "dev" -AutoBind
+    $isoRevId = Resolve-EffectiveSessionId -WorkspaceRoot $sessTestDir -RoleName "review" -AutoBind
+    Assert-Equal $isoDevId "iso-disc-dev-321" "Isolated .ai-workspace discussion must take precedence over root discussion"
+    Assert-Equal $isoRevId "iso-disc-rev-654" "Isolated .ai-workspace discussion must take precedence over root discussion"
 
     # A8c. Feature discussion-history.json present -> Feature discussion > Root discussion
     $featDir = Join-Path $sessTestDir ".ai-workspace\specs\features\feat_test"
@@ -682,6 +729,55 @@ exit 0
         }
     }
     Assert-True $invalidVerdictCaught "Reviewer returning non-APPROVED/non-REJECTED verdict must be rejected with INVALID_REVIEW_VERDICT"
+
+    # 15. TaskPromptFile must load the prompt and complete a mock round
+    $mbPromptFile = Join-Path $TestRoot "mb-prompt-file.json"
+    $promptFile = Join-Path $TestRoot "task-prompt-file.txt"
+    [System.IO.File]::WriteAllText($promptFile, "Prompt delivered via TaskPromptFile for FeaturePromptFile", [System.Text.UTF8Encoding]::new($false))
+    $resPromptFile = & $OrchestratorScript `
+        -WorkspaceRoot $TestRoot `
+        -TaskPromptFile $promptFile `
+        -Feature "FeaturePromptFile" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -MailboxPath $mbPromptFile `
+        -PassThru
+    Assert-Equal $resPromptFile.status "APPROVED" "TaskPromptFile loop should complete APPROVED"
+
+    $missingPromptCaught = $false
+    try {
+        & $OrchestratorScript -WorkspaceRoot $TestRoot -DevProvider "mock" -ReviewProvider "mock" | Out-Null
+    } catch {
+        if ($_.Exception.Message -match "TASK_PROMPT_REQUIRED") { $missingPromptCaught = $true }
+    }
+    Assert-True $missingPromptCaught "Missing TaskPrompt and TaskPromptFile must throw TASK_PROMPT_REQUIRED"
+
+    $missingFileCaught = $false
+    try {
+        & $OrchestratorScript -WorkspaceRoot $TestRoot -TaskPromptFile (Join-Path $TestRoot "no-such-prompt.txt") -DevProvider "mock" -ReviewProvider "mock" | Out-Null
+    } catch {
+        if ($_.Exception.Message -match "TASK_PROMPT_FILE_NOT_FOUND") { $missingFileCaught = $true }
+    }
+    Assert-True $missingFileCaught "Missing TaskPromptFile path must throw TASK_PROMPT_FILE_NOT_FOUND"
+
+    # 16. Default mailbox path must live under .ai-workspace, not the target repo root
+    $defaultMbWs = Join-Path $TestRoot "default-mb-ws"
+    [System.IO.Directory]::CreateDirectory($defaultMbWs) | Out-Null
+    $resDefaultMb = & $OrchestratorScript `
+        -WorkspaceRoot $defaultMbWs `
+        -TaskPrompt "Default mailbox isolation task" `
+        -Feature "FeatureDefaultMb" `
+        -DevProvider "mock" `
+        -ReviewProvider "mock" `
+        -VerifyCommand "exit 0" `
+        -MaxRounds 1 `
+        -PassThru
+    Assert-Equal $resDefaultMb.status "APPROVED" "Default mailbox loop should complete APPROVED"
+    $expectedDefaultMb = Join-Path $defaultMbWs ".ai-workspace\specs\features\FeatureDefaultMb\review-mailbox.json"
+    Assert-True (Test-Path -LiteralPath $expectedDefaultMb) "Default mailbox must be written under .ai-workspace/specs/features/<Feature>/"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $defaultMbWs "review-mailbox.json"))) "Default mailbox must not pollute the target repo root"
 
     # Clean up test discussion file
     if (Test-Path -LiteralPath (Join-Path $TestRoot "requirement-discussion.json")) {

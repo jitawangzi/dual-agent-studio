@@ -7,7 +7,7 @@
 
 ## 一、核心特性
 
-- 🎯 **跨项目通用（Workspace-Agnostic）**：可指向任何本地代码仓库（如 `D:\project\agent-sop`、`D:\svn\server_new` 等），零侵入。
+- 🎯 **跨项目通用（Workspace-Agnostic）**：可指向任何本地代码仓库（如 `D:\project\agent-sop`、`D:\svn\server_new` 等）。讨论记录、默认 mailbox 与实施计划写入目标仓的 `.ai-workspace/`，不污染仓库根目录。
 - 🤖 **多引擎与模型深度调优**：
   - **Dev Agent**：Claude Code CLI、GitHub Copilot CLI、Aider、Antigravity；支持自由指定模型与思考深度（Reasoning Effort / Thinking Tokens）。
   - **Reviewer Agent**：GitHub Copilot CLI（支持 Session Resume `9fa43261...`、`gpt-5.4`、`claude-3.7-sonnet`、`o3-mini`）、Claude 等。
@@ -15,6 +15,8 @@
 - 🔍 **实时 Git 变更查看器（Diff Viewer）**：无需跳出浏览器即可查看未提交变更与文件增删高亮。
 - 💻 **实时日志流（Live SSE Logs）**：双 Agent 与测试门禁的实时终端控制台输出。
 - 📦 **自动提交（Auto Commit）**：审查通过（APPROVED）后自动创建 Git Commit。
+- ⚡ **共识后可选自动开跑**：驾驶舱勾选「需求讨论达成共识后自动进入编码闭环」即可跳过人工确认闸门。
+- 🔌 **代理继承**：引擎不强制 `127.0.0.1:10809`。启动脚本在环境变量为空时才写入该默认值；设置 `DUAL_AGENT_NO_PROXY=1` 可完全跳过。
 
 ---
 
@@ -37,7 +39,7 @@ pwsh -NoProfile -File ./start.ps1
 ```powershell
 pwsh -NoProfile -File ./engine/orchestrator.ps1 `
     -WorkspaceRoot "D:\project\agent-sop" `
-    -TaskPrompt "优化两阶段事务协调器" `
+    -TaskPromptFile "D:\tmp\task-prompt.txt" `
     -DevProvider "claude" `
     -DevModel "claude-3-7-sonnet-20250219" `
     -DevReasoningEffort "high" `

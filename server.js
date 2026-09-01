@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const PORT = process.env.PORT || 3700;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -30,6 +30,7 @@ let discussionGeneration = 0;         // Incremented per discussion or on abort 
 let logs = [];
 let stoppedByUser = false;
 let autoResumeAttempts = 0;
+let activePromptFile = null;
 const sseClients = new Set();
 
 function broadcast(eventType, data) {
@@ -192,6 +193,170 @@ function getMailbox(workspaceRoot, customMailboxPath, feature) {
     return null;
 }
 
+function getDiscussionRecordCandidates(workspaceRoot) {
+    return [
+        path.join(workspaceRoot, '.ai-workspace', 'requirement-discussion.json'),
+        path.join(workspaceRoot, 'requirement-discussion.json')
+    ];
+}
+
+function readDiscussionRecord(workspaceRoot) {
+    if (!workspaceRoot) return null;
+    for (const p of getDiscussionRecordCandidates(workspaceRoot)) {
+        try {
+            if (fs.existsSync(p)) {
+                return JSON.parse(fs.readFileSync(p, 'utf-8'));
+            }
+        } catch {}
+    }
+    return null;
+}
+
+function writeDiscussionRecord(workspaceRoot, record) {
+    if (!workspaceRoot || !fs.existsSync(workspaceRoot)) return null;
+    const isolatedDir = path.join(workspaceRoot, '.ai-workspace');
+    fs.mkdirSync(isolatedDir, { recursive: true });
+    const isolatedPath = path.join(isolatedDir, 'requirement-discussion.json');
+    fs.writeFileSync(isolatedPath, JSON.stringify(record, null, 2), 'utf-8');
+    return isolatedPath;
+}
+
+function getStudioProxyUrl(env = process.env) {
+    for (const k of ['http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'DUAL_AGENT_PROXY', 'ALL_PROXY', 'all_proxy']) {
+        if (env[k] && String(env[k]).trim()) return String(env[k]).trim();
+    }
+    return null;
+}
+
+function applyStudioProxyToEnv(env) {
+    const proxy = getStudioProxyUrl(env);
+    if (!proxy) return env;
+    for (const k of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'all_proxy', 'grpc_proxy', 'GRPC_PROXY']) {
+        if (!env[k]) env[k] = proxy;
+    }
+    return env;
+}
+
+function writeTaskPromptFile(text) {
+    const p = path.join(os.tmpdir(), `dual_agent_prompt_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.txt`);
+    fs.writeFileSync(p, text || '', 'utf8');
+    return p;
+}
+
+function cleanupTaskPromptFile(filePath) {
+    if (!filePath) return;
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+}
+
+const DIFF_BLACKLIST = [
+    /\.lock$/i, /package-lock\.json$/i, /pnpm-lock\.yaml$/i,
+    /\.jar$/i, /\.exe$/i, /\.dll$/i, /\.png$/i, /\.jpg$/i, /\.jpeg$/i, /\.gif$/i, /\.ico$/i,
+    /node_modules[\\/]/i, /\.git[\\/]/i, /build[\\/]/i, /target[\\/]/i, /dist[\\/]/i,
+    /review-mailbox\.json$/i, /projects\.json$/i, /\.log$/i, /\.tmp$/i
+];
+
+function isDiffBlacklisted(relPath) {
+    const normalized = String(relPath || '').replace(/\\/g, '/');
+    return DIFF_BLACKLIST.some(p => p.test(normalized));
+}
+
+function runGit(workspaceRoot, args, maxBuffer = 1024 * 1024) {
+    return spawnSync('git', args, {
+        cwd: workspaceRoot,
+        encoding: 'utf8',
+        maxBuffer,
+        windowsHide: true
+    });
+}
+
+function getSafeWorkspaceDiff(workspaceRoot, maxTotalChars = 64000, maxFileBytes = 262144) {
+    if (!workspaceRoot || !fs.existsSync(workspaceRoot)) {
+        return { diff: '', status: '', error: 'Workspace path does not exist.' };
+    }
+
+    const inside = runGit(workspaceRoot, ['rev-parse', '--is-inside-work-tree']);
+    if (inside.status !== 0) {
+        return { diff: '[Workspace is not a git repository or has no version control initialized. Diff inspection skipped.]', status: '', error: null };
+    }
+
+    const chunks = [];
+    let total = 0;
+    const pushChunk = (text) => {
+        if (!text) return;
+        if (total >= maxTotalChars) return;
+        const remaining = maxTotalChars - total;
+        const slice = text.length > remaining ? text.slice(0, remaining) : text;
+        chunks.push(slice);
+        total += slice.length;
+    };
+
+    const headOk = runGit(workspaceRoot, ['rev-parse', '--verify', 'HEAD']).status === 0;
+    if (headOk) {
+        const nameOut = runGit(workspaceRoot, ['diff', '--name-only', 'HEAD']);
+        if (nameOut.status === 0 && nameOut.stdout) {
+            for (const relFile of nameOut.stdout.split(/\r?\n/)) {
+                if (total >= maxTotalChars) break;
+                const trimmed = relFile.trim();
+                if (!trimmed || isDiffBlacklisted(trimmed)) continue;
+                const fullPath = path.join(workspaceRoot, trimmed);
+                try {
+                    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                        const size = fs.statSync(fullPath).size;
+                        if (size > maxFileBytes) {
+                            pushChunk(`\n=== Tracked File: ${trimmed} (Size: ${size} bytes) - Exceeded 256KB limit, diff skipped ===\n`);
+                            continue;
+                        }
+                    } else {
+                        const sizeRes = runGit(workspaceRoot, ['cat-file', '-s', `HEAD:${trimmed.replace(/\\/g, '/')}`]);
+                        const headSize = parseInt(String(sizeRes.stdout || '').trim(), 10);
+                        if (sizeRes.status === 0 && Number.isFinite(headSize) && headSize > maxFileBytes) {
+                            pushChunk(`\n=== Tracked File: ${trimmed} (Deleted from HEAD, Size: ${headSize} bytes) - Exceeded 256KB limit, diff skipped ===\n`);
+                            continue;
+                        }
+                    }
+                } catch {}
+
+                const fileDiff = runGit(workspaceRoot, ['diff', 'HEAD', '--', trimmed], maxFileBytes + 8192);
+                const diffText = fileDiff.stdout || '';
+                if (diffText.length > maxFileBytes) {
+                    pushChunk(`\n=== Tracked File: ${trimmed} (Diff size: ${diffText.length} chars) - Exceeded 256KB limit, diff skipped ===\n`);
+                } else {
+                    pushChunk(diffText);
+                }
+            }
+        }
+    }
+
+    const statusRes = runGit(workspaceRoot, ['status', '--porcelain', '-uall']);
+    const statusText = statusRes.stdout || '';
+    if (total < maxTotalChars && statusText) {
+        for (const uLine of statusText.split(/\r?\n/)) {
+            if (total >= maxTotalChars) break;
+            const m = uLine.trim().match(/^\?\?\s+(.*)$/);
+            if (!m) continue;
+            const uPath = m[1].trim().replace(/^"|"$/g, '');
+            if (isDiffBlacklisted(uPath)) continue;
+            const fullUPath = path.join(workspaceRoot, uPath);
+            try {
+                if (!fs.existsSync(fullUPath) || !fs.statSync(fullUPath).isFile()) continue;
+                const size = fs.statSync(fullUPath).size;
+                if (size > maxFileBytes) {
+                    pushChunk(`\n=== Untracked File: ${uPath} (Size: ${size} bytes) - Exceeded 256KB limit, skipped ===\n`);
+                } else {
+                    const content = fs.readFileSync(fullUPath, 'utf8');
+                    pushChunk(`\n=== Untracked File: ${uPath} ===\n${content}\n`);
+                }
+            } catch {}
+        }
+    }
+
+    let diff = chunks.join('');
+    if (diff.length >= maxTotalChars) {
+        diff += `\n\n[WARNING: Git diff truncated at ${maxTotalChars} characters to protect Reviewer context window. Remaining changes omitted.]`;
+    }
+    return { diff, status: statusText, error: null };
+}
+
 // Helper to map and sanitize reasoning effort levels for GitHub Copilot CLI
 function sanitizeCopilotEffort(effort) {
     if (!effort) return null;
@@ -252,15 +417,12 @@ function resolveEffectiveSessionId({ explicitId, workspaceRoot, feature, mailbox
             }
         }
 
-        // Check Root Discussion
-        const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
-        if (fs.existsSync(discPath)) {
-            try {
-                const disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
-                const cand = role === 'dev' ? disc.devSessionId : disc.reviewSessionId;
-                const sanitized = sanitizeSessionId(cand);
-                if (sanitized) return { sessionId: sanitized, source: 'discussion' };
-            } catch {}
+        // Check Root Discussion (.ai-workspace first, then legacy root file)
+        const disc = readDiscussionRecord(workspaceRoot);
+        if (disc) {
+            const cand = role === 'dev' ? disc.devSessionId : disc.reviewSessionId;
+            const sanitized = sanitizeSessionId(cand);
+            if (sanitized) return { sessionId: sanitized, source: 'discussion' };
         }
     }
 
@@ -306,21 +468,15 @@ function resolveStudioSessionIds(options = {}) {
 function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, feature = null) {
     if (!workspaceRoot || !fs.existsSync(workspaceRoot)) return false;
 
-    // 1. Update or create requirement-discussion.json in workspace root
+    // 1. Update or create isolated discussion record under .ai-workspace
     try {
-        const discPath = path.join(workspaceRoot, 'requirement-discussion.json');
-        let disc = {};
-        if (fs.existsSync(discPath)) {
-            try {
-                disc = JSON.parse(fs.readFileSync(discPath, 'utf-8'));
-            } catch {}
-        }
-        disc.savedAt = disc.savedAt || new Date().toISOString();
-        disc.devSessionId = devSessionId;
-        disc.reviewSessionId = reviewSessionId;
-        fs.writeFileSync(discPath, JSON.stringify(disc, null, 2), 'utf-8');
+        const existing = readDiscussionRecord(workspaceRoot) || {};
+        existing.savedAt = existing.savedAt || new Date().toISOString();
+        existing.devSessionId = devSessionId;
+        existing.reviewSessionId = reviewSessionId;
+        writeDiscussionRecord(workspaceRoot, existing);
     } catch (e) {
-        console.error('Failed to persist to requirement-discussion.json:', e);
+        console.error('Failed to persist to .ai-workspace/requirement-discussion.json:', e);
     }
 
     // 2. Update feature discussion-history.json and review-mailbox.json if feature specs exist
@@ -408,13 +564,13 @@ function shouldAutoResumeLoop(mailbox, config = {}) {
     return true;
 }
 
-function buildOrchestratorArgs(config, sessionInfo) {
+function buildOrchestratorArgs(config, sessionInfo, promptFile) {
     const orchestratorScript = path.join(__dirname, 'engine', 'orchestrator.ps1');
     const psArgs = [
         '-NoProfile',
         '-File', orchestratorScript,
         '-WorkspaceRoot', config.workspaceRoot,
-        '-TaskPrompt', config.taskPrompt
+        '-TaskPromptFile', promptFile
     ];
 
     if (config.feature) psArgs.push('-Feature', config.feature);
@@ -448,14 +604,10 @@ function launchOrchestratorProcess(config, { isResume = false } = {}) {
         forceNew: !!config.forceNewSessions
     });
 
-    const psArgs = buildOrchestratorArgs(config, sessionInfo);
-    const procEnv = { ...process.env };
-    if (!procEnv.http_proxy) procEnv.http_proxy = 'http://127.0.0.1:10809';
-    if (!procEnv.https_proxy) procEnv.https_proxy = 'http://127.0.0.1:10809';
-    if (!procEnv.HTTP_PROXY) procEnv.HTTP_PROXY = 'http://127.0.0.1:10809';
-    if (!procEnv.HTTPS_PROXY) procEnv.HTTPS_PROXY = 'http://127.0.0.1:10809';
-    if (!procEnv.all_proxy) procEnv.all_proxy = 'http://127.0.0.1:10809';
-    if (!procEnv.ALL_PROXY) procEnv.ALL_PROXY = 'http://127.0.0.1:10809';
+    const promptFile = writeTaskPromptFile(config.taskPrompt || '');
+    activePromptFile = promptFile;
+    const psArgs = buildOrchestratorArgs(config, sessionInfo, promptFile);
+    const procEnv = applyStudioProxyToEnv({ ...process.env });
 
     activeProcess = spawn('pwsh', psArgs, {
         cwd: config.workspaceRoot,
@@ -482,6 +634,8 @@ function launchOrchestratorProcess(config, { isResume = false } = {}) {
     });
 
     activeProcess.on('close', code => {
+        cleanupTaskPromptFile(promptFile);
+        if (activePromptFile === promptFile) activePromptFile = null;
         currentMailbox = getMailbox(config.workspaceRoot, config.mailboxPath, config.feature);
         const maxRounds = Number(config.maxRounds || currentMailbox?.maxRounds || 4);
         const canResume = !stoppedByUser
@@ -525,9 +679,7 @@ async function executeDiscussionAgent({ provider, model, reasoningEffort, sessio
         const ws = (workspaceRoot && fs.existsSync(workspaceRoot)) ? workspaceRoot : process.cwd();
 
         let psCmd = '';
-        const env = { ...process.env };
-        if (!env.http_proxy) env.http_proxy = 'http://127.0.0.1:10809';
-        if (!env.https_proxy) env.https_proxy = 'http://127.0.0.1:10809';
+        const env = applyStudioProxyToEnv({ ...process.env });
 
         const provLower = (provider || 'copilot').toLowerCase();
 
@@ -943,12 +1095,8 @@ Conclude with your verdict:
                     suggestedFeature: responseData.suggestedFeature
                 };
 
-                const rootDiscPath = path.join(workspaceRoot, 'requirement-discussion.json');
-                fs.writeFileSync(rootDiscPath, JSON.stringify(discRecord, null, 2), 'utf-8');
-
-                const rootPlanPath = path.join(workspaceRoot, 'IMPLEMENTATION_PLAN.md');
+                const isolatedPath = writeDiscussionRecord(workspaceRoot, discRecord);
                 const planHeader = `# Technical Implementation Plan & Consensus Blueprint\n\n> **Auto-generated by Dual-Agent Studio** (${new Date().toLocaleString()})\n> **Initial Requirement**: "${vaguePrompt}"\n> **Consensus State**: ${consensusReached ? '✅ Consensus Reached' : '⚠️ Discussion Completed'}\n\n---\n\n`;
-                fs.writeFileSync(rootPlanPath, planHeader + finalSynthesizedPlan, 'utf-8');
 
                 const featDir = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features', responseData.suggestedFeature);
                 if (!fs.existsSync(featDir)) {
@@ -956,6 +1104,9 @@ Conclude with your verdict:
                 }
                 fs.writeFileSync(path.join(featDir, 'discussion-history.json'), JSON.stringify(discRecord, null, 2), 'utf-8');
                 fs.writeFileSync(path.join(featDir, 'implementation-plan.md'), planHeader + finalSynthesizedPlan, 'utf-8');
+                if (isolatedPath) {
+                    appendLog(`📦 讨论记录已写入 ${isolatedPath}（未污染目标仓库根目录）`, 'system');
+                }
             }
         } catch (e) {
             console.error('Failed to persist discussion plan:', e);
@@ -1277,10 +1428,8 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
-            const rootDiscPath = path.join(queryWs, 'requirement-discussion.json');
-            if (fs.existsSync(rootDiscPath)) {
-                const content = fs.readFileSync(rootDiscPath, 'utf-8');
-                const data = JSON.parse(content);
+            const data = readDiscussionRecord(queryWs);
+            if (data) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, discussion: data }));
                 return;
@@ -1399,21 +1548,17 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const gitProc = spawn('git', ['diff', 'HEAD'], { cwd: ws, shell: process.platform === 'win32' });
-        let diffText = '';
-        gitProc.stdout.on('data', d => diffText += d.toString('utf-8'));
-        gitProc.on('close', () => {
-            const statProc = spawn('git', ['status', '--porcelain', '-uall'], { cwd: ws, shell: process.platform === 'win32' });
-            let statText = '';
-            statProc.stdout.on('data', d => statText += d.toString('utf-8'));
-            statProc.on('close', () => {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    diff: diffText,
-                    status: statText
-                }));
-            });
-        });
+        const safe = getSafeWorkspaceDiff(ws);
+        if (safe.error && !safe.diff) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: safe.error }));
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            diff: safe.diff,
+            status: safe.status
+        }));
         return;
     }
 
@@ -1505,5 +1650,9 @@ module.exports = {
     getMailbox,
     detectDiscussionVerdict,
     shouldAutoResumeLoop,
-    buildOrchestratorArgs
+    buildOrchestratorArgs,
+    getSafeWorkspaceDiff,
+    readDiscussionRecord,
+    writeDiscussionRecord,
+    getStudioProxyUrl
 };

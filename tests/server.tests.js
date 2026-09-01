@@ -1,6 +1,6 @@
 const http = require('http');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const assert = require('assert');
 
 const TEST_PORT = 3788;
@@ -170,7 +170,23 @@ async function runServerTests() {
             assert.strictEqual(discWsRes.body.reviewSessionId, 'disc-rev-session-002');
             assert.strictEqual(discWsRes.body.devSource, 'discussion');
             assert.strictEqual(discWsRes.body.reviewSource, 'discussion');
-            console.log('✅ GET /api/sessions resolved session IDs from requirement-discussion.json (source: discussion).');
+            console.log('✅ GET /api/sessions resolved session IDs from legacy root requirement-discussion.json (source: discussion).');
+
+            // Isolated .ai-workspace discussion takes precedence over the legacy root file
+            fs.mkdirSync(path.join(tempTestWs, '.ai-workspace'), { recursive: true });
+            fs.writeFileSync(
+                path.join(tempTestWs, '.ai-workspace', 'requirement-discussion.json'),
+                JSON.stringify({
+                    devSessionId: 'iso-dev-session-001',
+                    reviewSessionId: 'iso-rev-session-002'
+                }, null, 2),
+                'utf-8'
+            );
+            const isoDiscRes = await httpRequest('GET', `/api/sessions?workspace=${encodeURIComponent(tempTestWs)}`);
+            assert.strictEqual(isoDiscRes.body.devSessionId, 'iso-dev-session-001');
+            assert.strictEqual(isoDiscRes.body.reviewSessionId, 'iso-rev-session-002');
+            assert.strictEqual(isoDiscRes.body.devSource, 'discussion');
+            console.log('✅ GET /api/sessions prefers .ai-workspace/requirement-discussion.json over the repo-root file.');
 
             // 8d. Mailbox present -> Mailbox > Discussion
             const mbData = {
@@ -215,10 +231,13 @@ async function runServerTests() {
             assert.strictEqual(resetRes.body.reviewSessionId, 'reset-rev-444');
             assert.strictEqual(resetRes.body.persisted, true);
 
-            // Verify persistence to requirement-discussion.json and review-mailbox.json
-            const updatedDisc = JSON.parse(fs.readFileSync(path.join(tempTestWs, 'requirement-discussion.json'), 'utf-8'));
+            // Verify persistence to isolated .ai-workspace discussion record and root mailbox
+            const isolatedDiscPath = path.join(tempTestWs, '.ai-workspace', 'requirement-discussion.json');
+            assert(fs.existsSync(isolatedDiscPath), 'Session reset must persist to .ai-workspace/requirement-discussion.json');
+            const updatedDisc = JSON.parse(fs.readFileSync(isolatedDiscPath, 'utf-8'));
             assert.strictEqual(updatedDisc.devSessionId, 'reset-dev-333');
             assert.strictEqual(updatedDisc.reviewSessionId, 'reset-rev-444');
+            assert(!fs.existsSync(path.join(tempTestWs, 'IMPLEMENTATION_PLAN.md')), 'Session persist must not create root IMPLEMENTATION_PLAN.md');
 
             const updatedMb = JSON.parse(fs.readFileSync(path.join(tempTestWs, 'review-mailbox.json'), 'utf-8'));
             assert.strictEqual(updatedMb.devSessionId, 'reset-dev-333');
@@ -294,11 +313,75 @@ async function runServerTests() {
             assert(appJsRes.body.includes('resetWorkspaceSessions'), 'app.js must define resetWorkspaceSessions');
             console.log('✅ Static file serving verified for public/app.js.');
 
-            // 13. Test discussion failure on empty agent output (no synthetic plan generated)
+            // 13. Isolated discussion writes + safe diff + proxy inherit + TaskPromptFile argv
+            const {
+                getStudioProxyUrl,
+                getSafeWorkspaceDiff,
+                writeDiscussionRecord,
+                buildOrchestratorArgs
+            } = require('../server');
+
+            assert.strictEqual(getStudioProxyUrl({}), null, 'getStudioProxyUrl must not invent a 10809 fallback');
+            assert.strictEqual(getStudioProxyUrl({ PATH: '/usr/bin' }), null);
+            assert.strictEqual(getStudioProxyUrl({ http_proxy: 'http://127.0.0.1:9' }), 'http://127.0.0.1:9');
+            assert.strictEqual(getStudioProxyUrl({ DUAL_AGENT_PROXY: 'http://proxy.example:8080' }), 'http://proxy.example:8080');
+            console.log('✅ getStudioProxyUrl inherits ambient proxy and never hardcodes 10809.');
+
+            const hugePrompt = 'x'.repeat(40000);
+            const psArgs = buildOrchestratorArgs(
+                {
+                    workspaceRoot: tempTestWs,
+                    taskPrompt: hugePrompt,
+                    devProvider: 'mock',
+                    reviewProvider: 'mock',
+                    verifyCommand: 'exit 0',
+                    maxRounds: 1
+                },
+                { devSessionId: 'aaaaaaaa', reviewSessionId: 'bbbbbbbb' },
+                path.join(os.tmpdir(), 'dual_agent_prompt_test.txt')
+            );
+            assert(psArgs.includes('-TaskPromptFile'), 'Orchestrator argv must use -TaskPromptFile');
+            assert(!psArgs.includes('-TaskPrompt'), 'Orchestrator argv must not pass -TaskPrompt (Windows 32K CreateProcess limit)');
+            assert(!psArgs.some(a => typeof a === 'string' && a.length > 10000), 'Orchestrator argv must not embed the huge prompt body');
+            console.log('✅ buildOrchestratorArgs passes TaskPrompt via temp file, not argv.');
+
+            const recPath = writeDiscussionRecord(tempTestWs, {
+                savedAt: new Date().toISOString(),
+                vaguePrompt: 'isolated write',
+                devSessionId: 'write-dev-1234',
+                reviewSessionId: 'write-rev-5678'
+            });
+            assert(recPath && recPath.includes(`${path.sep}.ai-workspace${path.sep}`), 'Discussion record must live under .ai-workspace');
+            assert(fs.existsSync(recPath));
+            assert(!fs.existsSync(path.join(tempTestWs, 'IMPLEMENTATION_PLAN.md')), 'writeDiscussionRecord must not create root IMPLEMENTATION_PLAN.md');
+            console.log('✅ writeDiscussionRecord isolates discussion under .ai-workspace (no root IMPLEMENTATION_PLAN.md).');
+
+            const diffRepo = path.join(tempTestWs, 'diff-repo');
+            fs.mkdirSync(diffRepo, { recursive: true });
+            const git = (args) => spawnSync('git', args, { cwd: diffRepo, encoding: 'utf8' });
+            git(['init', '-q']);
+            git(['config', 'user.name', 'TestBot']);
+            git(['config', 'user.email', 'testbot@example.com']);
+            fs.writeFileSync(path.join(diffRepo, 'tracked.txt'), 'hello\n');
+            fs.mkdirSync(path.join(diffRepo, 'node_modules'), { recursive: true });
+            fs.writeFileSync(path.join(diffRepo, 'node_modules', 'skip.js'), 'should-not-appear\n');
+            git(['add', 'tracked.txt']);
+            git(['commit', '-m', 'init', '-q']);
+            fs.appendFileSync(path.join(diffRepo, 'tracked.txt'), 'changed\n');
+            fs.writeFileSync(path.join(diffRepo, 'untracked-small.txt'), 'Small untracked content');
+            fs.writeFileSync(path.join(diffRepo, 'untracked-large.bin'), Buffer.alloc(300000, 0x42));
+            const safeDiff = getSafeWorkspaceDiff(diffRepo);
+            assert(safeDiff.diff.includes('tracked.txt'), 'Safe diff must include tracked modification');
+            assert(safeDiff.diff.includes('untracked-small.txt') && safeDiff.diff.includes('Small untracked content'), 'Safe diff must include small untracked file');
+            assert(safeDiff.diff.includes('Exceeded 256KB limit'), 'Safe diff must skip oversized untracked files');
+            assert(!safeDiff.diff.includes('should-not-appear'), 'Safe diff must skip node_modules');
+            assert(safeDiff.diff.length <= 65000, 'Safe diff must honor 64k total budget');
+            console.log('✅ getSafeWorkspaceDiff per-file 256KB / 64k total budget verified.');
+
             const emptyPlanPath = path.join(tempTestWs, 'IMPLEMENTATION_PLAN.md');
             if (fs.existsSync(emptyPlanPath)) fs.unlinkSync(emptyPlanPath);
-            assert(!fs.existsSync(emptyPlanPath), 'IMPLEMENTATION_PLAN.md should not exist before discussion failure test');
-            console.log('✅ Discussion safety verified: no synthetic plans generated on empty output.');
+            assert(!fs.existsSync(emptyPlanPath), 'IMPLEMENTATION_PLAN.md must never appear at the workspace root');
+            console.log('✅ Discussion safety verified: no synthetic plans generated at repo root.');
         } finally {
             try {
                 fs.rmSync(tempTestWs, { recursive: true, force: true });

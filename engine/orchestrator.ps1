@@ -12,7 +12,7 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$TaskPrompt,
 
     [Parameter(Mandatory = $true)]
@@ -44,6 +44,9 @@ param(
     [int]$MaxRounds = 4,
     [int]$MaxSelfHealAttempts = 3,
 
+    # Large prompts must travel via file — Windows CreateProcess argv is capped near 32K.
+    [string]$TaskPromptFile,
+
     # Custom/Mock hooks for extensible providers or test simulation
     [scriptblock]$DevCustomHook,
     [scriptblock]$ReviewerCustomHook,
@@ -55,20 +58,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# Auto-configure local proxy if not set
-if (-not $env:http_proxy) { $env:http_proxy = "http://127.0.0.1:10809" }
-if (-not $env:https_proxy) { $env:https_proxy = "http://127.0.0.1:10809" }
-if (-not $env:HTTP_PROXY) { $env:HTTP_PROXY = "http://127.0.0.1:10809" }
-if (-not $env:HTTPS_PROXY) { $env:HTTPS_PROXY = "http://127.0.0.1:10809" }
-if (-not $env:ALL_PROXY) { $env:ALL_PROXY = "http://127.0.0.1:10809" }
+# Load Core Modular Orchestration Library before resolving prompt/proxy.
+. (Join-Path $PSScriptRoot "orchestrator-lib.ps1")
+
+if (-not [string]::IsNullOrWhiteSpace($TaskPromptFile) -and [string]::IsNullOrWhiteSpace($TaskPrompt)) {
+    if (-not (Test-Path -LiteralPath $TaskPromptFile -PathType Leaf)) {
+        throw "TASK_PROMPT_FILE_NOT_FOUND: Task prompt file '$TaskPromptFile' does not exist."
+    }
+    $TaskPrompt = [System.IO.File]::ReadAllText($TaskPromptFile, [System.Text.UTF8Encoding]::new($false))
+}
+if ([string]::IsNullOrWhiteSpace($TaskPrompt)) {
+    throw "TASK_PROMPT_REQUIRED: Provide -TaskPrompt or -TaskPromptFile."
+}
 
 if (-not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
     throw "WORKSPACE_NOT_FOUND: Target workspace path '$WorkspaceRoot' does not exist."
 }
 $wsPhysical = [System.IO.Path]::GetFullPath($WorkspaceRoot)
-
-# Load Core Modular Orchestration Library
-. (Join-Path $PSScriptRoot "orchestrator-lib.ps1")
 
 # Resolve Feature Name
 $effectiveFeature = if (-not [string]::IsNullOrWhiteSpace($Feature)) {
@@ -77,21 +83,13 @@ $effectiveFeature = if (-not [string]::IsNullOrWhiteSpace($Feature)) {
     "Task_" + [DateTime]::UtcNow.ToString("yyyyMMdd_HHmmss")
 }
 
-# Resolve Mailbox File Path
+# Resolve Mailbox File Path — default into .ai-workspace so the target repo root stays clean.
 $effectiveMailboxPath = if (-not [string]::IsNullOrWhiteSpace($MailboxPath)) {
     if ([System.IO.Path]::IsPathRooted($MailboxPath)) { $MailboxPath } else { Join-Path $wsPhysical $MailboxPath }
+} elseif (Test-Path -LiteralPath (Join-Path $wsPhysical ".ai-sop\review-mailbox.json")) {
+    Join-Path $wsPhysical ".ai-sop\review-mailbox.json"
 } else {
-    $featureSpecDir = Join-Path $wsPhysical ".ai-workspace\specs\features\$effectiveFeature"
-    if (Test-Path -LiteralPath $featureSpecDir) {
-        Join-Path $featureSpecDir "review-mailbox.json"
-    } else {
-        $sopDir = Join-Path $wsPhysical ".ai-sop"
-        if (Test-Path -LiteralPath $sopDir) {
-            Join-Path $sopDir "review-mailbox.json"
-        } else {
-            Join-Path $wsPhysical "review-mailbox.json"
-        }
-    }
+    Join-Path $wsPhysical ".ai-workspace\specs\features\$effectiveFeature\review-mailbox.json"
 }
 
 # Check for review-mailbox.ps1 in target workspace

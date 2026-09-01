@@ -13,7 +13,7 @@
 
 ### Key Architectural Tenets:
 1. **Zero External Runtime Dependencies**: The backend runs entirely on Node.js built-in standard libraries (`http`, `fs`, `path`, `os`, `child_process`) without `npm install` requirements.
-2. **Workspace-Agnostic**: The studio can target any external codebase without modifying or polluting target repositories (except generating temporary mailbox state files during execution).
+2. **Workspace-Agnostic**: The studio can target any external codebase without polluting the target repo root. Runtime state (discussion records, default mailbox, implementation plan) lives under `.ai-workspace/` (plus optional `.ai-sop/`). Never write `IMPLEMENTATION_PLAN.md` or `requirement-discussion.json` at the target root.
 3. **Fail-Fast Rigor**: External agent CLI failures, syntax crashes, or test gate failures must halt or self-heal immediately—never allow false-positive "APPROVED" verdicts on broken runs.
 4. **Session Isolation**: Developer and Reviewer maintain independent, persistent session UUIDs to enable continuous contextual memory across iterative rounds.
 
@@ -52,10 +52,10 @@ d:\project\dual-agent-studio\
 - **Port**: Default `3700` (configurable via `PORT` env).
 - **REST Endpoints**:
   - `GET /api/status?workspace=...`: Returns current running state, process PID, and latest `mailbox` state.
-  - `POST /api/start`: Spawns `pwsh -File engine/orchestrator.ps1` with user configuration. If the process exits while mailbox status is still `WAITING_DEV` or `WAITING_REVIEW`, the server auto-respawns the loop (unless the user clicked Stop).
+  - `POST /api/start`: Spawns `pwsh -File engine/orchestrator.ps1` with `-TaskPromptFile` (never a huge `-TaskPrompt` argv). If the process exits while mailbox status is still `WAITING_DEV` or `WAITING_REVIEW`, the server auto-respawns the loop (unless the user clicked Stop).
   - `POST /api/stop`: Gracefully terminates the running PowerShell orchestrator process tree.
-  - `POST /api/discuss`: Runs multi-round collaborative requirements analysis between Dev and Reviewer before execution.
-  - `GET /api/diff?workspace=...`: Executes `git diff HEAD` and `git status --porcelain` on the target workspace.
+  - `POST /api/discuss`: Runs multi-round collaborative requirements analysis between Dev and Reviewer before execution. Persists to `.ai-workspace/requirement-discussion.json` (legacy root file is still readable).
+  - `GET /api/diff?workspace=...`: Per-file 256KB / total 64k safe git diff (skips lockfiles, binaries, `node_modules`, mailbox JSON).
   - `GET /api/projects` & `POST /api/projects`: Reads/writes recent workspace history in `projects.json`.
   - `POST /api/detect-workspace`: Auto-detects project stack (Maven, Gradle, npm, Go, Cargo, Python, etc.) and infers default test gate commands.
   - `GET /api/models`: Serves `models-config.json` for frontend model/reasoning dropdowns.
@@ -71,7 +71,7 @@ d:\project\dual-agent-studio\
   5. **Exception Interception**: Catches CLI crashes or uncaught exceptions, records `status = "FAILED"`, persists `$mailbox.error`, and terminates cleanly.
 
 ### 3.3 Mailbox State Protocol (`review-mailbox.json`)
-The orchestrator and frontend communicate via a state mailbox JSON file:
+Default path is `.ai-sop/review-mailbox.json` if present, otherwise `.ai-workspace/specs/features/<Feature>/review-mailbox.json`. The orchestrator and frontend communicate via this state mailbox JSON file:
 ```json
 {
   "schemaVersion": "1.0",
@@ -107,6 +107,11 @@ The orchestrator and frontend communicate via a state mailbox JSON file:
 ## 4. Critical Windows & CLI Invocation Rules for Agents
 
 When extending or maintaining this project, AI agents **MUST** follow these Windows-specific execution rules:
+
+### 4.0 Proxy Inheritance (Engine Must Not Hardcode 10809)
+- Launchers (`start.ps1` / `restart.ps1` / `start.bat`) default `http_proxy`/`https_proxy` to `http://127.0.0.1:10809` when unset.
+- Set `DUAL_AGENT_NO_PROXY=1` to skip launcher injection.
+- `engine/orchestrator-lib.ps1` and `server.js` only inherit ambient `http_proxy` / `HTTPS_PROXY` / `DUAL_AGENT_PROXY` — they must never inject a hardcoded 10809 fallback.
 
 ### 4.1 Multi-Line Prompt Passing to CLI Agents (Never Use `-p` with Quotes)
 - **Problem**: In Windows PowerShell and `cmd.exe`, passing multi-line strings containing newlines and double quotes via `-p "<text>"` causes npm wrapper scripts (`copilot.ps1`, `claude.cmd`) to truncate arguments at the first newline, triggering `error: option '-p, --prompt <text>' argument missing`.
@@ -154,6 +159,9 @@ The test suite validates:
 5. Markdown-fenced JSON review output extraction.
 6. Independent Dev & Reviewer session ID preservation.
 7. Agent CLI crash fail-fast handling and `FAILED` mailbox state transition.
+8. Live CLI stdout streaming (line callbacks fire before process exit).
+9. `-TaskPromptFile` loading and default mailbox isolation under `.ai-workspace/`.
+10. Engine proxy inherit (no hardcoded 10809) and safe `/api/diff` budgets.
 
 ### 5.2 Server Process Management
 - If modifying `server.js`, restart the node process so that changes take effect immediately:

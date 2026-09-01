@@ -84,6 +84,7 @@ function saveUserPreferences() {
       maxRounds: document.getElementById('maxRounds')?.value || '4',
       maxSelfHealAttempts: document.getElementById('maxSelfHealAttempts')?.value || '3',
       autoCommit: document.getElementById('autoCommit')?.checked ?? true,
+      autoStartAfterConsensus: document.getElementById('autoStartAfterConsensus')?.checked ?? false,
       verifyCommand: document.getElementById('verifyCommand')?.value || '',
       devProvider: document.getElementById('devProvider')?.value || 'claude',
       devSeries: document.getElementById('devSeries')?.value || '',
@@ -125,6 +126,7 @@ function loadUserPreferences() {
     setVal('maxRounds', p.maxRounds);
     setVal('maxSelfHealAttempts', p.maxSelfHealAttempts);
     setChecked('autoCommit', p.autoCommit);
+    setChecked('autoStartAfterConsensus', p.autoStartAfterConsensus);
     setVal('verifyCommand', p.verifyCommand);
     setVal('devSessionId', p.devSessionId);
     setVal('reviewSessionId', p.reviewSessionId);
@@ -1088,6 +1090,10 @@ function initSSE() {
           btn.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
         }
         showToast(data.consensusReached ? '双 Agent 达成共识方案！' : '需求推演完成！', 'success');
+        if (data.consensusReached && document.getElementById('autoStartAfterConsensus')?.checked) {
+          showToast('已开启自动执行：正在把共识方案送入编码闭环...', 'info');
+          approvePlanAndStart();
+        }
       }
     } catch {}
   });
