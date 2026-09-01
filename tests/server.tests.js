@@ -313,6 +313,14 @@ async function runServerTests() {
             assert(appJsRes.body.includes('resetWorkspaceSessions'), 'app.js must define resetWorkspaceSessions');
             console.log('✅ Static file serving verified for public/app.js.');
 
+            const indexRes = await httpRequest('GET', '/');
+            assert.strictEqual(indexRes.status, 200);
+            const csp = indexRes.headers['content-security-policy'] || '';
+            assert(csp.includes("default-src 'self'"), 'HTML responses must send a local CSP');
+            assert(!csp.includes('fonts.googleapis.com'), 'CSP must not allow Google Fonts');
+            assert(typeof indexRes.body === 'string' && !indexRes.body.includes('fonts.googleapis.com'), 'Served index.html must not load Google Fonts');
+            console.log('✅ CSP header and Google Fonts isolation verified.');
+
             // 13. Isolated discussion writes + safe diff + proxy inherit + TaskPromptFile argv
             const {
                 getStudioProxyUrl,
@@ -344,6 +352,33 @@ async function runServerTests() {
             assert(!psArgs.includes('-TaskPrompt'), 'Orchestrator argv must not pass -TaskPrompt (Windows 32K CreateProcess limit)');
             assert(!psArgs.some(a => typeof a === 'string' && a.length > 10000), 'Orchestrator argv must not embed the huge prompt body');
             console.log('✅ buildOrchestratorArgs passes TaskPrompt via temp file, not argv.');
+
+            const {
+                buildDiscussionAgentCommand,
+                detectWorkspace
+            } = require('../server');
+            const cursorCmd = buildDiscussionAgentCommand({ provider: 'cursor', model: 'gpt-5', safeTmp: '/tmp/p.txt' });
+            assert(cursorCmd.includes('--print') && cursorCmd.includes('--trust') && cursorCmd.includes('--force'), 'Cursor discussion must use agent --print --trust --force');
+            assert(cursorCmd.includes('cursor-agent'), 'Cursor discussion must resolve cursor-agent / agent, not the GUI');
+            assert(!cursorCmd.includes('[CURSOR]'), 'Cursor discussion must not fake success when CLI is missing');
+            const hugeDisc = 'y'.repeat(20000);
+            assert(!cursorCmd.includes(hugeDisc), 'Discussion command must not embed the prompt in argv');
+
+            const codexCmd = buildDiscussionAgentCommand({ provider: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', safeTmp: '/tmp/p.txt' });
+            assert(codexCmd.includes('codex exec'), 'Codex discussion must use `codex exec`');
+            assert(codexCmd.includes('-a never') && codexCmd.includes('-s workspace-write'), 'Codex discussion must be unattended workspace-write');
+            assert(codexCmd.trim().endsWith('-') || codexCmd.includes(' -'), 'Codex discussion must read prompt from stdin via -');
+            assert(!codexCmd.includes('[CODEX]'), 'Codex discussion must not fake success when CLI is missing');
+
+            const piCmd = buildDiscussionAgentCommand({ provider: 'pi', model: 'openai/gpt-4o', reasoningEffort: 'high', safeTmp: '/tmp/p.txt' });
+            assert(piCmd.includes('pi -p'), 'Pi discussion must use print mode (-p/--print), not a quoted --prompt');
+            assert(piCmd.includes('--thinking high'), 'Pi discussion must map reasoning effort to --thinking');
+            assert(!piCmd.includes('[PI]'), 'Pi discussion must not fake success when CLI is missing');
+
+            const detected = detectWorkspace(path.join(__dirname, '..'));
+            assert.strictEqual(detected.success, true);
+            assert.strictEqual(detected.verifyCommand, detected.recommendedCommand);
+            console.log('✅ Cursor/Codex/Pi discussion commands fail-fast and pass prompts via stdin.');
 
             const recPath = writeDiscussionRecord(tempTestWs, {
                 savedAt: new Date().toISOString(),

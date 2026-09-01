@@ -174,6 +174,59 @@ try {
     $deltaMs = ($script:streamHits[1].At - $script:streamHits[0].At).TotalMilliseconds
     Assert-True ($deltaMs -ge 300) "Live streaming must deliver LINE_ONE before LINE_TWO sleep completes (delta=$deltaMs ms)"
 
+    # A7.4 Cursor / Codex / Pi real CLI arg builders (prompt stays on stdin, never argv)
+    $cursorArgs = Build-CursorAgentArgs -Model "gpt-5" -WorkspaceRoot $TestRoot
+    Assert-True ($cursorArgs -contains "--print") "Cursor agent must use --print (headless)"
+    Assert-True ($cursorArgs -contains "--trust") "Cursor agent must use --trust"
+    Assert-True ($cursorArgs -contains "--force") "Cursor agent must use --force/--yolo"
+    Assert-True ($cursorArgs -notcontains "Implement the feature") "Cursor args must not embed the task prompt"
+    $cursorAsk = Build-CursorAgentArgs -AskMode
+    Assert-True ($cursorAsk -contains "ask") "Cursor reviewer args must set --mode ask"
+
+    $codexDev = Build-CodexExecArgs -Model "gpt-5.4" -ReasoningEffort "high" -Role "dev"
+    Assert-True ($codexDev[0] -eq "exec") "Codex must use exec subcommand"
+    Assert-True ($codexDev -contains "workspace-write") "Codex dev must use workspace-write sandbox"
+    Assert-Equal $codexDev[-1] "-" "Codex must force stdin prompt via trailing -"
+    $codexRev = Build-CodexExecArgs -Role "review"
+    Assert-True ($codexRev -contains "read-only") "Codex reviewer must use read-only sandbox"
+
+    $piArgs = Build-PiAgentArgs -Model "openai/gpt-4o" -ReasoningEffort "high"
+    Assert-True ($piArgs[0] -eq "-p") "Pi must use -p/--print, not --prompt"
+    Assert-True ($piArgs -contains "--thinking") "Pi must map reasoning effort to --thinking"
+    $piReview = Build-PiAgentArgs -ReadOnly
+    Assert-True ($piReview -contains "read,grep,find,ls") "Pi reviewer must restrict tools to read-only"
+
+    Assert-Equal (Format-CodexReasoningEffort "64000") "xhigh" "Codex max maps to xhigh"
+    Assert-Equal (Format-PiThinking "off") "off" "Pi off thinking"
+
+    if (-not (Get-CursorAgentExecutable)) {
+        $cursorMissing = $false
+        try {
+            Invoke-DevTurn -Provider "cursor" -Prompt "should not silently succeed" -WorkspaceRoot $TestRoot
+        } catch {
+            if ($_.Exception.Message -match "PROVIDER_UNAVAILABLE") { $cursorMissing = $true }
+        }
+        Assert-True $cursorMissing "Missing Cursor Agent CLI must fail-fast with PROVIDER_UNAVAILABLE"
+    }
+    if (-not (Get-CodexExecutable)) {
+        $codexMissing = $false
+        try {
+            Invoke-DevTurn -Provider "codex" -Prompt "should not silently succeed" -WorkspaceRoot $TestRoot
+        } catch {
+            if ($_.Exception.Message -match "PROVIDER_UNAVAILABLE") { $codexMissing = $true }
+        }
+        Assert-True $codexMissing "Missing Codex CLI must fail-fast with PROVIDER_UNAVAILABLE"
+    }
+    if (-not (Get-PiExecutable)) {
+        $piMissing = $false
+        try {
+            Invoke-DevTurn -Provider "pi" -Prompt "should not silently succeed" -WorkspaceRoot $TestRoot
+        } catch {
+            if ($_.Exception.Message -match "PROVIDER_UNAVAILABLE") { $piMissing = $true }
+        }
+        Assert-True $piMissing "Missing Pi CLI must fail-fast with PROVIDER_UNAVAILABLE"
+    }
+
     # A8. Resolve-EffectiveSessionId (Multi-tier resolution: Explicit > Mailbox > Feature Discussion > Root Discussion > UUID)
     $sessTestDir = Join-Path $TestRoot "sess-resolve-test"
     [System.IO.Directory]::CreateDirectory($sessTestDir) | Out-Null

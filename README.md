@@ -9,8 +9,8 @@
 
 - 🎯 **跨项目通用（Workspace-Agnostic）**：可指向任何本地代码仓库（如 `D:\project\agent-sop`、`D:\svn\server_new` 等）。讨论记录、默认 mailbox 与实施计划写入目标仓的 `.ai-workspace/`，不污染仓库根目录。
 - 🤖 **多引擎与模型深度调优**：
-  - **Dev Agent**：Claude Code CLI、GitHub Copilot CLI、Aider、Antigravity；支持自由指定模型与思考深度（Reasoning Effort / Thinking Tokens）。
-  - **Reviewer Agent**：GitHub Copilot CLI（支持 Session Resume `9fa43261...`、`gpt-5.4`、`claude-3.7-sonnet`、`o3-mini`）、Claude 等。
+  - **Dev Agent**：Claude Code CLI、GitHub Copilot CLI、Aider、Antigravity、**Cursor Agent CLI**（`agent` / `cursor-agent`，不是 GUI 的 `cursor`）、**OpenAI Codex CLI**（`codex exec`）、**Pi Coding Agent**（`pi -p`）。提示词一律走 stdin / 临时文件，CLI 不在 PATH 时立即失败而不是假装成功。
+  - **Reviewer Agent**：同上；Codex 审查使用 `read-only` sandbox，Cursor 使用 `--mode ask`，Pi 限制为只读工具。
 - 📊 **可视化多轮流转时间轴（Round Timeline）**：直观展示每一轮 Dev 提交、自动化测试状态、Reviewer 审查判定（APPROVED / REJECTED）、缺陷清单与下轮自愈指令。
 - 🔍 **实时 Git 变更查看器（Diff Viewer）**：无需跳出浏览器即可查看未提交变更与文件增删高亮。
 - 💻 **实时日志流（Live SSE Logs）**：双 Agent 与测试门禁的实时终端控制台输出。
@@ -61,6 +61,8 @@ D:\project\dual-agent-studio\
 ├── start.bat                   # 一键启动批处理 (自动打开浏览器)
 ├── start.ps1                   # PowerShell 启动脚本
 ├── server.js                   # 纯原生零依赖 Node.js HTTP + SSE 本地服务
+├── lib\
+│   └── studio-core.js          # mailbox / 会话 / Diff / 代理 / CLI 命令拼装
 ├── package.json                # 项目元数据
 ├── README.md                   # 本说明文档
 ├── engine\

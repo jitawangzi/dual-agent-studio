@@ -34,6 +34,8 @@ d:\project\dual-agent-studio\
 ├── engine/
 │   ├── orchestrator.ps1        # Core PowerShell Autonomous Loop Orchestrator engine
 │   └── browse-folder.ps1       # Native Windows folder picker dialog bridge
+├── lib/
+│   └── studio-core.js          # Pure helpers: mailbox, sessions, diff, proxy, provider command builders
 ├── public/                     # Modern dark-themed web cockpit (Pure Vanilla JS/CSS)
 │   ├── index.html              # Cockpit layout: Workspace, Config, Discussion, Cockpit, Logs
 │   ├── app.js                  # Reactive state machine, SSE log listener, diff parser, model picker
@@ -162,6 +164,8 @@ The test suite validates:
 8. Live CLI stdout streaming (line callbacks fire before process exit).
 9. `-TaskPromptFile` loading and default mailbox isolation under `.ai-workspace/`.
 10. Engine proxy inherit (no hardcoded 10809) and safe `/api/diff` budgets.
+11. Cursor Agent / Codex exec / Pi print-mode builders; missing CLIs throw `PROVIDER_UNAVAILABLE`.
+12. Local CSP (no Google Fonts) and `lib/studio-core.js` helper extraction.
 
 ### 5.2 Server Process Management
 - If modifying `server.js`, restart the node process so that changes take effect immediately:

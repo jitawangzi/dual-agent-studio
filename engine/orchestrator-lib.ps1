@@ -300,6 +300,104 @@ function Get-ClaudeExecutable {
     return $null
 }
 
+function Get-FirstCommandPath {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$Names,
+        [string[]]$SkipBaseNames = @()
+    )
+    $found = @(Get-Command $Names -ErrorAction SilentlyContinue)
+    foreach ($c in $found) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($c.Name).ToLowerInvariant()
+        if ($SkipBaseNames -contains $base) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($c.Source)) { return $c.Source }
+    }
+    return $null
+}
+
+function Get-CursorAgentExecutable {
+    return Get-FirstCommandPath -Names @("agent", "agent.exe", "agent.cmd", "cursor-agent", "cursor-agent.exe", "cursor-agent.cmd") -SkipBaseNames @("cursor")
+}
+
+function Get-CodexExecutable {
+    return Get-FirstCommandPath -Names @("codex", "codex.exe", "codex.cmd", "codex.ps1")
+}
+
+function Get-PiExecutable {
+    return Get-FirstCommandPath -Names @("pi", "pi.exe", "pi.cmd", "pi.ps1")
+}
+
+function Format-CodexReasoningEffort {
+    param([string]$effort)
+    if ([string]::IsNullOrWhiteSpace($effort)) { return $null }
+    $lower = $effort.Trim().ToLowerInvariant()
+    switch ($lower) {
+        { $_ -in @("none", "off", "disable", "disabled", "false") } { return $null }
+        { $_ -in @("low", "fast", "minimal", "min", "2048", "4096") } { return "low" }
+        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
+        { $_ -in @("xhigh", "extra-high", "max", "64000", "65536") } { return "xhigh" }
+        { $_ -in @("high", "think", "deepthink", "24576", "32768") } { return "high" }
+        { $_ -in @("low", "medium", "high", "xhigh") } { return $lower }
+        default { return "high" }
+    }
+}
+
+function Format-PiThinking {
+    param([string]$effort)
+    if ([string]::IsNullOrWhiteSpace($effort)) { return $null }
+    $lower = $effort.Trim().ToLowerInvariant()
+    switch ($lower) {
+        { $_ -in @("none", "off", "disable", "disabled", "false", "0") } { return "off" }
+        { $_ -in @("minimal", "min") } { return "minimal" }
+        { $_ -in @("low", "fast", "2048", "4096") } { return "low" }
+        { $_ -in @("medium", "med", "8192", "16384") } { return "medium" }
+        { $_ -in @("high", "think", "deepthink", "24576", "32768", "xhigh", "max", "64000", "65536") } { return "high" }
+        { $_ -in @("off", "minimal", "low", "medium", "high", "xhigh") } { return $lower }
+        default { return "high" }
+    }
+}
+
+function Build-CursorAgentArgs {
+    param(
+        [string]$Model,
+        [string]$WorkspaceRoot,
+        [switch]$AskMode
+    )
+    $argsList = @("--print", "--trust", "--force", "--sandbox", "disabled")
+    if ($AskMode) { $argsList += @("--mode", "ask") }
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) { $argsList += @("--workspace", $WorkspaceRoot) }
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+    return $argsList
+}
+
+function Build-CodexExecArgs {
+    param(
+        [string]$Model,
+        [string]$ReasoningEffort,
+        [ValidateSet("dev", "review")][string]$Role = "dev"
+    )
+    $sandbox = if ($Role -eq "review") { "read-only" } else { "workspace-write" }
+    $argsList = @("exec", "--skip-git-repo-check", "-a", "never", "-s", $sandbox)
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+    $effort = Format-CodexReasoningEffort $ReasoningEffort
+    if (-not [string]::IsNullOrWhiteSpace($effort)) { $argsList += @("-c", "model_reasoning_effort=$effort") }
+    $argsList += "-"
+    return $argsList
+}
+
+function Build-PiAgentArgs {
+    param(
+        [string]$Model,
+        [string]$ReasoningEffort,
+        [switch]$ReadOnly
+    )
+    $argsList = @("-p")
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
+    $think = Format-PiThinking $ReasoningEffort
+    if (-not [string]::IsNullOrWhiteSpace($think)) { $argsList += @("--thinking", $think) }
+    if ($ReadOnly) { $argsList += @("--tools", "read,grep,find,ls") }
+    return $argsList
+}
+
 function Sanitize-SessionId {
     param([string]$SessionId)
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return $null }
@@ -840,31 +938,27 @@ function Invoke-DevTurn {
             if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode): $($res.Combined)" }
         }
         "cursor" {
-            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($cursorCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Cursor)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Cursor CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[CURSOR] Dispatched instruction to Cursor workspace: $Prompt" -ForegroundColor Gray
+            $cursorExe = Get-CursorAgentExecutable
+            if (-not $cursorExe) {
+                throw "PROVIDER_UNAVAILABLE: Cursor Agent CLI ('agent' / 'cursor-agent') is not found in PATH. The GUI 'cursor' binary is not a coding-agent CLI."
             }
+            $argsList = Build-CursorAgentArgs -Model $Model -WorkspaceRoot $WorkspaceRoot
+            $res = Invoke-CliWithTimeout -ExecutablePath $cursorExe -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Cursor)"
+            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Cursor Agent CLI exited with code $($res.ExitCode)." }
         }
         "codex" {
-            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($codexCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Codex)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Codex CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[CODEX] Dispatched instruction: $Prompt" -ForegroundColor Gray
-            }
+            $codexExe = Get-CodexExecutable
+            if (-not $codexExe) { throw "PROVIDER_UNAVAILABLE: OpenAI Codex CLI ('codex') is not found in PATH." }
+            $argsList = Build-CodexExecArgs -Model $Model -ReasoningEffort $ReasoningEffort -Role "dev"
+            $res = Invoke-CliWithTimeout -ExecutablePath $codexExe -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Codex)"
+            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Codex CLI exited with code $($res.ExitCode)." }
         }
         "pi" {
-            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($piCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Pi)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Pi CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[PI AGENT] Executing prompt: $Prompt" -ForegroundColor Gray
-            }
+            $piExe = Get-PiExecutable
+            if (-not $piExe) { throw "PROVIDER_UNAVAILABLE: Pi coding agent CLI ('pi') is not found in PATH." }
+            $argsList = Build-PiAgentArgs -Model $Model -ReasoningEffort $ReasoningEffort
+            $res = Invoke-CliWithTimeout -ExecutablePath $piExe -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Pi)"
+            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Pi CLI exited with code $($res.ExitCode)." }
         }
         "mock" {
             Write-Host "[MOCK DEV] Simulating code changes in $WorkspaceRoot for prompt: $Prompt" -ForegroundColor Gray
@@ -1000,30 +1094,32 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
             throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
         }
         "cursor" {
-            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1", "cursor.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $cursorCmd) { throw "PROVIDER_UNAVAILABLE: Cursor CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
+            $cursorExe = Get-CursorAgentExecutable
+            if (-not $cursorExe) {
+                throw "PROVIDER_UNAVAILABLE: Cursor Agent CLI ('agent' / 'cursor-agent') is not found in PATH. The GUI 'cursor' binary is not a coding-agent CLI."
+            }
+            $argsList = Build-CursorAgentArgs -Model $Model -WorkspaceRoot $WorkspaceRoot -AskMode
+            $res = Invoke-CliWithTimeout -ExecutablePath $cursorExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Cursor CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Cursor CLI returned non-JSON review output: $($res.Combined)"
+            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Cursor Agent CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
+            throw "PROVIDER_OUTPUT_INVALID: Cursor Agent CLI returned non-JSON review output: $($res.Combined)"
         }
         "codex" {
-            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1", "codex.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $codexCmd) { throw "PROVIDER_UNAVAILABLE: Codex CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
+            $codexExe = Get-CodexExecutable
+            if (-not $codexExe) { throw "PROVIDER_UNAVAILABLE: OpenAI Codex CLI ('codex') is not found in PATH." }
+            $argsList = Build-CodexExecArgs -Model $Model -ReasoningEffort $ReasoningEffort -Role "review"
+            $res = Invoke-CliWithTimeout -ExecutablePath $codexExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
             if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Codex CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
             throw "PROVIDER_OUTPUT_INVALID: Codex CLI returned non-JSON review output: $($res.Combined)"
         }
         "pi" {
-            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1", "pi.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $piCmd) { throw "PROVIDER_UNAVAILABLE: Pi CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
+            $piExe = Get-PiExecutable
+            if (-not $piExe) { throw "PROVIDER_UNAVAILABLE: Pi coding agent CLI ('pi') is not found in PATH." }
+            $argsList = Build-PiAgentArgs -Model $Model -ReasoningEffort $ReasoningEffort -ReadOnly
+            $res = Invoke-CliWithTimeout -ExecutablePath $piExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
             $jsonObj = Extract-JsonFromText -Text $res.Combined
             if ($null -ne $jsonObj) { return $jsonObj }
             if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Pi CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
