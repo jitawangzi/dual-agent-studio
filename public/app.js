@@ -1,3 +1,8 @@
+let currentPlanRecord = null;
+let selectedRunId = null;
+let selectedRunRecord = null;
+let runsWorkspace = null;
+let discussionActive = false;
 // Dual-Agent Studio Frontend Controller (Multi-Engine, Cascading Models & Discussion Support)
 
 let activeTab = 'timeline';
@@ -83,7 +88,12 @@ function saveUserPreferences() {
       featureName: document.getElementById('featureName')?.value || '',
       maxRounds: document.getElementById('maxRounds')?.value || '4',
       maxSelfHealAttempts: document.getElementById('maxSelfHealAttempts')?.value || '3',
-      autoCommit: document.getElementById('autoCommit')?.checked ?? true,
+      autoCommit: document.getElementById('autoCommit')?.checked ?? false,
+      mode: document.querySelector('input[name="reqMode"]:checked')?.value || 'direct',
+      auditScope: document.getElementById('auditScope').value.trim(),
+      cleanRoundsRequired: document.getElementById('cleanRoundsRequired').value,
+      maxNoProgressRounds: document.getElementById('maxNoProgressRounds').value,
+      timeoutSeconds: document.getElementById('timeoutSeconds').value,
       verifyCommand: document.getElementById('verifyCommand')?.value || '',
       devProvider: document.getElementById('devProvider')?.value || 'claude',
       devSeries: document.getElementById('devSeries')?.value || '',
@@ -130,6 +140,10 @@ function loadUserPreferences() {
     setVal('reviewSessionId', p.reviewSessionId);
     setVal('vaguePrompt', p.vaguePrompt);
     setVal('taskPrompt', p.taskPrompt);
+    setVal('auditScope', p.auditScope);
+    setVal('cleanRoundsRequired', p.cleanRoundsRequired);
+    setVal('maxNoProgressRounds', p.maxNoProgressRounds);
+    setVal('timeoutSeconds', p.timeoutSeconds);
 
     if (p.devProvider && document.getElementById('devProvider')) {
       document.getElementById('devProvider').value = p.devProvider;
@@ -167,6 +181,10 @@ function loadUserPreferences() {
       if (p.reviewReasoningEffort && document.getElementById('reviewReasoningEffort')) {
         document.getElementById('reviewReasoningEffort').value = p.reviewReasoningEffort;
       }
+    }
+    if (['direct', 'discuss', 'audit', 'parallel'].includes(p.mode)) {
+      document.querySelector(`input[name="reqMode"][value="${p.mode}"]`).checked = true;
+      toggleReqMode(p.mode);
     }
   } catch (e) {
     console.error('Failed to load preferences:', e);
@@ -232,13 +250,21 @@ function switchTab(tab) {
 function toggleReqMode(mode) {
   const directBox = document.getElementById('directReqBox');
   const discussBox = document.getElementById('discussReqBox');
-  if (mode === 'direct') {
+  if (mode === 'direct' || mode === 'audit') {
     if (directBox) directBox.style.display = 'block';
     if (discussBox) discussBox.style.display = 'none';
+  } else if (mode === 'parallel') {
+    if (directBox) directBox.style.display = 'none';
+    if (discussBox) discussBox.style.display = 'none';
+    switchTab('audit');
   } else {
     if (directBox) directBox.style.display = 'none';
     if (discussBox) discussBox.style.display = 'block';
   }
+  const banner = document.querySelector('#directReqBox .mode-tip-banner');
+  if (banner) banner.textContent = mode === 'audit' ? '先审查已有工程，再修复与独立复核。任务描述可留空，也可补充关注点。' : '执行明确需求，运行测试并由独立 Agent 复核。';
+  const start = document.getElementById('btnStart');
+  if (start) start.textContent = mode === 'parallel' ? '▶ 启动并行审核' : mode === 'audit' ? '▶ 启动工程审查与修复' : '▶ 启动执行与验收';
   saveUserPreferences();
 }
 
@@ -725,7 +751,8 @@ async function saveModelsManager() {
 }
 
 // --- REQUIREMENT DISCUSSION PHASE ---
-async function startDiscussion() {
+async function startDiscussion(refinement = null) {
+  if (window.planningApp && !refinement) return window.planningApp.start();
   const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
   const vague = document.getElementById('vaguePrompt')?.value?.trim() || '';
   const maxDiscussionRounds = parseInt(document.getElementById('maxDiscussionRounds')?.value, 10) || 2;
@@ -769,6 +796,8 @@ async function startDiscussion() {
   const payload = {
     workspaceRoot: ws,
     vaguePrompt: vague,
+    parentPlanId: refinement?.planId,
+    humanFeedback: refinement?.feedback,
     maxDiscussionRounds,
     devProvider: document.getElementById('devProvider')?.value,
     devModel: effectiveDevModel,
@@ -828,6 +857,8 @@ async function loadWorkspaceDiscussion(wsPath) {
       } catch (e) {}
     }
 
+    currentPlanRecord = disc?.planId ? { ...disc, id: disc.planId, version: disc.planVersion } : null;
+    document.getElementById('consensusBadge').textContent = currentPlanRecord?.status === 'APPROVED' ? `已批准 · 版本 ${currentPlanRecord.version}` : '待人工决策与批准';
     if (disc) {
       const vagueInput = document.getElementById('vaguePrompt');
       if (vagueInput && !vagueInput.value && disc.vaguePrompt) {
@@ -945,22 +976,35 @@ function renderDiscussionRounds(rounds) {
   });
 }
 
-function approvePlanAndStart() {
-  const finalPlan = document.getElementById('finalPlanEditor')?.value?.trim() || '';
-  if (!finalPlan) {
-    showToast('执行方案不能为空！', 'warning');
-    return;
-  }
-
-  // Populate into taskPrompt and switch to direct mode execution
-  const taskPromptEl = document.getElementById('taskPrompt');
-  if (taskPromptEl) taskPromptEl.value = finalPlan;
-  toggleReqMode('direct');
-  const directRadio = document.querySelector('input[name="reqMode"][value="direct"]');
-  if (directRadio) directRadio.checked = true;
-
-  switchTab('timeline');
-  startLoop();
+async function approvePlanOnly() {
+  try {
+    const workspaceRoot = document.getElementById('workspaceRoot').value.trim();
+    const text = document.getElementById('finalPlanEditor').value.trim();
+    if (!currentPlanRecord) throw new Error('请先完成新版方案讨论，再批准。');
+    if (currentPlanRecord.status === 'APPROVED') {
+      if (text !== currentPlanRecord.finalPlan) throw new Error('已批准的方案有改动，请继续讨论生成新版后重新批准。');
+      return currentPlanRecord;
+    }
+    const res = await fetch('/api/plans/' + currentPlanRecord.id + '/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceRoot, version: currentPlanRecord.version, text })
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error);
+    currentPlanRecord = result;
+    document.getElementById('consensusBadge').textContent = '已批准 · 版本 ' + result.version;
+    showToast('批准版本已保存。', 'success');
+    return result;
+  } catch (error) { showToast(error.message, 'error'); return null; }
+}
+async function approvePlanAndStart() {
+  const plan = await approvePlanOnly();
+  if (plan) await startLoop({ mode: 'plan', planId: plan.id, approvalId: plan.approval.id, taskPrompt: plan.finalPlan });
+}
+function refinePlan() {
+  const feedback = document.getElementById('humanPlanFeedback').value.trim();
+  if (!currentPlanRecord || !feedback) { showToast('请先填写补充意见。', 'warning'); return; }
+  startDiscussion({ planId: currentPlanRecord.id, feedback });
 }
 
 // --- SSE EVENT HANDLING ---
@@ -995,7 +1039,8 @@ function initSSE() {
     try {
       const data = JSON.parse(e.data);
       updateRunningState(data.isRunning);
-      if (data.mailbox) {
+      refreshRuns();
+      if (data.mailbox && !selectedRunId) {
         renderTimeline(data.mailbox);
       }
     } catch {}
@@ -1004,7 +1049,7 @@ function initSSE() {
   eventSource.addEventListener('mailbox_update', (e) => {
     try {
       const mailbox = JSON.parse(e.data);
-      if (mailbox) {
+      if (mailbox && !selectedRunId) {
         renderTimeline(mailbox);
       }
     } catch {}
@@ -1061,6 +1106,8 @@ function initSSE() {
     try {
       const data = JSON.parse(e.data);
       if (data) {
+        currentPlanRecord = { ...data, id: data.planId, version: data.planVersion, status: 'AWAITING_APPROVAL' };
+        document.getElementById('consensusBadge').textContent = data.consensusReached ? '技术共识达成 / 待人工批准' : '仍有分歧 / 待人工决策';
         const statusBadge = document.getElementById('discussionStatusBadge');
         if (statusBadge) {
           statusBadge.className = 'discussion-status-badge success';
@@ -1154,7 +1201,10 @@ async function fetchStatus() {
     const res = await fetch(`/api/status${ws ? `?workspace=${encodeURIComponent(ws)}` : ''}`);
     const data = await res.json();
     updateRunningState(data.isRunning, data.isDiscussing);
-    if (data.mailbox) {
+    await refreshRuns();
+    await window.auditApp?.refresh(data);
+    await window.planningApp?.refresh(data);
+    if (data.mailbox && !selectedRunId) {
       renderTimeline(data.mailbox);
     }
   } catch (e) {
@@ -1164,6 +1214,9 @@ async function fetchStatus() {
 
 function updateRunningState(running, discussing = false) {
   isRunning = running;
+  discussionActive = discussing;
+  window.auditApp?.setBusy(running || discussing);
+  window.planningApp?.setBusy(running || discussing);
   const statusBadge = document.getElementById('statusBadge');
   const statusText = document.getElementById('statusText');
   const btnStart = document.getElementById('btnStart');
@@ -1176,17 +1229,18 @@ function updateRunningState(running, discussing = false) {
     if (btnStart) btnStart.disabled = true;
     if (btnStop) btnStop.disabled = false;
   } else {
-    if (btnStart) btnStart.disabled = false;
+    if (btnStart) btnStart.disabled = discussing;
     if (btnStop) btnStop.disabled = !discussing;
   }
 
   if (btnStartDiscuss) {
     if (discussing) {
       btnStartDiscuss.disabled = true;
-      btnStartDiscuss.textContent = '⏳ 双 Agent 正在多轮推演讨论中...';
+      btnStartDiscuss.textContent = '⏳ 团队正在调查与讨论…';
+      if (statusText) statusText.textContent = '方案讨论中';
     } else {
-      btnStartDiscuss.disabled = false;
-      btnStartDiscuss.textContent = '💬 启动双 Agent 多轮对齐与共识推演';
+      btnStartDiscuss.disabled = running;
+      btnStartDiscuss.textContent = '💬 调查工程并启动团队讨论';
     }
   }
 }
@@ -1281,10 +1335,10 @@ function renderTimeline(mb) {
     if (r.reviewVerdict && r.reviewVerdict.issues && r.reviewVerdict.issues.length > 0) {
       const rows = r.reviewVerdict.issues.map(iss => `
         <tr>
-          <td><code>${iss.file || '-'}:${iss.lineRange || ''}</code></td>
+          <td><code>${escapeHtml(iss.file || '-')}:${escapeHtml(iss.lineRange || '')}</code></td>
           <td><span class="severity-pill ${iss.severity}">${iss.severity}</span></td>
-          <td>${iss.problem || ''}</td>
-          <td>${iss.fixSuggestion || ''}</td>
+          <td>${escapeHtml(iss.problem || '')}</td>
+          <td>${escapeHtml(iss.fixSuggestion || '')}</td>
         </tr>
       `).join('');
       issuesHtml = `
@@ -1335,9 +1389,12 @@ function renderTimeline(mb) {
 }
 
 // --- LAUNCH & CONTROL LOOP ---
-async function startLoop() {
+async function startLoop(overrides = {}) {
+  const mode = document.querySelector('input[name="reqMode"]:checked')?.value || 'direct';
+  if (mode === 'parallel' && !overrides.mode) { await window.auditApp?.start(); return; }
+  if (mode === 'discuss' && !overrides.mode) { showToast('请先讨论并批准方案。', 'warning'); return; }
   const ws = document.getElementById('workspaceRoot')?.value?.trim() || '';
-  const prompt = document.getElementById('taskPrompt')?.value?.trim() || '';
+  const prompt = overrides.taskPrompt || document.getElementById('taskPrompt')?.value?.trim() || (mode === 'audit' ? '审查约定范围内的现有工程，发现并修复已确认 Bug，独立复核旧 Bug 和新增问题。' : '');
 
   if (!ws) {
     showToast('请填写项目物理根目录路径！', 'warning');
@@ -1366,11 +1423,17 @@ async function startLoop() {
     verifyCommand: document.getElementById('verifyCommand')?.value?.trim() || undefined,
     maxRounds: parseInt(document.getElementById('maxRounds')?.value, 10) || 4,
     maxSelfHealAttempts: parseInt(document.getElementById('maxSelfHealAttempts')?.value, 10) || 3,
-    autoCommit: document.getElementById('autoCommit')?.checked ?? true
+    autoCommit: document.getElementById('autoCommit')?.checked ?? false,
+    mode: mode === 'audit' ? 'audit' : 'direct',
+    scope: document.getElementById('auditScope').value.trim(),
+    cleanRoundsRequired: Number(document.getElementById('cleanRoundsRequired').value),
+    maxNoProgressRounds: Number(document.getElementById('maxNoProgressRounds').value),
+    timeoutSeconds: Number(document.getElementById('timeoutSeconds').value),
+    ...overrides
   };
 
   try {
-    const res = await fetch('/api/start', {
+    const res = await fetch('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1380,8 +1443,10 @@ async function startLoop() {
       showToast(`启动失败: ${result.error}`, 'error');
     } else {
       updateRunningState(true);
-      showToast('双 Agent 闭环已成功启动！', 'success');
-      switchTab('logs');
+      selectedRunId = result.runId;
+      await refreshRuns();
+      showToast('运行已创建并保存。', 'success');
+      switchTab('timeline');
     }
   } catch (e) {
     showToast(`请求异常: ${e.message}`, 'error');
@@ -1475,10 +1540,131 @@ async function fetchDiff() {
 
 function escapeHtml(str) {
   if (!str) return '';
-  return str
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+let runsRequestSequence = 0;
+async function refreshRuns() {
+  const workspace = document.getElementById('workspaceRoot').value.trim();
+  if (!workspace) return;
+  const sequence = ++runsRequestSequence;
+  try {
+    const response = await fetch('/api/runs?workspace=' + encodeURIComponent(workspace));
+    const runs = await response.json();
+    if (!response.ok || sequence !== runsRequestSequence || workspace !== document.getElementById('workspaceRoot').value.trim()) return;
+    if (runsWorkspace !== workspace) { selectedRunId = null; runsWorkspace = workspace; }
+    if (!runs.some(r => r.id === selectedRunId)) selectedRunId = runs[0]?.id || null;
+    const select = document.getElementById('runHistory');
+    select.replaceChildren();
+    for (const run of runs) {
+      const option = document.createElement('option'); option.value = run.id;
+      option.textContent = `${run.feature} · ${run.status} · ${new Date(run.createdAt).toLocaleString()}`;
+      option.selected = run.id === selectedRunId; select.appendChild(option);
+    }
+    if (!runs.length) { const option = document.createElement('option'); option.textContent = '暂无运行'; select.appendChild(option); }
+    selectedRunRecord = runs.find(r => r.id === selectedRunId) || null;
+    renderRun(selectedRunRecord);
+  } catch (error) { console.error('读取运行记录失败', error); }
+}
+async function selectRun(id) {
+  selectedRunId = id;
+  await refreshRuns();
+}
+let decisionPlans = [], decisionPlansRunId = '';
+function renderRun(run) {
+  const summary = document.getElementById('runSummary'), ledger = document.getElementById('bugLedger');
+  const resume = document.getElementById('btnResumeRun');
+  document.getElementById('runDecision').hidden = !run || !['NEEDS_ATTENTION', 'REJECTED_MAX_ROUNDS'].includes(run.status);
+  document.getElementById('runPlanChoice').hidden = run?.mode !== 'plan';
+  if (run?.mode === 'plan' && ['NEEDS_ATTENTION','REJECTED_MAX_ROUNDS'].includes(run.status)) {
+    const choice=document.getElementById('runDecisionPlan');
+    if(decisionPlansRunId!==run.id){decisionPlansRunId=run.id;decisionPlans=[];choice.replaceChildren(new Option('正在读取已批准方案…',''));}
+    fetch('/api/plans?workspace='+encodeURIComponent(run.workspaceRoot)).then(r=>r.json()).then(plans=>{
+      if(selectedRunId!==run.id||!Array.isArray(plans))return;
+      decisionPlans=plans.filter(p=>p.status==='APPROVED');const desired=choice.value||run.approval?.planId;
+      choice.replaceChildren(new Option('请选择已批准方案',''));
+      for(const p of decisionPlans)choice.add(new Option(`${p.feature||p.suggestedFeature||'方案'} · v${p.version} · ${new Date(p.approval.approvedAt).toLocaleString()}${p.id===run.approval?.planId?' · 当前方案':''}`,p.id));
+      choice.value=decisionPlans.some(p=>p.id===desired)?desired:'';
+    }).catch(()=>{});
+  }
+  resume.disabled = !run || isRunning || !['STOPPED', 'FAILED', 'INTERRUPTED'].includes(run.status);
+  if (!run) { summary.textContent = '暂无运行记录。'; ledger.replaceChildren(); document.getElementById('runArtifacts').replaceChildren(); document.getElementById('runReviewProgress').replaceChildren(); return; }
+  const statusLabels = { RUNNING: '运行中', APPROVED: '已完成验收', FAILED: '执行失败', STOPPED: '已停止',
+    INTERRUPTED: '服务中断', NEEDS_ATTENTION: '等待人工决策', REJECTED_MAX_ROUNDS: '轮数用尽，尚未完成' };
+  const pending = run.bugs.filter(b => b.status !== 'VERIFIED_CLOSED').length;
+  const phaseLabels={DEV:'开发修复',TEST:'测试门禁',TARGET_REVIEW:'逐项定向复查',REVIEW:'整体回归审核',COMPLETE:'验收完成'};
+  summary.textContent = `${statusLabels[run.status] || run.status} · ${run.mode} · 阶段：${phaseLabels[run.phase]||run.phase}\n` +
+    `第 ${run.round}/${run.maxRounds} 轮 · 待解决 ${pending} 项 · 连续验收通过 ${run.cleanRounds}/${run.config.cleanRoundsRequired} 轮\n` +
+    `测试：${run.testGate?.status || '尚未执行'}${run.approval ? ` · 已批准方案 v${run.approval.version}` : ''}\n` +
+    (run.error || run.lastReview?.summary || '正在准备任务');
+  const status = document.getElementById('statusText');
+  if (!discussionActive && (!isRunning || run.status === 'RUNNING')) {
+    if (status) status.textContent = statusLabels[run.status] || run.status;
+    document.getElementById('statusBadge').className = 'status-badge ' + (run.status === 'APPROVED' ? 'approved' : run.status === 'RUNNING' ? 'running' : 'waiting');
+  }
+  document.getElementById('roundBadge').style.display = 'inline-block';
+  document.getElementById('currentRoundText').textContent = run.round;
+  document.getElementById('maxRoundText').textContent = run.maxRounds;
+  ledger.innerHTML = `<table class="issues-table"><thead><tr><th>Bug / 状态</th><th>位置 / 严重度</th><th>问题与验收条件</th><th>最新复核证据</th></tr></thead><tbody>${run.bugs.map(b => `<tr>
+    <td>${escapeHtml(b.id)}<br>${escapeHtml(b.status)}</td>
+    <td>${escapeHtml(b.file)}:${escapeHtml(b.lineRange)}<br>${escapeHtml(b.severity)}</td>
+    <td>${escapeHtml(b.problem)}<hr>${escapeHtml(b.acceptance)}</td>
+    <td>${escapeHtml(b.history.at(-1)?.evidence || b.evidence)}${reviewEvidenceUI.refs(b.history.at(-1)?.evidenceRefs||b.evidenceRefs,'runs',run.id)}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('runReviewProgress').innerHTML=`<p>无进展计数：${escapeHtml(String(run.progressCheckpoint?.stalledRounds||0))} / ${escapeHtml(String(run.config.maxNoProgressRounds||3))}。关闭已有问题或通过完整审核会重置计数。</p>`+
+    reviewEvidenceUI.coverage(run.lastReview)+
+    (run.testGate?`<p>最近测试：${escapeHtml(run.testGate.command)} · ${escapeHtml(run.testGate.status)} · 退出码 ${escapeHtml(String(run.testGate.exitCode))} ${reviewEvidenceUI.link('runs',run.id,run.testGate.artifact,'完整测试输出')}</p>`:'')+
+    (run.acceptanceCriteria?.length?`<h4>已批准的验收条件</h4><table class="issues-table"><thead><tr><th>条件 / 验证方法</th><th>独立复核结果 / 证据</th></tr></thead><tbody>${run.acceptanceCriteria.map(c=>{const check=run.lastReview?.acceptanceChecks?.find(v=>v.id===c.id);return `<tr><td>${escapeHtml(c.id)} ${escapeHtml(c.criterion)}<br>${escapeHtml(c.verification)}</td><td>${escapeHtml({PASS:'通过',FAIL:'未通过',BLOCKED:'需人工决策'}[check?.result]||'尚未复核')}<br>${escapeHtml(check?.evidence||'')}${reviewEvidenceUI.refs(check?.evidenceRefs,'runs',run.id)}</td></tr>`;}).join('')}</tbody></table>`:'')+
+    (run.attention?`<p class="audit-warning">${escapeHtml(run.attention.summary)}</p>`:'')+
+    (run.targetedReviewHistory||[]).map(r=>`<article class="audit-verification"><h4>第 ${escapeHtml(r.round)} 轮定向复查</h4><p>${escapeHtml(r.summary)}</p>${r.verifications.map(v=>`<p>${escapeHtml(v.id)} · ${escapeHtml({RESOLVED:'满足验收条件',UNRESOLVED:'尚未解决',DISPUTED:'待人工处理争议'}[v.result]||v.result)}：${escapeHtml(v.evidence)}${reviewEvidenceUI.refs(v.evidenceRefs,'runs',run.id)}</p>`).join('')}${reviewEvidenceUI.link('runs',run.id,r.responseArtifact,'定向复查原始回答')}</article>`).join('')+
+    `<details><summary>各轮进展依据</summary><pre>${escapeHtml(JSON.stringify(run.progressHistory||[],null,2))}</pre></details>`;
+  document.getElementById('emptyTimeline').style.display = 'none';
+  document.getElementById('roundsList').replaceChildren();
+  for (const round of run.history) {
+    const card = document.createElement('div'); card.className = 'round-card';
+    const body = document.createElement('div'); body.className = 'card-section';
+    body.textContent = `第 ${round.round} 轮 · ${round.reviewVerdict.verdict} — ${round.reviewVerdict.summary}`;
+    const proof=document.createElement('div');proof.innerHTML=(round.changeEvidence?`<p>开发前源码指纹：${escapeHtml(round.changeEvidence.beforeSnapshot)}<br>开发后源码指纹：${escapeHtml(round.changeEvidence.afterSnapshot)}<br>${reviewEvidenceUI.link('runs',run.id,round.changeEvidence.artifact,'开发后 Git diff')}（相对 HEAD，含原有修改，不含未跟踪文件；${round.changeEvidence.available?'已记录':'不可用'}）</p>`:'')+reviewEvidenceUI.coverage(round.reviewVerdict)+reviewEvidenceUI.link('runs',run.id,round.testGate?.artifact,'本轮测试输出')+' '+reviewEvidenceUI.link('runs',run.id,round.reviewArtifact,'本轮审核原始回答');card.appendChild(body);card.appendChild(proof); document.getElementById('roundsList').appendChild(card);
+  }
+  fetch('/api/runs/' + run.id + '/artifacts').then(r => r.json()).then(names => {
+    if (selectedRunId !== run.id || !Array.isArray(names)) return;
+    const container = document.getElementById('runArtifacts'); container.replaceChildren();
+    for (const name of names) {
+      const link = document.createElement('a'); link.textContent = name;
+      link.href = '/api/runs/' + run.id + '/artifacts?name=' + encodeURIComponent(name);
+      link.target = '_blank'; link.rel = 'noopener'; container.appendChild(link);
+    }
+  }).catch(() => {});
+}
+async function resumeRun() {
+  if (!selectedRunId) return;
+  try {
+    const response = await fetch('/api/runs/' + selectedRunId + '/resume', { method: 'POST' });
+    const data = await response.json(); if (!response.ok) throw new Error(data.error);
+    updateRunningState(true); await refreshRuns(); showToast('恢复后先重新测试和审查。', 'success');
+  } catch (error) { showToast(error.message, 'error'); }
+}
+async function continueRunWithDecision() {
+  if (!selectedRunRecord) return;
+  try {
+    const note = document.getElementById('runDecisionText').value.trim();
+    if (!note) throw new Error('请填写人工决策依据。');
+    const body = { note, extraRounds: Number(document.getElementById('runExtraRounds').value) };
+    if (selectedRunRecord.mode === 'plan') {
+      const plan=decisionPlansRunId===selectedRunId&&decisionPlans.find(p=>p.id===document.getElementById('runDecisionPlan').value);
+      if (!plan) throw new Error('请先批准方案，并选择本次继续使用的版本。');
+      body.planId = plan.id; body.approvalId = plan.approval.id;
+    }
+    const response = await fetch('/api/runs/' + selectedRunId + '/decision', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const data = await response.json(); if (!response.ok) throw new Error(data.error);
+    updateRunningState(true); await refreshRuns();
+  } catch (error) { showToast(error.message, 'error'); }
 }
 
 // Global Exports

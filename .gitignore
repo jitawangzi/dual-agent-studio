@@ -4,3 +4,4 @@ requirement-discussion.json*
 .ai-workspace/
 *.tmp_*
 projects.json
+.studio/

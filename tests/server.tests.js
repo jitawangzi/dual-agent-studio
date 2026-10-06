@@ -2,6 +2,10 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const testDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-server-test-'));
+process.env.STUDIO_DATA_DIR = testDataRoot;
 
 const TEST_PORT = 3788;
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
@@ -294,12 +298,15 @@ async function runServerTests() {
         if (serverProcess) {
             try {
                 if (process.platform === 'win32') {
-                    spawn('taskkill', ['/F', '/T', '/PID', String(serverProcess.pid)], { shell: true });
+                    const killer = spawn('taskkill', ['/F', '/T', '/PID', String(serverProcess.pid)], { windowsHide: true });
+                    await new Promise(resolve => { killer.on('close', resolve); killer.on('error', resolve); });
                 } else {
                     serverProcess.kill('SIGKILL');
                 }
             } catch {}
         }
+        assert.equal(path.dirname(testDataRoot), fs.realpathSync(os.tmpdir()));
+        fs.rmSync(testDataRoot, { recursive: true, force: true });
     }
 }
 

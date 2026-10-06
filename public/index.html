@@ -59,8 +59,14 @@
               <label title="需求已明确，直接进入全自动编码-测试-审查闭环">
                 <input type="radio" name="reqMode" value="direct" checked onchange="toggleReqMode('direct')"> ⚡ 确定需求
               </label>
-              <label title="初步/模糊想法，双 Agent 多轮推演辩论达成共识后再执行">
+              <label title="调查工程，多位 Agent 提案与质询，人工取舍批准后再执行">
                 <input type="radio" name="reqMode" value="discuss" onchange="toggleReqMode('discuss')"> 💬 需求讨论
+              </label>
+              <label title="先检查已有工程，再修复与独立复核">
+                <input type="radio" name="reqMode" value="audit" onchange="toggleReqMode('audit')"> 🔎 审查修复
+              </label>
+              <label title="多个审核员独立只读检查，人工选择问题后再修复">
+                <input type="radio" name="reqMode" value="parallel" onchange="toggleReqMode('parallel')"> 👥 并行审核
               </label>
             </div>
           </div>
@@ -75,14 +81,18 @@
           </div>
 
           <!-- DISCUSSION MODE -->
+          <div class="form-group">
+            <label for="auditScope">检查 / 实施范围</label>
+            <input id="auditScope" value="整个工程：自有源码、测试和配置；排除依赖与生成文件">
+          </div>
           <div id="discussReqBox" class="form-group" style="display: none;">
             <div class="mode-tip-banner discuss">
-              💬 <b>多轮共识推演模式</b>：输入初步构想，开发方与审查方将自动展开多轮辩论与质询，直至就架构、风险与测试门禁达成共识。
+              💬 <b>团队方案讨论</b>：先调查工程，再独立提案与交叉质询。你决定采纳哪些建议、补全验收条件，批准后才可实施。请在右侧配置讨论成员。
             </div>
             <label for="vaguePrompt">模糊/初步想法 (Vague Idea)</label>
             <textarea id="vaguePrompt" rows="3" placeholder="例如：我想为当前服务增加一个内存缓存层，提升响应速度，但还没想好具体类和接口..."></textarea>
             
-            <div class="form-row" style="margin-top: 6px;">
+            <div class="form-row" style="display: none;" aria-hidden="true">
               <div class="form-group flex-1">
                 <label for="maxDiscussionRounds">最大推演轮次</label>
                 <select id="maxDiscussionRounds">
@@ -94,7 +104,7 @@
             </div>
 
             <button id="btnStartDiscuss" class="btn btn-sm btn-secondary" style="width: 100%; margin-top: 8px;" onclick="startDiscussion()">
-              💬 启动双 Agent 多轮对齐与共识推演
+              💬 调查工程并启动团队讨论
             </button>
           </div>
 
@@ -231,8 +241,23 @@
             <input type="text" id="verifyCommand" placeholder="pwsh -NoProfile -File ./scripts/run-all-tests.ps1" value="pwsh -NoProfile -File ./scripts/run-all-tests.ps1">
           </div>
           <div class="form-checkbox">
-            <input type="checkbox" id="autoCommit" checked>
+            <input type="checkbox" id="autoCommit">
             <label for="autoCommit">审查通过 (APPROVED) 后自动创建 Git Commit</label>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="cleanRoundsRequired">连续无新增问题轮数</label>
+              <input id="cleanRoundsRequired" type="number" min="1" max="5" value="2">
+            </div>
+            <div class="form-group flex-1">
+              <label for="timeoutSeconds">每阶段超时（秒）</label>
+              <input id="timeoutSeconds" type="number" min="1" max="7200" value="1200">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="maxNoProgressRounds">连续无进展轮数上限</label>
+            <input id="maxNoProgressRounds" type="number" min="1" max="10" value="3">
+            <small>已有问题连续未关闭且未通过整体验收时，暂停并请求人工决策。</small>
           </div>
         </div>
 
@@ -251,6 +276,8 @@
         <div class="tab-header">
           <button class="tab-btn active" onclick="switchTab('timeline')">📊 轮次流转 (Timeline)</button>
           <button class="tab-btn" id="tabBtnDiscuss" onclick="switchTab('discussion')">💬 需求讨论区 (Discussion)</button>
+          <button class="tab-btn" onclick="switchTab('audit')">👥 审核报告</button>
+          <button class="tab-btn" onclick="switchTab('issues')">📋 项目问题台账</button>
           <button class="tab-btn" onclick="switchTab('diff')">🔍 代码变更 (Git Diff)</button>
           <button class="tab-btn" onclick="switchTab('logs')">💻 实时终端日志 (Live Logs)</button>
         </div>
@@ -258,6 +285,27 @@
         <!-- TAB 1: TIMELINE -->
         <div id="tab-timeline" class="tab-content active">
           <div id="timelineContainer" class="timeline-container">
+            <section class="run-dashboard">
+              <div class="run-toolbar">
+                <label for="runHistory">运行记录</label>
+                <select id="runHistory" onchange="selectRun(this.value)"><option value="">暂无运行</option></select>
+                <button class="btn btn-sm btn-secondary" onclick="refreshRuns()">刷新</button>
+                <button id="btnResumeRun" class="btn btn-sm btn-secondary" onclick="resumeRun()" disabled>恢复运行</button>
+              </div>
+              <div id="runSummary" aria-live="polite">每次运行独立保存；恢复时先测试、复核当前代码。</div>
+              <div id="runDecision" hidden>
+                <label for="runDecisionText">人工决策 / 争议处理依据（保留原 Bug 台账）</label>
+                <textarea id="runDecisionText" rows="3" placeholder="说明采用哪个方案、争议处理依据或下一步要求。"></textarea>
+                <label for="runExtraRounds">追加审查轮数</label>
+                <input id="runExtraRounds" type="number" min="1" max="20" value="4">
+                <div id="runPlanChoice" hidden><label for="runDecisionPlan">本次继续使用的已批准方案</label><select id="runDecisionPlan"></select></div>
+                <p>方案模式改变范围时，请先在需求讨论区批准新版方案，再继续此运行。</p>
+                <button class="btn btn-secondary" onclick="continueRunWithDecision()">确认决策并继续</button>
+              </div>
+              <div id="bugLedger"></div>
+              <details open><summary>定向复查与进展</summary><div id="runReviewProgress"></div></details>
+              <details><summary>运行证据与原始记录</summary><div id="runArtifacts"></div></details>
+            </section>
             <div class="empty-state" id="emptyTimeline">
               <div class="empty-icon">☕</div>
               <p>暂无运行记录。在左侧配置任务并点击【启动全自动闭环】开始双 Agent 迭代。</p>
@@ -266,9 +314,181 @@
           </div>
         </div>
 
+        <div id="tab-issues" class="tab-content">
+          <section class="audit-section">
+            <h3>项目问题台账</h3>
+            <p class="audit-help">汇集当前工作区的历次审核与修复证据。按类别、文件和标准化问题描述关联；相似描述不会自动合并。未再次报告不等于已修复，历史分诊不自动批准新审核的修复。</p>
+            <div class="audit-toolbar">
+              <label for="issueSearch">搜索历史问题</label><input id="issueSearch" placeholder="问题、文件或固定 ID">
+              <label for="issueState">问题状态</label><select id="issueState"><option value="">全部状态</option><option value="pending">待处理</option><option value="VERIFIED_CLOSED">复核关闭</option><option value="REOPENED">再次出现</option><option value="DISMISSED">历史误报 / 不采纳</option><option value="DEFERRED">暂缓</option><option value="changed">证据变化待确认</option></select>
+              <button id="btnRefreshIssues" type="button" class="btn btn-sm btn-secondary">刷新台账</button>
+            </div>
+            <p id="issueSummary" aria-live="polite"></p><div id="projectIssues"></div>
+          </section>
+        </div>
+        <div id="tab-audit" class="tab-content">
+          <div class="parallel-audit-container">
+            <section class="audit-section">
+              <h3>👥 并行只读审核</h3>
+              <p class="audit-help">每位审核员独立检查代码。审核不会进入修复；你可以在报告中选择需要处理的问题。</p>
+              <details class="audit-template-box" open><summary>审核团队模板</summary>
+                <div class="audit-toolbar">
+                  <label for="auditTemplate">已有模板</label><select id="auditTemplate"><option value="">选择模板</option></select>
+                  <button id="btnApplyAuditTemplate" class="btn btn-sm btn-secondary" type="button">应用模板</button>
+                  <button id="btnDeleteAuditTemplate" class="btn btn-sm btn-secondary" type="button">删除模板</button>
+                </div>
+                <div class="audit-toolbar">
+                  <label for="auditTemplateName">模板名称</label><input id="auditTemplateName" maxlength="100" placeholder="例如：发布前全面检查">
+                  <label for="auditTemplateScope">可见范围</label><select id="auditTemplateScope"><option value="project">当前项目</option><option value="global">所有项目</option></select>
+                  <button id="btnSaveAuditTemplate" class="btn btn-sm btn-secondary" type="button">保存为新模板</button>
+                  <button id="btnUpdateAuditTemplate" class="btn btn-sm btn-secondary" type="button">更新所选模板</button>
+                </div>
+                <p class="audit-help">保存审核要求、范围、超时、并发及每位审核员配置。应用只填入配置，点击启动后才执行。</p>
+              </details>
+              <div class="form-group">
+                <label for="auditCommonPrompt">公共审核要求</label>
+                <textarea id="auditCommonPrompt" rows="3">检查程序缺陷与实现方式是否合理。提供具体代码证据，区分确认缺陷、条件性风险、优化建议和待确认业务问题。</textarea>
+              </div>
+              <p class="audit-help">公共范围使用左侧「检查 / 实施范围」。每阶段超时使用左侧设置。</p>
+              <div class="audit-toolbar">
+                <label for="auditConcurrency">同时运行的审核员</label>
+                <input id="auditConcurrency" type="number" min="1" max="4" value="3">
+                <button id="btnAddAuditor" class="btn btn-sm btn-secondary" type="button">＋ 添加审核员</button>
+              </div>
+              <div id="auditReviewerEditors" class="audit-reviewer-grid"></div>
+              <p id="auditConfigHint" class="audit-help">正在读取引擎能力…</p>
+              <div class="audit-toolbar">
+                <button id="btnCheckAgents" class="btn btn-sm btn-secondary" type="button">检查本机环境</button>
+                <button id="btnProbeAgents" class="btn btn-sm btn-secondary" type="button">测试模型连通（消耗额度）</button>
+                <button id="btnStopAgentCheck" class="btn btn-sm btn-secondary" type="button" disabled>停止检查</button>
+              </div>
+              <p class="audit-help">环境检查不调用模型。连通测试在空目录中验证所选模型与强度，不读取目标项目；同一配置只测试一次。</p>
+              <div id="auditAgentHealth" class="audit-help" role="status" aria-live="polite"></div>
+              <button id="btnStartAudit" class="btn btn-primary" type="button" disabled>启动并行审核</button>
+            </section>
+            <section class="audit-section" aria-label="审核结果">
+              <div class="audit-toolbar">
+                <label for="auditHistory">审核记录</label>
+                <select id="auditHistory"><option value="">暂无审核</option></select>
+                <button id="btnRefreshAudits" class="btn btn-sm btn-secondary" type="button">刷新</button>
+                <button id="btnRetryAudit" class="btn btn-sm btn-secondary" type="button" disabled>重试未完成审核员</button>
+              </div>
+              <div id="auditSummary" class="audit-summary" aria-live="polite">尚无报告。审核完成表示检查结束，不代表工程绝对没有 Bug。</div>
+              <section id="auditClosureBox" class="audit-verifier-box" hidden>
+                <h4>审核闭环总览与人工验收</h4>
+                <p class="audit-help">关联原审核、补审和修复记录。检查完成不等于没有 Bug；源码变化后需刷新证据。原报告保持原状态。</p>
+                <button id="btnRefreshClosure" class="btn btn-secondary btn-sm">刷新闭环与源码状态</button>
+                <button id="btnRecheckClosure" class="btn btn-secondary btn-sm">按原团队重新审核当前源码</button>
+                <p id="auditClosureSummary" role="status"></p>
+                <div id="auditClosureCoverage"></div>
+                <div id="auditClosureTodos"></div>
+                <p id="auditClosureTestResult"></p>
+                <div class="form-group"><label for="auditClosureCommand">验收测试命令（在目标工程中执行）</label>
+                <input id="auditClosureCommand" placeholder="例如 npm test"></div>
+                <div class="closure-actions">
+                <label><input type="checkbox" id="auditClosureExecute">我确认执行上述命令</label>
+                <button id="btnTestClosure" class="btn btn-secondary btn-sm">执行验收测试</button>
+                <button id="btnStopClosure" class="btn btn-secondary btn-sm">停止当前任务</button>
+                </div>
+                <div class="form-group"><label for="auditClosureNote">人工验收说明（必填；请核对暂缓项及原因）</label>
+                <textarea id="auditClosureNote" rows="2"></textarea></div>
+                <p id="auditClosureDraftHint" class="audit-warning"></p>
+                <button id="btnAcceptClosure" class="btn btn-primary btn-sm" disabled>确认人工验收</button>
+                <div id="auditClosureHistory"></div>
+              </section>
+              <section id="auditSupplementBox" class="audit-verifier-box">
+                <h4>审核分工与缺口补审</h4>
+                <p class="audit-help">每位审核员的必查项必须逐项返回结果。勾选缺口后，沿用原审核员的模型和思考强度创建补审；每次最多 20 项。原报告保持不变，补审完成仅代表选中范围完成。</p>
+                <div id="auditRelated"></div><div id="auditGaps"></div>
+                <button id="btnSupplementAudit" class="btn btn-secondary" disabled>补审选中缺口（0）</button>
+              </section>
+              <div id="auditReviewerResults" class="audit-reviewer-grid"></div>
+              <h4>汇总发现 <span id="auditFindingCount"></span></h4>
+              <p class="audit-help">相同类别、文件与问题描述会合并，保留全部来源。不同描述和分歧保留供你判断，不以多数票决定对错。</p>
+              <details class="audit-verifier-box" open>
+                <summary>独立验证审核发现</summary>
+                <p class="audit-help">勾选“选择验证”，由新会话中的 Agent 检查证据。每次最多 20 项，逐项验证。验证不会自动确认分诊、修复或关闭问题。</p>
+                <div class="audit-reviewer-grid">
+                  <div class="form-group"><label for="findingVerifierProvider">验证 Agent</label><select id="findingVerifierProvider"></select></div>
+                  <div class="form-group"><label for="findingVerifierPreset">验证模型预设</label><select id="findingVerifierPreset"></select></div>
+                  <div class="form-group"><label for="findingVerifierModel">验证模型 ID</label><input id="findingVerifierModel" placeholder="留空使用 CLI 默认模型"></div>
+                  <div class="form-group"><label for="findingVerifierEffort">验证思考强度</label><select id="findingVerifierEffort"></select></div>
+                </div>
+                <div class="form-group"><label for="findingVerifierPrompt">验证补充要求</label><textarea id="findingVerifierPrompt" rows="2" placeholder="例如：重点排除环境错误，核对调用方是否允许空输入"></textarea></div>
+                <div class="form-group"><label for="findingReproductionCommand">复现命令（可选）</label><textarea id="findingReproductionCommand" rows="2" placeholder="例如 node tests/reproduce-null.js"></textarea></div>
+                <p class="audit-help">不填写命令时仅检查源码证据、提出复现步骤。填写后先在当前工作区执行一次，再由各验证会话判断结果是否支持对应发现。完整输出会保留，摘要发送给所选 Agent；源码变化会使报告失效。</p>
+                <label class="audit-partial-label"><input id="findingExecuteReproduction" type="checkbox"> 执行我填写的复现命令（可能生成测试文件或其他副作用）</label>
+                <label class="audit-partial-label" id="findingVerifyPartialLabel" hidden><input id="findingVerifyPartial" type="checkbox"> 我了解审核尚未完整完成，仅验证已选发现</label>
+                <div class="audit-toolbar">
+                  <button id="btnSelectFindingVerification" class="btn btn-sm btn-secondary" type="button">选择当前显示的发现（最多 20 项）</button>
+                  <button id="btnVerifyFindings" class="btn btn-primary" type="button" disabled>独立验证选中发现（0）</button>
+                  <button id="btnStopFindingVerification" class="btn btn-sm btn-secondary" type="button" disabled>停止验证</button>
+                </div>
+                <div id="findingVerificationProgress" class="audit-help" aria-live="polite"></div>
+              </details>
+              <div class="audit-toolbar" aria-label="发现筛选">
+                <label for="findingSearch">搜索发现</label><input id="findingSearch" placeholder="文件、问题或证据">
+                <label for="findingCategoryFilter">类别</label><select id="findingCategoryFilter"><option value="">全部类别</option><option value="BUG">缺陷</option><option value="RISK">实现隐患</option><option value="SUGGESTION">优化建议</option><option value="QUESTION">业务问题</option></select>
+                <label for="findingSeverityFilter">严重程度</label><select id="findingSeverityFilter"><option value="">全部级别</option><option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select>
+                <label for="findingTriageFilter">分诊状态</label><select id="findingTriageFilter"><option value="">全部分诊</option><option value="UNREVIEWED">待验证</option><option value="CONFIRMED">确认问题</option><option value="ACCEPTED">采纳建议</option><option value="NEEDS_CLARIFICATION">待业务确认</option><option value="DISMISSED">误报 / 不采纳</option><option value="DEFERRED">暂缓</option></select>
+                <label for="findingVerificationFilter">验证结果</label><select id="findingVerificationFilter"><option value="">全部结果</option><option value="NOT_VERIFIED">尚未验证</option><option value="REPRODUCED">已复现（Agent 判断）</option><option value="SUPPORTED_BY_CODE">源码证据支持</option><option value="NOT_REPRODUCED">本次未复现</option><option value="INSUFFICIENT_EVIDENCE">证据不足</option><option value="NEEDS_CLARIFICATION">待业务确认</option><option value="FAILED">验证失败</option><option value="STOPPED">验证停止</option><option value="INTERRUPTED">验证中断</option><option value="STALE">证据已过期</option></select>
+                <button id="btnResetFindingFilters" class="btn btn-sm btn-secondary" type="button">清除筛选</button>
+              </div>
+              <p id="findingFilterSummary" class="audit-help">改变筛选会清空验证和修复勾选，避免提交隐藏事项。</p>
+              <div id="auditFindings"></div>
+              <div id="auditRepairBox" hidden>
+                <label id="auditPartialLabel" hidden class="audit-partial-label"><input id="auditAcceptPartial" type="checkbox"> 我了解本次审核尚未完整完成，只处理已选发现</label>
+                <p class="audit-help">先保存分诊依据：缺陷/隐患需确认，优化建议需采纳，然后勾选修复。分诊是人工判断，不等于已修复；缺陷关闭仍需独立复核。修复使用左侧开发方、审查方、测试命令及轮次设置，自动提交关闭。</p>
+                <button id="btnRepairAudit" class="btn btn-primary" type="button" disabled>修复选中问题并独立复核（0）</button>
+              </div>
+              <div id="auditRepairLinks" class="audit-help"></div>
+              <details><summary>审核证据与原始回答</summary><div id="auditArtifacts" class="audit-artifacts"></div></details>
+            </section>
+          </div>
+        </div>
+
         <!-- TAB 2: DISCUSSION & HUMAN APPROVAL GATE -->
         <div id="tab-discussion" class="tab-content">
           <div class="discussion-container">
+            <section id="planningPanel" class="planning-panel">
+              <h3>团队讨论与人工决策</h3>
+              <p id="planningHint" class="text-muted">正在读取模型配置…</p>
+              <details open><summary>讨论团队 · 每位成员独立配置</summary>
+                <div id="planningMembers" class="planning-members"></div>
+                <button id="planningAdd" class="btn btn-secondary btn-sm">增加成员</button>
+              </details>
+              <div class="planning-toolbar">
+                <button id="planningStart" class="btn btn-primary">调查工程并启动讨论</button>
+                <button id="planningRefresh" class="btn btn-secondary">刷新记录</button>
+                <button id="planningRetry" class="btn btn-secondary" hidden>重试失败 / 未完成步骤</button>
+                <label for="planningHistory">讨论记录</label><select id="planningHistory"></select>
+              </div>
+              <p id="planningStatus" role="status">尚未发起讨论。</p>
+              <div id="planningReport"></div>
+              <details id="planningComparison" hidden><summary>与上一版方案对比</summary><div id="planningComparisonBody"></div></details>
+              <section id="planningDecision" hidden>
+                <h4>人工取舍</h4><p>每项建议都需选择采纳或暂缓并说明依据。采纳项可修改、增加或删除验收条件；所有业务问题均需答复。</p>
+                <p id="planningDraftStatus" role="status"></p>
+                <button id="planningSaveDraft" class="btn btn-secondary btn-sm">立即保存草稿</button>
+                <div id="planningDraftConflict" hidden><p>另一个页面更新了草稿。本页输入已保留，请比较后选择。</p><details><summary>服务端草稿</summary><pre id="planningRemoteDraft" class="planning-plan"></pre></details>
+                  <button id="planningUseRemote" class="btn btn-secondary">使用服务端草稿替换本页</button><button id="planningUseLocal" class="btn btn-secondary">用本页草稿覆盖所示版本</button>
+                </div>
+                <div id="planningChoices"></div><div id="planningQuestions"></div>
+                <button id="planningPreview" class="btn btn-secondary">生成批准前预览</button>
+              </section>
+              <section id="planningApproval" hidden>
+                <h4 id="planningApprovalTitle">即将批准的完整方案</h4><pre id="planningPreviewText" class="planning-plan"></pre>
+                <button id="planningApprove" class="btn btn-primary">批准并锁定此方案</button>
+                <button id="planningLaunch" class="btn btn-primary" hidden>按已批准方案开始实施</button>
+                <p class="text-muted">实施使用左侧的开发 Agent、审核 Agent 和测试门禁配置。</p>
+              </section>
+              <section id="planningRefinement" hidden>
+                <label for="planningFeedback">补充意见 / 需要重新讨论的原因</label>
+                <textarea id="planningFeedback" rows="3" placeholder="例如：先选改动最少的方案，暂不增加外部服务。"></textarea>
+                <button id="planningRefine" class="btn btn-secondary">带着意见创建下一版讨论</button>
+              </section>
+            </section>
+            <details id="legacyDiscussion"><summary>旧版双 Agent 讨论记录</summary>
             <div class="discussion-header">
               <div class="discussion-header-left">
                 <h3>💬 双 Agent 需求对齐与方案推演</h3>
@@ -288,17 +508,22 @@
               <div class="gate-header">
                 <div>
                   <h4>🎯 人工判定与执行确认 (Human Approval Gate)</h4>
-                  <p style="font-size: 12px; color: #94a3b8; margin: 2px 0 0 0;">双 Agent 已完成多轮辩论并达成架构共识。确认以下任务执行方案无误后，直接指派给开发方执行：</p>
+                  <p style="font-size: 12px; color: #94a3b8; margin: 2px 0 0 0;">请决定方案取舍，补全业务问题和验收条件。批准后保存准确版本，执行仅使用该版本。</p>
                 </div>
                 <span id="consensusBadge" class="gate-badge">🏆 达成共识 / 待人工确认</span>
               </div>
               <textarea id="finalPlanEditor" rows="8" class="plan-editor"></textarea>
+              <label for="humanPlanFeedback">补充需求 / 方案取舍</label>
+              <textarea id="humanPlanFeedback" rows="3" placeholder="例如：选择改动最小的方案，暂不引入缓存服务；请重新讨论。"></textarea>
               <div class="gate-actions">
+                <button class="btn btn-secondary" onclick="refinePlan()">带着我的意见继续讨论</button>
+                <button class="btn btn-secondary" onclick="approvePlanOnly()">仅批准并保存版本</button>
                 <button class="btn btn-primary" onclick="approvePlanAndStart()">
                   ✅ 确认共识方案并开始执行 (Approve & Launch)
                 </button>
               </div>
             </div>
+            </details>
           </div>
         </div>
 
@@ -372,6 +597,11 @@
     </div>
   </div>
 
+  <script src="review-evidence.js"></script>
   <script src="app.js"></script>
+  <script src="audit.js"></script>
+  <script src="audit-closure.js"></script>
+  <script src="issues.js"></script>
+  <script src="planning.js"></script>
 </body>
 </html>

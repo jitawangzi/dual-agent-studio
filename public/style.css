@@ -1110,3 +1110,110 @@ body {
     transform: translateX(0) scale(1);
   }
 }
+/* V2 workflow records and evidence ledger */
+.run-dashboard { padding: 16px; margin-bottom: 18px; border: 1px solid #334155; border-radius: 10px; background: #111827; }
+.run-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.run-toolbar select { flex: 1; min-width: 180px; }
+#runSummary { line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+#bugLedger { overflow-x: auto; margin: 12px 0; }
+#bugLedger td { vertical-align: top; max-width: 360px; overflow-wrap: anywhere; }
+#runArtifacts { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; max-height: 240px; overflow: auto; }
+#runArtifacts a { color: #93c5fd; overflow-wrap: anywhere; }
+#runDecision { border-left: 3px solid #eab308; padding: 12px; margin: 12px 0; }
+#runDecision textarea { width: 100%; }
+.mode-toggle { flex-wrap: wrap; }
+.gate-actions { flex-wrap: wrap; gap: 8px; }
+.recent-projects { max-height: 140px; overflow-y: auto; }
+.cockpit-panel { min-width: 0; }
+@media (max-width: 900px) {
+  body { height: auto; overflow: auto; }
+  .app-layout { height: auto; min-height: 100vh; }
+  .app-header { height: auto; min-height: 70px; padding: 12px; gap: 12px; flex-wrap: wrap; }
+  .main-content { flex-direction: column; overflow: visible; height: auto; }
+  .sidebar-panel { width: 100%; flex: none; overflow: visible; border-right: 0; }
+  .cockpit-panel { flex: none; min-height: 400px; overflow: visible; }
+  .tab-header { flex-wrap: wrap; }
+  .tab-content { overflow: visible; }
+  .discussion-header, .gate-header { flex-wrap: wrap; }
+}
+/* Independent parallel audit configuration and evidence. */
+.parallel-audit-container { padding: 20px; display: grid; gap: 20px; }
+.audit-section { padding: 20px; border: 1px solid #334155; border-radius: 12px; background: #111827; min-width: 0; }
+.audit-help, .audit-reviewer-card small { color: #94a3b8; font-size: 12px; line-height: 1.7; display: block; }
+.audit-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0; }
+.audit-toolbar input[type="number"] { width: 76px; }
+.audit-toolbar select { flex: 1; min-width: 160px; max-width: 100%; }
+.audit-reviewer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px; margin: 16px 0; }
+.audit-reviewer-card { min-width: 0; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin: 0; }
+.audit-reviewer-card legend { padding: 0 6px; color: #c4b5fd; }
+.audit-reviewer-card label { display: block; font-size: 12px; margin: 10px 0 5px; color: #cbd5e1; }
+.audit-reviewer-card input, .audit-reviewer-card select, .audit-reviewer-card textarea { width: 100%; box-sizing: border-box; }
+.audit-reviewer-card p, .audit-finding p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; }
+.audit-reviewer-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto; }
+.audit-remove { margin-top: 12px; }
+.audit-summary { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; padding: 14px; background: #1e293b; border-radius: 8px; }
+.audit-finding { padding: 16px; margin: 12px 0; border: 1px solid #334155; border-radius: 8px; }
+.audit-finding-title { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; overflow-wrap: anywhere; }
+.audit-finding-title input, .audit-partial-label input { width: auto; flex-shrink: 0; margin-top: 5px; }
+.audit-source { padding: 8px 12px; margin-top: 10px; border-left: 2px solid #818cf8; background: #0f172a; }
+.audit-warning, .audit-partial-label { color: #fbbf24; }
+.audit-partial-label { display: block; margin-top: 12px; }
+.audit-artifacts { display: grid; gap: 7px; overflow-wrap: anywhere; font-size: 12px; margin-top: 12px; }
+.audit-artifacts a { color: #93c5fd; }
+.audit-section details { margin-top: 12px; }
+.audit-section summary { cursor: pointer; color: #cbd5e1; }
+.mode-toggle { flex-wrap: wrap; }
+[hidden] { display: none !important; }
+@media (max-width: 600px) { .parallel-audit-container { padding: 8px; } .audit-section { padding: 12px; } }
+/* Audit preparation and human decisions */
+.audit-template-box, .audit-triage { padding: 12px; margin: 12px 0; border: 1px solid var(--border-color, #334155); border-radius: 8px; }
+.audit-triage label { display: block; margin: 8px 0 4px; }
+.audit-triage textarea { width: 100%; min-height: 86px; resize: vertical; }
+.audit-triage pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; }
+.audit-section input:not([type="checkbox"]), .audit-section select, .audit-section textarea {
+  box-sizing: border-box; max-width: 100%; background: var(--bg-input); color: var(--text-main);
+  border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font: inherit;
+}
+.audit-section input:focus, .audit-section select:focus, .audit-section textarea:focus { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+.audit-section input:disabled, .audit-section select:disabled, .audit-section textarea:disabled { opacity: .6; }
+#auditAgentHealth { white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-template-box input, .audit-template-box select { min-width: 0; max-width: 100%; }
+.audit-verifier-box { padding: 14px; border: 1px solid var(--border-color); border-radius: 8px; margin: 12px 0; }
+.closure-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 20px; }
+#auditClosureBox h5 { margin: 16px 0 8px; }
+#auditClosureBox p { margin: 8px 0; overflow-wrap: anywhere; }
+#auditClosureCoverage li { margin: 8px 0; overflow-wrap: anywhere; }
+#auditClosureBox a { color: #93c5fd; }
+.audit-select-verification { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 10px; overflow-wrap: anywhere; }
+.audit-verification { border-left: 3px solid var(--accent-blue); padding: 10px 14px; margin: 14px 0; background: var(--bg-dark); }
+.audit-verification h4 { margin: 0; }
+.audit-verification pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: 12px; }
+.audit-verification a { color: #93c5fd; margin-right: 10px; overflow-wrap: anywhere; }
+#tab-issues { padding: 20px; }
+#projectIssues pre, #runReviewProgress pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 12px; }
+#runReviewProgress p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 13px; }
+#runDecision label { display: block; margin: 10px 0 6px; font-size: 13px; }
+#runDecision textarea, #runDecision input, .run-toolbar select { background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font: inherit; max-width: 100%; }
+#runDecision textarea { width: 100%; resize: vertical; }
+#runDecision input { width: 100px; }
+/* Requirement planning and human decision board */
+.planning-panel { display: grid; gap: 16px; margin-bottom: 24px; }
+.planning-diff { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 12px; }
+#planningComparison[hidden] { display: none; }
+#planningDraftConflict { border-left: 3px solid var(--accent-yellow); padding: 12px; }
+.planning-panel input, .planning-panel select, .planning-panel textarea, #runDecision select { background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font: inherit; max-width: 100%; }
+.planning-panel input:focus, .planning-panel select:focus, .planning-panel textarea:focus, #runDecision select:focus { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+.planning-panel input:disabled, .planning-panel select:disabled, .planning-panel textarea:disabled { opacity: .6; }
+#runPlanChoice { margin: 12px 0; }
+#runPlanChoice select { width: 100%; }
+.planning-members { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 12px; margin: 16px 0; }
+.planning-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.planning-toolbar select { flex: 1; min-width: 200px; }
+.planning-proposal, .planning-choice { padding: 16px; border: 1px solid var(--border-color, #334155); border-radius: 10px; margin: 12px 0; min-width: 0; }
+.planning-proposal p, #planningReport p, #planningStatus { white-space: pre-wrap; overflow-wrap: anywhere; }
+.planning-proposal blockquote { margin: 10px 0; padding: 10px 14px; border-left: 3px solid #a78bfa; background: #1e293b; }
+.planning-choice label, .planning-question, #planningRefinement label { display: grid; gap: 7px; margin: 10px 0; }
+.planning-choice textarea, .planning-question textarea, #planningFeedback { width: 100%; box-sizing: border-box; }
+.planning-criterion { padding: 10px; margin: 8px 0; background: #111827; border-radius: 6px; }
+.planning-plan { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 550px; overflow: auto; padding: 16px; background: #111827; border: 1px solid #334155; border-radius: 8px; }
+#planningPanel section[hidden], #planningPanel div[hidden], #planningPanel button[hidden] { display: none; }

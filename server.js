@@ -4,10 +4,35 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { RunStore } = require('./engine/run-store');
+const { Workflow, sourceSnapshot } = require('./engine/workflow');
+const {closureView}=require('./engine/audit-closure');
+const { invokeAgent } = require('./engine/process-runner');
+const { AuditWorkflow } = require('./engine/audit-workflow');
+const { auditCapabilities } = require('./engine/audit-config');
+const { AgentHealth } = require('./engine/agent-health');
+const { AuditTemplates } = require('./engine/audit-templates');
+const { presentAudit } = require('./engine/audit-triage');
+const { issueLedger } = require('./engine/issue-ledger');
+const { PlanningWorkflow } = require('./engine/planning-workflow');
+const runStore = new RunStore(process.env.STUDIO_DATA_DIR || path.join(__dirname, '.studio'));
+const agentHealth = new AgentHealth({catalog:getModelsConfig});
+const auditTemplates = new AuditTemplates(runStore.root,getModelsConfig);
+const workflow = new Workflow(runStore, { emit: (type, data) => {
+    if (type === 'log') appendLog(data.message, data.type);
+    else broadcast(type, data);
+} });
+const auditWorkflow = new AuditWorkflow(runStore, { catalog: getModelsConfig, emit: (type, data) => {
+    if (type === 'log') appendLog(data.message, data.type);
+    else broadcast(type, data);
+} });
+const planningWorkflow=new PlanningWorkflow(runStore,{catalog:getModelsConfig,emit:(type,data)=>{
+    if(type==='log')appendLog(data.message,data.type);else broadcast(type,data);
+}});
 
 const PORT = process.env.PORT || 3700;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const PROJECTS_FILE = path.join(__dirname, 'projects.json');
+const PROJECTS_FILE = process.env.STUDIO_DATA_DIR ? path.join(runStore.root, 'projects.json') : path.join(__dirname, 'projects.json');
 const MODELS_FILE = path.join(__dirname, 'models-config.json');
 
 // Process Error Protection
@@ -29,6 +54,25 @@ let isDiscussing = false;
 let discussionGeneration = 0;         // Incremented per discussion or on abort to invalidate stale discussions
 let logs = [];
 const sseClients = new Set();
+if (require.main === module) { workflow.recover(); auditWorkflow.recover(); planningWorkflow.recover(); }
+
+function readRequestJson(req) {
+    return new Promise((resolve, reject) => {
+        let body = '', bytes = 0;
+        req.setEncoding('utf8');
+        req.on('data', data => {
+            bytes += Buffer.byteLength(data);
+            if (bytes > 1024 * 1024) reject(new Error('REQUEST_TOO_LARGE'));
+            else body += data;
+        });
+        req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch (e) { reject(e); } });
+        req.on('error', reject);
+    });
+}
+function sendJson(res, status, data) {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+}
 
 function broadcast(eventType, data) {
     const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -65,6 +109,7 @@ function getProjects() {
 
 function saveProjects(list) {
     try {
+        fs.mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true });
         fs.writeFileSync(PROJECTS_FILE, JSON.stringify(list, null, 2), 'utf-8');
     } catch {}
 }
@@ -388,167 +433,20 @@ function persistWorkspaceSessions(workspaceRoot, devSessionId, reviewSessionId, 
 
 // Helper to execute CLI agent turn in discussion using safe PowerShell pipeline invocation with 600s watchdog
 async function executeDiscussionAgent({ provider, model, reasoningEffort, sessionId, prompt, workspaceRoot, role, timeoutSeconds = 600, token, signal }) {
-    if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
-        return '';
-    }
-
-    let output = '';
-    const tmpFile = path.join(os.tmpdir(), `discuss_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
-    
+    if (signal?.aborted || token !== discussionGeneration) return '';
+    const before = await sourceSnapshot(workspaceRoot, signal);
+    let discussionProcess = null;
     try {
-        fs.writeFileSync(tmpFile, prompt, 'utf-8');
-        const safeTmp = tmpFile.replace(/\\/g, '/');
-        const ws = (workspaceRoot && fs.existsSync(workspaceRoot)) ? workspaceRoot : process.cwd();
-
-        let psCmd = '';
-        const env = { ...process.env };
-        if (!env.http_proxy) env.http_proxy = 'http://127.0.0.1:10809';
-        if (!env.https_proxy) env.https_proxy = 'http://127.0.0.1:10809';
-
-        const provLower = (provider || 'copilot').toLowerCase();
-
-        if (provLower === 'claude' || provLower === 'claude_code') {
-            if (reasoningEffort && reasoningEffort !== 'none') {
-                env.MAX_THINKING_TOKENS = reasoningEffort;
-            }
-            let claudeModel = '';
-            if (model) {
-                const m = model.toLowerCase();
-                if (m.includes('sonnet')) claudeModel = ' --model sonnet';
-                else if (m.includes('opus')) claudeModel = ' --model opus';
-                else if (m.includes('haiku')) claudeModel = ' --model haiku';
-                else claudeModel = ` --model '${model}'`;
-            }
-            psCmd = `if (Test-Path "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe") { Get-Content -Raw -LiteralPath '${safeTmp}' | & "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" --print --dangerously-skip-permissions${claudeModel} } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & claude --print --dangerously-skip-permissions${claudeModel} }`;
-        } else if (provLower === 'antigravity' || provLower === 'agy') {
-            let agyArgs = "--dangerously-skip-permissions --print-timeout 10m";
-            if (model) agyArgs += ` --model '${model}'`;
-            const agyEffort = (reasoningEffort && ['low', 'medium', 'high'].includes(reasoningEffort.toLowerCase())) ? reasoningEffort.toLowerCase() : 'high';
-            agyArgs += ` --effort '${agyEffort}'`;
-            psCmd = `if (Get-Command agy, agy.exe -ErrorAction SilentlyContinue) { $txt = Get-Content -Raw -LiteralPath '${safeTmp}'; & agy ${agyArgs} --print $txt } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
-        } else if (provLower === 'aider') {
-            psCmd = `if (Get-Command aider, aider.exe, aider.cmd -ErrorAction SilentlyContinue) { & aider --message-file '${safeTmp}' --no-auto-commits --yes-always } else { Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all }`;
-        } else if (provLower === 'cursor') {
-            psCmd = `if (Get-Command cursor, cursor.exe, cursor.cmd -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & cursor } else { Write-Host '[CURSOR] Discussion prompt recorded' }`;
-        } else if (provLower === 'codex') {
-            psCmd = `if (Get-Command codex, codex.exe, codex.cmd -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & codex } else { Write-Host '[CODEX] Discussion prompt recorded' }`;
-        } else if (provLower === 'pi') {
-            psCmd = `if (Get-Command pi, pi.exe, pi.cmd -ErrorAction SilentlyContinue) { Get-Content -Raw -LiteralPath '${safeTmp}' | & pi } else { Write-Host '[PI] Discussion prompt recorded' }`;
-        } else {
-            // Default / copilot / gpt / grok / gemini
-            psCmd = `Get-Content -Raw -LiteralPath '${safeTmp}' | & copilot -s --allow-all`;
-            if (model) psCmd += ` --model '${model}'`;
-            const validSession = sanitizeSessionId(sessionId) || crypto.randomUUID();
-            psCmd += ` --session-id='${validSession}'`;
-            const safeEffort = sanitizeCopilotEffort(reasoningEffort);
-            if (safeEffort && safeEffort !== 'none') {
-                psCmd += ` --reasoning-effort '${safeEffort}'`;
-            }
-        }
-
-        if (signal?.aborted || (token !== undefined && token !== discussionGeneration)) {
-            return '';
-        }
-
-        if (psCmd) {
-            await new Promise((resolve) => {
-                let proc = null;
-                let watchdogTimer = null;
-                let onAbort = null;
-
-                const cleanup = () => {
-                    if (watchdogTimer) clearTimeout(watchdogTimer);
-                    if (signal && onAbort) {
-                        try { signal.removeEventListener('abort', onAbort); } catch {}
-                    }
-                    if (activeDiscussionProcess === proc) activeDiscussionProcess = null;
-                };
-
-                try {
-                    proc = spawn('pwsh', ['-NoProfile', '-Command', psCmd], {
-                        cwd: ws,
-                        env,
-                        shell: false
-                    });
-
-                    activeDiscussionProcess = proc;
-
-                    if (signal) {
-                        if (signal.aborted) {
-                            try {
-                                if (process.platform === 'win32') {
-                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                                } else {
-                                    proc.kill('SIGKILL');
-                                }
-                            } catch {}
-                            cleanup();
-                            return resolve();
-                        }
-                        onAbort = () => {
-                            try {
-                                if (process.platform === 'win32') {
-                                    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                                } else {
-                                    proc.kill('SIGKILL');
-                                }
-                            } catch {}
-                            cleanup();
-                            resolve();
-                        };
-                        signal.addEventListener('abort', onAbort, { once: true });
-                    }
-
-                    // 600s watchdog timer
-                    watchdogTimer = setTimeout(() => {
-                        appendLog(`[${role} ${provider}] 运行超时 (${timeoutSeconds} 秒)，正在终止进程...`, 'stderr');
-                        try {
-                            if (process.platform === 'win32') {
-                                spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { shell: true });
-                            } else {
-                                proc.kill('SIGKILL');
-                            }
-                        } catch {}
-                    }, timeoutSeconds * 1000);
-
-                    proc.on('error', (err) => {
-                        cleanup();
-                        appendLog(`[${role} ${provider}] 调度提示: ${err.message}`, 'info');
-                        resolve();
-                    });
-
-                    if (proc.stdout) {
-                        proc.stdout.on('data', d => output += d.toString('utf-8'));
-                    }
-                    if (proc.stderr) {
-                        proc.stderr.on('data', d => {
-                            const text = d.toString('utf-8');
-                            if (!text.includes('alt_screen') && !text.includes('no stdin data received')) {
-                                appendLog(`[${role} ${provider}] ${text}`, 'stderr');
-                            }
-                        });
-                    }
-
-                    proc.on('close', () => {
-                        cleanup();
-                        resolve();
-                    });
-                } catch (e) {
-                    cleanup();
-                    appendLog(`[${role} ${provider}] 异常: ${e.message}`, 'info');
-                    resolve();
-                }
-            });
-        }
-    } catch (e) {
-        appendLog(`[${role}] 执行异常: ${e.message}`, 'stderr');
-    } finally {
-        try {
-            if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-        } catch {}
-    }
-
-    return output.trim();
+        const answer = await invokeAgent({ provider, model, reasoningEffort, sessionId, prompt,
+            workspaceRoot, role: 'discussion', sessionDirectory: path.join(runStore.root, 'sessions') }, {
+            signal, timeoutMs: timeoutSeconds * 1000,
+            onSpawn: proc => { discussionProcess = proc; activeDiscussionProcess = proc; },
+            onOutput: (text, type) => appendLog(text, type)
+        });
+        if (before !== await sourceSnapshot(workspaceRoot, signal)) throw new Error('讨论阶段检测到源文件变更，已停止；请检查 Diff。');
+        return answer;
+    } catch (error) { if (signal?.aborted) return ''; throw error; }
+    finally { if (activeDiscussionProcess === discussionProcess) activeDiscussionProcess = null; }
 }
 
 async function runBackgroundDiscussion(params, token, signal) {
@@ -588,6 +486,12 @@ async function runBackgroundDiscussion(params, token, signal) {
         const effectiveDevSessionId = resolvedSessions.devSessionId;
         const effectiveReviewSessionId = resolvedSessions.reviewSessionId;
 
+        if (params.parentPlanId) {
+            const previous = runStore.read('plans', params.parentPlanId);
+            if (previous.workspaceKey !== require('./engine/run-store').workspaceKey(workspaceRoot)) throw new Error('PLAN_WORKSPACE_MISMATCH');
+            wsContext += `\nPrevious plan (revise using the human's decisions):\n${previous.finalPlan}\nHuman decisions / feedback:\n${String(params.humanFeedback || '')}`;
+        }
+
         broadcast('discussion_start', {
             prompt: vaguePrompt,
             maxRounds: totalRounds,
@@ -618,6 +522,13 @@ ${wsContext}
 User Requirement / Goal: "${vaguePrompt}"
 
 CRITICAL INSTRUCTIONS FOR LEAD DEVELOPER:
+- This phase is READ ONLY. Inspect actual project files before proposing changes; do not implement or commit.
+- Start with evidence-backed observations (file paths and behavior), distinguish facts from assumptions.
+- The user may not know the exact requirement. Explain the user benefit and the problem being solved.
+- Compare at least two options, including a minimal-change option, costs, compatibility, risks and non-goals.
+- List unresolved business questions and decisions for the human. Never decide those silently.
+- Define observable acceptance criteria and real regression commands. Do not treat agent consensus as human approval.
+- Present a short decision brief in Chinese before technical details.
 - Do NOT output abstract, generic empty templates or boilerplate placeholders.
 - Provide a concrete, project-grounded, high-depth technical implementation proposal in Markdown:
 1. **Target Architecture & Technical Strategy (核心目标与架构选型)**: Explain the technical approach to solve "${vaguePrompt}" in this specific project.
@@ -695,6 +606,9 @@ Developer Proposed Plan (Round ${r}):
 ${devProposal}
 
 Analyze this proposal critically for:
+0. Read the actual project code. Check whether the proposed problem is real and whether a smaller change suffices.
+Identify unsupported assumptions, alternative options, and decisions only the human can make.
+This is a read-only discussion; do not implement changes. Report unresolved questions honestly even if you agree technically.
 1. Technical rigor: Are edge cases, concurrency, failure modes, data consistency, and backward compatibility adequately handled?
 2. Practical feasibility: Is the subtask checklist actionable, and is the automated test gate strategy sufficient?
 
@@ -733,7 +647,7 @@ Conclude with your verdict:
             }
 
             reviewerFeedback = revOut;
-            const isConsensus = (revOut.includes('CONSENSUS_REACHED') || revOut.includes('共识达成')) && !revOut.includes('NEEDS_REFINEMENT');
+            const isConsensus = /\[VERDICT:\s*CONSENSUS_REACHED\]/.test(revOut) && !revOut.includes('NEEDS_REFINEMENT');
             const revMsg = {
                 round: r,
                 sender: 'REVIEWER',
@@ -769,6 +683,7 @@ Conclude with your verdict:
 
         const responseData = {
             success: true,
+            workspaceRoot,
             consensusReached,
             rounds: discussionHistory,
             devProposal,
@@ -779,37 +694,14 @@ Conclude with your verdict:
             reviewSessionId: effectiveReviewSessionId
         };
 
-        // Persist Discussion History & Implementation Blueprint to Workspace
-        try {
-            if (workspaceRoot && fs.existsSync(workspaceRoot)) {
-                const discRecord = {
-                    savedAt: new Date().toISOString(),
-                    vaguePrompt,
-                    consensusReached,
-                    devSessionId: effectiveDevSessionId,
-                    reviewSessionId: effectiveReviewSessionId,
-                    rounds: discussionHistory,
-                    finalPlan: finalSynthesizedPlan,
-                    suggestedFeature: responseData.suggestedFeature
-                };
-
-                const rootDiscPath = path.join(workspaceRoot, 'requirement-discussion.json');
-                fs.writeFileSync(rootDiscPath, JSON.stringify(discRecord, null, 2), 'utf-8');
-
-                const rootPlanPath = path.join(workspaceRoot, 'IMPLEMENTATION_PLAN.md');
-                const planHeader = `# Technical Implementation Plan & Consensus Blueprint\n\n> **Auto-generated by Dual-Agent Studio** (${new Date().toLocaleString()})\n> **Initial Requirement**: "${vaguePrompt}"\n> **Consensus State**: ${consensusReached ? '✅ Consensus Reached' : '⚠️ Discussion Completed'}\n\n---\n\n`;
-                fs.writeFileSync(rootPlanPath, planHeader + finalSynthesizedPlan, 'utf-8');
-
-                const featDir = path.join(workspaceRoot, '.ai-workspace', 'specs', 'features', responseData.suggestedFeature);
-                if (!fs.existsSync(featDir)) {
-                    fs.mkdirSync(featDir, { recursive: true });
-                }
-                fs.writeFileSync(path.join(featDir, 'discussion-history.json'), JSON.stringify(discRecord, null, 2), 'utf-8');
-                fs.writeFileSync(path.join(featDir, 'implementation-plan.md'), planHeader + finalSynthesizedPlan, 'utf-8');
-            }
-        } catch (e) {
-            console.error('Failed to persist discussion plan:', e);
-        }
+        const plan = runStore.createPlan(workspaceRoot, {
+            vaguePrompt, consensusReached, devSessionId: effectiveDevSessionId,
+            reviewSessionId: effectiveReviewSessionId, rounds: discussionHistory,
+            finalPlan: finalSynthesizedPlan, suggestedFeature: responseData.suggestedFeature,
+            parentPlanId: params.parentPlanId || null, humanFeedback: params.humanFeedback || ''
+        });
+        responseData.planId = plan.id;
+        responseData.planVersion = plan.version;
 
         if (token === discussionGeneration && !signal?.aborted) {
             broadcast('discussion_complete', responseData);
@@ -831,6 +723,10 @@ Conclude with your verdict:
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
+    // Interrupted test processes remain authoritative until the OS confirms they exited.
+    if(req.method==='POST'&&pathname.startsWith('/api/')&&pathname!=='/api/stop'&&!auditWorkflow.active&&auditWorkflow.hasLiveClosureTest()){
+        sendJson(res,409,{error:'PREVIOUS_PROCESS_STILL_RUNNING'});return;
+    }
 
     // CORS Headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -840,6 +736,152 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
+        return;
+    }
+
+    if (pathname === '/api/audit-capabilities' && req.method === 'GET') {
+        sendJson(res, 200, auditCapabilities(getModelsConfig())); return;
+    }
+    if (pathname === '/api/agent-health' && req.method === 'POST') {
+        try {
+            const body=await readRequestJson(req);
+            if(activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing){sendJson(res,409,{error:'WORKFLOW_BUSY'});return;}
+            sendJson(res,200,await agentHealth.run(body));
+        }catch(error){sendJson(res,/BUSY/.test(error.message)?409:400,{error:error.message});}
+        return;
+    }
+    if (pathname === '/api/audit-templates' || pathname === '/api/audit-templates/delete') {
+        try {
+            if(req.method==='GET' && pathname==='/api/audit-templates')sendJson(res,200,auditTemplates.list(url.searchParams.get('workspace')));
+            else if(req.method==='POST'){
+                const body=await readRequestJson(req);
+                sendJson(res,200,pathname.endsWith('/delete')?auditTemplates.remove(body):auditTemplates.save(body));
+            }else sendJson(res,405,{error:'METHOD_NOT_ALLOWED'});
+        }catch(error){sendJson(res,/CONFLICT|MISMATCH/.test(error.message)?409:400,{error:error.message});}
+        return;
+    }
+    if(pathname==='/api/planning'||pathname.startsWith('/api/planning/')){
+        try{
+            const parts=pathname.split('/').filter(Boolean),id=parts[2],action=parts[3];
+            if(req.method==='GET'&&parts.length<=3){sendJson(res,200,id?runStore.read('discussions',id):runStore.list('discussions',url.searchParams.get('workspace')));return;}
+            if(req.method==='GET'&&id&&parts.length===4&&['draft','compare'].includes(action)){sendJson(res,200,action==='draft'?planningWorkflow.draft(id):planningWorkflow.compare(id));return;}
+            if(req.method==='GET'&&id&&action==='artifacts'&&parts.length===4){
+                runStore.read('discussions',id);const name=url.searchParams.get('name');
+                if(name){const content=fs.readFileSync(runStore.file('discussions',id,name),'utf8');res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','X-Content-Type-Options':'nosniff'});res.end(content);}
+                else sendJson(res,200,fs.readdirSync(path.dirname(runStore.file('discussions',id))));return;
+            }
+            if(req.method==='POST'){
+                const body=await readRequestJson(req);
+                if(id&&action==='draft'&&parts.length===4){if(planningWorkflow.active){sendJson(res,409,{error:'WORKFLOW_BUSY'});return;}sendJson(res,200,planningWorkflow.draft(id,body));return;}
+                if(activeProcess||workflow.active||auditWorkflow.active||agentHealth.active||planningWorkflow.active||isDiscussing){sendJson(res,409,{error:'WORKFLOW_BUSY'});return;}
+                if(!id&&parts.length===2){const record=planningWorkflow.create(body);planningWorkflow.launch(record);sendJson(res,202,{discussionId:record.id});return;}
+                if(id&&action==='preview'&&parts.length===4){sendJson(res,200,planningWorkflow.preview(id,body));return;}
+                if(id&&action==='retry'&&parts.length===4){const record=planningWorkflow.retry(id,body);sendJson(res,202,{discussionId:record.id});return;}
+                if(id&&action==='approve'&&parts.length===4){sendJson(res,200,await planningWorkflow.approve(id,body));return;}
+            }
+            sendJson(res,404,{error:'NOT_FOUND'});
+        }catch(error){sendJson(res,/CONFLICT|BUSY|CHANGED|MISMATCH|STILL_RUNNING/.test(error.message)?409:400,{error:error.message});}return;
+    }
+    if(pathname==='/api/issues'){
+        if(req.method!=='GET'){sendJson(res,405,{error:'METHOD_NOT_ALLOWED'});return;}
+        try{sendJson(res,200,issueLedger(runStore,url.searchParams.get('workspace')));}
+        catch(error){sendJson(res,400,{error:error.message});}return;
+    }
+    if (pathname === '/api/audits' || pathname.startsWith('/api/audits/')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean), id = parts[2], action = parts[3];
+            if(req.method==='GET'&&id&&action==='closure'&&parts.length===4){
+                const record=runStore.read('audits',id),snapshot=await sourceSnapshot(record.workspaceRoot);
+                sendJson(res,200,closureView(runStore,id,snapshot));return;
+            }
+            if (req.method === 'GET' && parts.length <= 3) {
+                sendJson(res, 200, id ? presentAudit(runStore.read('audits', id)) : runStore.list('audits', url.searchParams.get('workspace')).map(presentAudit)); return;
+            }
+            if (req.method === 'GET' && id && action === 'artifacts' && parts.length === 4) {
+                runStore.read('audits', id);
+                const name = url.searchParams.get('name');
+                if (name) {
+                    const content = fs.readFileSync(runStore.file('audits', id, name), 'utf8');
+                    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }); res.end(content);
+                } else sendJson(res, 200, fs.readdirSync(path.dirname(runStore.file('audits', id))));
+                return;
+            }
+            if (req.method === 'POST') {
+                const body = await readRequestJson(req);
+                if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
+                if (!id && parts.length === 2) {
+                    const record = auditWorkflow.create(body); auditWorkflow.launch(record);
+                    sendJson(res, 202, { auditId: record.id }); return;
+                }
+                if (id && action === 'supplement' && parts.length === 4) {
+                    const record=await auditWorkflow.supplement(id,body);sendJson(res,202,{auditId:record.id});return;
+                }
+                if(id&&action==='closure-accept'&&parts.length===4){sendJson(res,200,await auditWorkflow.acceptClosure(id,body));return;}
+                if(id&&action==='closure-test'&&parts.length===4){sendJson(res,202,auditWorkflow.testClosure(id,body));return;}
+                if(id&&action==='closure-recheck'&&parts.length===4){const record=auditWorkflow.recheckClosure(id,body);sendJson(res,202,{auditId:record.id});return;}
+                if (id && action === 'retry' && parts.length === 4) {
+                    const record = auditWorkflow.retry(id); sendJson(res, 202, { auditId: record.id }); return;
+                }
+                if (id && action === 'repair' && parts.length === 4) {
+                    const run = await auditWorkflow.repair(workflow, id, body); sendJson(res, 202, { runId: run.id }); return;
+                }
+                if (id && action === 'triage' && parts.length === 4) {
+                    sendJson(res,200,auditWorkflow.triage(id,body)); return;
+                }
+                if (id && action === 'verify' && parts.length === 4) {
+                    const verification=auditWorkflow.verify(id,body);sendJson(res,202,{auditId:id,verificationId:verification.id});return;
+                }
+            }
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendJson(res, /BUSY|CONFLICT|SOURCE_CHANGED|INVALIDATED|MISMATCH|STILL_RUNNING/.test(error.message) ? 409 : 400, { error: error.message }); }
+        return;
+    }
+
+    // V2 records: persisted runs, versioned approval and checkpoint recovery.
+    if (pathname.startsWith('/api/runs') || pathname.startsWith('/api/plans')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean);
+            const kind = parts[1], id = parts[2], action = parts[3];
+            if (!['runs', 'plans'].includes(kind)) { sendJson(res, 404, { error: 'NOT_FOUND' }); return; }
+            if (req.method === 'GET' && kind === 'runs' && id && action === 'artifacts') {
+                runStore.read('runs', id);
+                const name = url.searchParams.get('name');
+                if (name) {
+                    const file = runStore.file('runs', id, name);
+                    const content = fs.readFileSync(file, 'utf8');
+                    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+                    res.end(content);
+                } else sendJson(res, 200, fs.readdirSync(path.dirname(runStore.file('runs', id))));
+                return;
+            }
+            if (req.method === 'GET' && parts.length <= 3) {
+                const records = id ? runStore.read(kind, id) : runStore.list(kind, url.searchParams.get('workspace'));
+                sendJson(res, 200, records); return;
+            }
+            const body = await readRequestJson(req);
+            if (req.method === 'POST' && kind === 'plans' && id && action === 'approve') {
+                sendJson(res, 200, runStore.approvePlan(id, body)); return;
+            }
+            if (req.method === 'POST' && kind === 'runs') {
+                if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
+                if (id && action === 'decision') {
+                    const run = workflow.decide(id, body);
+                    sendJson(res, 202, { success: true, runId: run.id }); return;
+                }
+                if (id && action === 'resume') {
+                    const run = workflow.resume(id);
+                    sendJson(res, 202, { success: true, runId: run.id }); return;
+                }
+                if (!id) {
+                    const run = workflow.create(body);
+                    workflow.launch(run);
+                    sendJson(res, 202, { success: true, runId: run.id }); return;
+                }
+            }
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) {
+            sendJson(res, /CONFLICT|NOT_APPROVED|CHANGED|BUSY|RESUMABLE/.test(error.message) ? 409 : 400, { error: error.message });
+        }
         return;
     }
 
@@ -871,8 +913,13 @@ const server = http.createServer(async (req, res) => {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-            isRunning: activeProcess !== null,
-            isDiscussing: isDiscussing,
+            isRunning: activeProcess !== null || workflow.active !== null || auditWorkflow.active !== null || agentHealth.active !== null || planningWorkflow.active !== null,
+            isCheckingAgents: agentHealth.active !== null,
+            activeAuditId: auditWorkflow.active?.id || null,
+            activeVerificationId: auditWorkflow.active?.verificationId || null,
+            activeRunId: workflow.active?.id || null,
+            activePlanningId: planningWorkflow.active?.id || null,
+            isDiscussing: isDiscussing || planningWorkflow.active !== null,
             config: activeConfig,
             mailbox: mb,
             logsCount: logs.length
@@ -1080,7 +1127,7 @@ const server = http.createServer(async (req, res) => {
 
     // 5. REST API: /api/discuss (Multi-Round Collaborative Requirement Alignment)
     if (pathname === '/api/discuss' && req.method === 'POST') {
-        if (activeProcess || isDiscussing) {
+        if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) {
             res.writeHead(409, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: activeProcess ? 'An execution loop is currently in progress.' : 'Another discussion is currently in progress.' }));
             return;
@@ -1091,11 +1138,14 @@ const server = http.createServer(async (req, res) => {
         req.on('end', () => {
             try {
                 const params = JSON.parse(body);
+                if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
                 if (!params.vaguePrompt) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'vaguePrompt is required.' }));
                     return;
                 }
+
+                if (!params.workspaceRoot || !fs.statSync(params.workspaceRoot).isDirectory()) throw new Error('WORKSPACE_NOT_FOUND');
 
                 isDiscussing = true;
                 const token = ++discussionGeneration;
@@ -1124,6 +1174,12 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
+            const latest = runStore.list('plans', queryWs).find(plan=>!plan.planningId);
+            if (latest) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, discussion: { ...latest, planId: latest.id, planVersion: latest.version } }));
+                return;
+            }
             const rootDiscPath = path.join(queryWs, 'requirement-discussion.json');
             if (fs.existsSync(rootDiscPath)) {
                 const content = fs.readFileSync(rootDiscPath, 'utf-8');
@@ -1143,7 +1199,7 @@ const server = http.createServer(async (req, res) => {
 
     // 6. REST API: /api/start (Start Autonomous Execution Loop)
     if (pathname === '/api/start' && req.method === 'POST') {
-        if (activeProcess || isDiscussing) {
+        if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) {
             res.writeHead(409, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: isDiscussing ? 'A discussion is currently in progress.' : 'A loop is already running. Stop it before starting a new one.' }));
             return;
@@ -1154,6 +1210,7 @@ const server = http.createServer(async (req, res) => {
         req.on('end', () => {
             try {
                 const config = JSON.parse(body);
+                if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
                 if (!config.workspaceRoot || !config.taskPrompt) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'workspaceRoot and taskPrompt are mandatory.' }));
@@ -1258,7 +1315,11 @@ const server = http.createServer(async (req, res) => {
 
     // 7. REST API: /api/stop
     if (pathname === '/api/stop' && req.method === 'POST') {
-        let stoppedSomething = false;
+        let stoppedSomething = !!workflow.active || !!auditWorkflow.active || !!agentHealth.active || !!planningWorkflow.active;
+        await agentHealth.stop();
+        await planningWorkflow.stop();
+        try { await auditWorkflow.stop(); } catch (error) { appendLog(error.message, 'system'); }
+        await workflow.stop();
 
         if (activeProcess) {
             appendLog('⚠️ 用户主动中止运行中的闭环任务...', 'system');

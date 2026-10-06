@@ -1,0 +1,27 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const fs=require('fs'),os=require('os'),path=require('path');
+test('HTTP planning uses real adapters, previews human decision and enforces structured checks during implementation',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'studio-planning-api-')),workspace=path.join(root,'project');fs.mkdirSync(workspace);fs.writeFileSync(path.join(workspace,'app.js'),'const valid = true;');
+  process.env.STUDIO_DATA_DIR=path.join(root,'state');const {server}=require('../server');await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+  const request=async(url,body)=>{const r=await fetch(base+url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return {code:r.status,data:await r.json()};};
+  t.after(async()=>{await request('/api/stop',{});await new Promise(r=>server.close(r));assert.equal(path.dirname(root),fs.realpathSync(os.tmpdir()));fs.rmSync(root,{recursive:true,force:true});});
+  const poll=async(check)=>{for(let i=0;i<600;i++){const result=await check();if(result)return result;await new Promise(r=>setTimeout(r,50));}throw new Error('Planning API timed out');};
+  const started=await request('/api/planning',{workspaceRoot:workspace,idea:'Improve validation',members:[{name:'Design',provider:'mock'},{name:'Tests',provider:'mock'}]});assert.equal(started.code,202);const id=started.data.discussionId;
+  assert.equal((await request('/api/status')).data.activePlanningId,id);assert.equal((await request('/api/audits',{})).code,409);assert.equal((await request('/api/discuss',{})).code,409);
+  const record=await poll(async()=>{const {data}=await request('/api/planning/'+id);return data.status!=='RUNNING'?data:null;});assert.equal(record.status,'READY',record.error);
+  assert.equal((await request(`/api/planning/${id}/artifacts?name=missing.txt`)).code,400);assert.equal((await request(`/api/planning/${id}/artifacts`)).code,200);
+  const body={workspaceRoot:workspace,version:record.version,selections:record.members.flatMap(m=>m.proposal.proposals).map((p,i)=>({proposalId:p.id,decision:i?'DEFER':'ADOPT',reason:i?'Duplicate':'Exercise approval workflow',acceptance:p.acceptance})),answers:record.questions.map(q=>({questionId:q.id,answer:'This is a workflow test'}))};
+  const preview=await request(`/api/planning/${id}/preview`,body);assert.equal(preview.code,200);
+  const draft=await request(`/api/planning/${id}/draft`,{workspaceRoot:workspace,version:record.version,draftRevision:0,value:{selections:body.selections,answers:body.answers}});assert.equal(draft.code,200);assert.equal(draft.data.revision,1);
+  assert.equal((await request(`/api/planning/${id}/draft`)).data.revision,1);
+  assert.equal((await request(`/api/planning/${id}/approve`,{...body,previewHash:preview.data.previewHash})).code,409);
+  body.draftRevision=1;
+  assert.equal((await request(`/api/planning/${id}/compare`)).data,null);
+  assert.equal((await request(`/api/planning/${id}/approve`,{...body,previewHash:'stale'})).code,409);
+  const approved=await request(`/api/planning/${id}/approve`,{...body,previewHash:preview.data.previewHash});assert.equal(approved.code,200);assert.equal(approved.data.requirements.length,1);
+  const legacy=await request('/api/discuss?workspace='+encodeURIComponent(workspace));assert.equal(legacy.data.discussion,null);
+  const launched=await request('/api/runs',{workspaceRoot:workspace,mode:'plan',planId:approved.data.id,approvalId:approved.data.approval.id,taskPrompt:approved.data.finalPlan,devProvider:'mock',reviewProvider:'mock',verifyCommand:'node --check app.js',maxRounds:2,cleanRoundsRequired:1});assert.equal(launched.code,202);
+  const run=await poll(async()=>{const {data}=await request('/api/runs/'+launched.data.runId);return data.status!=='RUNNING'?data:null;});assert.equal(run.status,'NEEDS_ATTENTION',run.error);assert.equal(run.lastReview.acceptanceChecks[0].result,'BLOCKED');
+  assert.equal(fs.readdirSync(workspace).join(','),'app.js');
+});

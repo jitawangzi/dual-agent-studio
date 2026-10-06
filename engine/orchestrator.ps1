@@ -401,15 +401,18 @@ try {
                 Push-Location $wsPhysical
                 try {
                     git add -A
+                    if ($LASTEXITCODE -ne 0) { throw "GIT_ADD_FAILED" }
                     $staged = git status --porcelain 2>&1 | Out-String
+                    if ($LASTEXITCODE -ne 0) { throw "GIT_STATUS_FAILED" }
                     if (-not [string]::IsNullOrWhiteSpace($staged)) {
                         $commitOut = git commit -m "feat($effectiveFeature): completed via dual-agent loop (round $round)" 2>&1 | Out-String
+                        if ($LASTEXITCODE -ne 0) { throw "GIT_COMMIT_FAILED: $commitOut" }
                         Write-Host "✅ Committed successfully: $commitOut" -ForegroundColor Green
                     } else {
                         Write-Host "ℹ️ Working tree clean, no staged changes to commit." -ForegroundColor Gray
                     }
                 } catch {
-                    Write-Warning "Auto-commit failed: $_"
+                    throw "AUTO_COMMIT_FAILED: $_"
                 } finally {
                     Pop-Location
                 }

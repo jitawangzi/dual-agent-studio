@@ -78,9 +78,15 @@ function Invoke-CliWithTimeout {
     # 4. UTF-8 Stdin Pipeline Input
     if (-not [string]::IsNullOrEmpty($StdinText)) {
         try {
-            $process.StandardInput.Write($StdinText)
-            $process.StandardInput.Flush()
-        } catch {}
+            $inputTask = $process.StandardInput.WriteAsync($StdinText)
+            if (-not $inputTask.Wait([Math]::Min($TimeoutSeconds, 30) * 1000)) {
+                $process.Kill($true)
+                throw 'STDIN_TIMEOUT: CLI did not consume the prompt.'
+            }
+        } catch {
+            if ($_.Exception.Message -match 'STDIN_TIMEOUT') { throw }
+            # Early process exit is reported through its exit code below.
+        }
     }
     try { $process.StandardInput.Close() } catch {}
 
@@ -547,115 +553,9 @@ function Invoke-DevTurn {
         return
     }
 
-    switch ($Provider.ToLowerInvariant()) {
-        "aider" {
-            $aiderCmd = Get-Command "aider", "aider.cmd", "aider.ps1", "aider.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $aiderCmd) { throw "PROVIDER_UNAVAILABLE: Aider CLI is not found in PATH." }
-            
-            $tmpPromptFile = [System.IO.Path]::GetTempFileName()
-            try {
-                [System.IO.File]::WriteAllText($tmpPromptFile, $Prompt, [System.Text.UTF8Encoding]::new($false))
-                $argsList = @("--message-file", $tmpPromptFile, "--yes-always", "--no-auto-commits")
-                if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-
-                $res = Invoke-CliWithTimeout -ExecutablePath $aiderCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Aider)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Aider CLI exited with code $($res.ExitCode)." }
-            } finally {
-                if (Test-Path -LiteralPath $tmpPromptFile) { Remove-Item -LiteralPath $tmpPromptFile -Force -ErrorAction SilentlyContinue }
-            }
-        }
-        "copilot" {
-            $copilotCmd = Get-Command "copilot", "copilot.cmd", "copilot.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $copilotCmd) { throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI is not found in PATH." }
-            
-            $argsList = @("--allow-all")
-            if (-not [string]::IsNullOrWhiteSpace($SessionId)) { $argsList += "--session-id=$SessionId" }
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
-            if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") { $argsList += @("--reasoning-effort", $copilotEffort) }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $copilotCmd.Source -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Copilot)"
-            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Copilot CLI exited with code $($res.ExitCode)." }
-        }
-        "claude" {
-            $claudeExe = Get-ClaudeExecutable
-            if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude Code CLI is not found in PATH." }
-
-            $argsList = @("--print", "--dangerously-skip-permissions")
-            $cModel = Format-ClaudeModel $Model
-            if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
-            $envMap = @{}
-            if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
-                $envMap["MAX_THINKING_TOKENS"] = switch ($ReasoningEffort.ToLowerInvariant()) {
-                    "high" { "16384" }; "max" { "64000" }; "medium" { "8192" }; "low" { "2048" }; "off" { "0" }; default { $ReasoningEffort }
-                }
-            }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe -Arguments $argsList -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Dev (Claude)"
-            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Claude CLI exited with code $($res.ExitCode)." }
-        }
-        "antigravity" {
-            $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
-            
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
-                $agyEffort = "high"
-            }
-            if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $Prompt)
-
-            $maxAttempts = 3
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Antigravity)" -TimeoutSeconds 1800
-                if ($res.ExitCode -eq 0) { break }
-
-                $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
-                if ($isTransient -and $attempt -lt $maxAttempts) {
-                    Write-Host "⚠️ Transient network glitch from Antigravity ($($res.Combined.Trim())). Retrying attempt $($attempt + 1)/$maxAttempts in 3 seconds..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 3
-                } else {
-                    break
-                }
-            }
-            if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Antigravity CLI exited with code $($res.ExitCode): $($res.Combined)" }
-        }
-        "cursor" {
-            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($cursorCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Cursor)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Cursor CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[CURSOR] Dispatched instruction to Cursor workspace: $Prompt" -ForegroundColor Gray
-            }
-        }
-        "codex" {
-            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($codexCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Codex)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Codex CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[CODEX] Dispatched instruction: $Prompt" -ForegroundColor Gray
-            }
-        }
-        "pi" {
-            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($piCmd) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $Prompt -WorkingDirectory $WorkspaceRoot -RoleName "Dev (Pi)"
-                if ($res.ExitCode -ne 0) { throw "DEV_AGENT_EXECUTION_FAILED: Pi CLI exited with code $($res.ExitCode)." }
-            } else {
-                Write-Host "[PI AGENT] Executing prompt: $Prompt" -ForegroundColor Gray
-            }
-        }
-        "mock" {
-            Write-Host "[MOCK DEV] Simulating code changes in $WorkspaceRoot for prompt: $Prompt" -ForegroundColor Gray
-        }
-        default {
-            throw "UNSUPPORTED_DEV_PROVIDER: Unsupported DevProvider '$Provider'."
-        }
-    }
+    try {
+        Invoke-AgentText -Provider $Provider -Prompt $Prompt -WorkspaceRoot $WorkspaceRoot -Role 'dev' -Model $Model -ReasoningEffort $ReasoningEffort -SessionId $SessionId | Out-Null
+    } catch { throw "DEV_AGENT_EXECUTION_FAILED: $($_.Exception.Message)" }
 }
 
 function Invoke-ReviewerTurn {
@@ -704,116 +604,12 @@ You MUST output a valid JSON object matching this structure (no markdown fences,
 }
 "@
 
-    switch ($Provider.ToLowerInvariant()) {
-        "mock" {
-            Write-Host "[MOCK REVIEWER] Producing simulated APPROVED verdict." -ForegroundColor Gray
-            return [ordered]@{
-                verdict = "APPROVED"
-                highestSeverity = "NONE"
-                summary = "[Mock] Code looks robust and clean."
-                issues = @()
-                nextPromptForDev = ""
-            }
-        }
-        "copilot" {
-            $copilotCmd = Get-Command "copilot", "copilot.cmd", "copilot.ps1" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $copilotCmd) {
-                throw "PROVIDER_UNAVAILABLE: GitHub Copilot CLI ('copilot') is not found in PATH."
-            }
-            $argsList = @("-s", "--allow-all")
-            if (-not [string]::IsNullOrWhiteSpace($SessionId)) { $argsList += "--session-id=$SessionId" }
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $copilotEffort = Format-CopilotReasoningEffort $ReasoningEffort
-            if (-not [string]::IsNullOrWhiteSpace($copilotEffort) -and $copilotEffort -ne "none") { $argsList += @("--reasoning-effort", $copilotEffort) }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $copilotCmd.Source -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Copilot)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: GitHub Copilot CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: GitHub Copilot CLI returned non-JSON review output: $($res.Combined)"
-        }
-        { $_ -in @("claude", "claude_code") } {
-            $claudeExe = Get-ClaudeExecutable
-            if (-not $claudeExe) { throw "PROVIDER_UNAVAILABLE: Claude CLI is not available in PATH." }
-            
-            $argsList = @("--print", "--dangerously-skip-permissions")
-            $cModel = Format-ClaudeModel $Model
-            if (-not [string]::IsNullOrWhiteSpace($cModel)) { $argsList += @("--model", $cModel) }
-            $envMap = @{}
-            if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
-                $envMap["MAX_THINKING_TOKENS"] = switch ($ReasoningEffort.ToLowerInvariant()) {
-                    "high" { "16384" }; "max" { "64000" }; "medium" { "8192" }; "low" { "2048" }; "off" { "0" }; default { $ReasoningEffort }
-                }
-            }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $claudeExe -Arguments $argsList -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -EnvironmentVariables $envMap -RoleName "Reviewer (Claude)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Claude CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Claude CLI returned non-JSON review output: $($res.Combined)"
-        }
-        "antigravity" {
-            $agyCmd = Get-Command "agy", "agy.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $agyCmd) { throw "PROVIDER_UNAVAILABLE: Antigravity CLI ('agy') is not found in PATH." }
-            
-            $argsList = @("--dangerously-skip-permissions", "--print-timeout", "25m")
-            if (-not [string]::IsNullOrWhiteSpace($Model)) { $argsList += @("--model", $Model) }
-            $agyEffort = Format-AgyReasoningEffort $ReasoningEffort
-            if ([string]::IsNullOrWhiteSpace($agyEffort) -and ($Model -match "gemini-3.7" -or [string]::IsNullOrWhiteSpace($Model))) {
-                $agyEffort = "high"
-            }
-            if (-not [string]::IsNullOrWhiteSpace($agyEffort)) { $argsList += @("--effort", $agyEffort) }
-            $argsList += @("--print", $systemInstruction)
-
-            $maxAttempts = 3
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                $res = Invoke-CliWithTimeout -ExecutablePath $agyCmd.Source -Arguments $argsList -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Antigravity)" -TimeoutSeconds 1800
-                $jsonObj = Extract-JsonFromText -Text $res.Combined
-                if ($null -ne $jsonObj) { return $jsonObj }
-
-                $isTransient = ($res.Combined -match "timeout waiting for response" -or $res.Combined -match "Eligibility check failed" -or $res.Combined -match "EOF" -or $res.Combined -match "handshake")
-                if ($isTransient -and $attempt -lt $maxAttempts) {
-                    Write-Host "⚠️ Transient network glitch from Antigravity ($($res.Combined.Trim())). Retrying attempt $($attempt + 1)/$maxAttempts in 3 seconds..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 3
-                } else {
-                    break
-                }
-            }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Antigravity CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Antigravity CLI returned non-JSON review output: $($res.Combined)"
-        }
-        "cursor" {
-            $cursorCmd = Get-Command "cursor", "cursor.cmd", "cursor.ps1", "cursor.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $cursorCmd) { throw "PROVIDER_UNAVAILABLE: Cursor CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $cursorCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Cursor)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Cursor CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Cursor CLI returned non-JSON review output: $($res.Combined)"
-        }
-        "codex" {
-            $codexCmd = Get-Command "codex", "codex.cmd", "codex.ps1", "codex.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $codexCmd) { throw "PROVIDER_UNAVAILABLE: Codex CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $codexCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Codex)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Codex CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Codex CLI returned non-JSON review output: $($res.Combined)"
-        }
-        "pi" {
-            $piCmd = Get-Command "pi", "pi.cmd", "pi.ps1", "pi.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $piCmd) { throw "PROVIDER_UNAVAILABLE: Pi CLI is not found in PATH." }
-
-            $res = Invoke-CliWithTimeout -ExecutablePath $piCmd.Source -StdinText $systemInstruction -WorkingDirectory $WorkspaceRoot -RoleName "Reviewer (Pi)"
-            $jsonObj = Extract-JsonFromText -Text $res.Combined
-            if ($null -ne $jsonObj) { return $jsonObj }
-            if ($res.ExitCode -ne 0) { throw "REVIEWER_EXECUTION_FAILED: Pi CLI failed with exit code $($res.ExitCode): $($res.Combined)" }
-            throw "PROVIDER_OUTPUT_INVALID: Pi CLI returned non-JSON review output: $($res.Combined)"
-        }
-        default {
-            throw "UNSUPPORTED_REVIEWER_PROVIDER: Provider '$Provider' is not configured for automatic review execution. Provide -ReviewerCustomHook or use -ReviewProvider 'mock'."
-        }
-    }
+    try {
+        $answer = Invoke-AgentText -Provider $Provider -Prompt $systemInstruction -WorkspaceRoot $WorkspaceRoot -Role 'review' -Model $Model -ReasoningEffort $ReasoningEffort -SessionId $SessionId
+        $jsonObj = Extract-JsonFromText -Text $answer
+        if ($null -eq $jsonObj) { throw "PROVIDER_OUTPUT_INVALID: Non-JSON review output." }
+        return $jsonObj
+    } catch { throw "REVIEWER_EXECUTION_FAILED: $($_.Exception.Message)" }
 }
+
+. (Join-Path $PSScriptRoot 'provider-adapters.ps1')
