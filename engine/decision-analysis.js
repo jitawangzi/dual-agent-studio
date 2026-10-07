@@ -188,6 +188,7 @@ async function analyzeCase(store, id, input = {}, options = {}) {
     ensureBudget(caseRecord, input.budget);
 
     let lease = null;
+    let savedFinal = false;
     if (store.guard && typeof store.guard.acquire === 'function') {
         lease = await store.guard.acquire({ kind: 'decision-analysis', id });
     }
@@ -220,7 +221,8 @@ async function analyzeCase(store, id, input = {}, options = {}) {
             }, {
                 persist: () => store.save('decision-cases', caseRecord),
                 signal: options.signal,
-                invoke: async (attemptId) => {
+                invoke: async (attemptId, innerSignal) => {
+                    const effectiveSignal = innerSignal || options.signal;
                     rawAnswer = await agentFn({
                         workspaceRoot: caseRecord.workspaceRoot,
                         provider: normalizedReviewer.provider,
@@ -228,8 +230,8 @@ async function analyzeCase(store, id, input = {}, options = {}) {
                         reasoningEffort: normalizedReviewer.reasoningEffort,
                         role: 'arbitration',
                         prompt,
-                        signal: options.signal
-                    });
+                        signal: effectiveSignal
+                    }, { signal: effectiveSignal });
                     return rawAnswer;
                 },
                 accept: async (answer) => {
@@ -247,9 +249,11 @@ async function analyzeCase(store, id, input = {}, options = {}) {
                 }
             });
         } catch (error) {
+            stopActiveTracking(caseRecord);
             const postPres = presentCase(store, id);
             caseRecord.status = postPres.stale ? 'NEEDS_REVIEW' : 'OPEN';
             store.save('decision-cases', caseRecord);
+            savedFinal = true;
             throw error;
         }
 
@@ -266,13 +270,23 @@ async function analyzeCase(store, id, input = {}, options = {}) {
         };
 
         caseRecord.status = analysisStale ? 'NEEDS_REVIEW' : 'AWAITING_HUMAN';
+        stopActiveTracking(caseRecord);
         store.save('decision-cases', caseRecord);
+        savedFinal = true;
 
         return presentCase(store, id);
     } finally {
-        stopActiveTracking(caseRecord);
-        if (lease) {
-            try { await lease.release(); } catch {}
+        if (!savedFinal) {
+            try {
+                stopActiveTracking(caseRecord);
+                store.save('decision-cases', caseRecord);
+            } catch {}
+        }
+        if (store.guard && typeof store.guard.release === 'function') {
+            try { store.guard.release(lease?.token || store.guard.activeToken); } catch {}
+        }
+        if (lease && typeof lease.release === 'function') {
+            try { lease.release(); } catch {}
         }
     }
 }

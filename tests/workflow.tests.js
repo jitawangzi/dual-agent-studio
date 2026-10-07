@@ -220,3 +220,56 @@ test('2.7 forged execution evidence fails review without approving or closing bu
     const saved=await finish(engine,run);
     assert.equal(saved.status,'FAILED');assert.match(saved.error,/UNVERIFIED_TEST_EVIDENCE/);assert.equal(saved.history.length,0);
 });
+
+test('Workflow budget timeout terminates child process before releasing lease and prevents late writes', async t => {
+    const { store, workspace } = fixture(t);
+    const marker = path.join(workspace, 'late-write-test.txt');
+    let pid;
+    let invocation;
+    let guardWasBusyBeforeEnd = false;
+    const engine = new Workflow(store, {
+        snapshot: async () => 'snap',
+        command: pass,
+        agent: async (_, options) => {
+            invocation = execute(process.execPath, ['-e', `setTimeout(() => { require('fs').writeFileSync(${JSON.stringify(marker)}, 'late write'); console.log('{}'); }, 2000);`], {
+                ...options,
+                onSpawn: p => {
+                    pid = p.pid;
+                    options.onSpawn?.(p);
+                }
+            });
+            return (await invocation).stdout;
+        }
+    });
+    const run = engine.create({
+        workspaceRoot: workspace,
+        mode: 'direct',
+        taskPrompt: 'test budget process termination',
+        verifyCommand: 'node --check app.js',
+        budget: { maxActiveSeconds: 1 }
+    });
+    engine.launch(run);
+    guardWasBusyBeforeEnd = store.guard.isBusy();
+    await engine.active.promise;
+
+    let alive = true;
+    try {
+        process.kill(pid, 0);
+    } catch {
+        alive = false;
+    }
+
+    assert.equal(guardWasBusyBeforeEnd, true, 'guard must be busy during execution');
+    assert.equal(alive, false, 'child process must be terminated before workflow promise resolves');
+    assert.equal(store.guard.isBusy(), false, 'guard must be released after process exit');
+    assert.equal(fs.existsSync(marker), false, 'marker file must not exist at workflow completion');
+
+    if (invocation) await invocation.catch(() => {});
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(fs.existsSync(marker), false, 'marker file must not be written after invocation duration');
+
+    const saved = store.read('runs', run.id);
+    assert.equal(saved.status, 'STOPPED');
+    assert.equal(saved.budget.timeTracking.activeIntervals.filter(i => i.stoppedAt === null).length, 0);
+});
+

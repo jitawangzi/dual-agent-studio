@@ -378,6 +378,29 @@
 
 
 
+## 2026-10-07 / 2.14 R2 审核缺陷修复 (R2 Findings Remediation) 闭环完成
 
-
-
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：针对 `.studio/review-v2.14-r2-findings.md` 第二轮复审报告指出的两项核心缺陷进行彻底闭环修复并验证：
+  1. **Issue 1 (P1，执行级生命周期终止与租约保持)**：
+     - **根因**：原 `call-ledger.js:trackedCall` 使用 `Promise.race` 在超时或取消时立即提前 reject，未向底层代理子进程发送取消信号，未等待底层子进程彻底退出就提前结束调用并释放租约，导致工作流完成后后台子进程仍在活动并继续写入隔离工作区；
+     - **修复**：
+       - `engine/call-ledger.js:trackedCall`：彻底废弃竞态提前 reject，创建内部 `invocationController = new AbortController()`，将外部 `signal` 与内部 `budgetTimeoutMs` 联动。当预算耗尽或收到外部取消信号时触发 `invocationController.abort(...)`，并将 `invocationController.signal` 统一透传给 `invoke(attemptId, innerSignal)`；通过 `await invoke(...)` 彻底等待底层子进程被终止并退出后，再结算 attempt / reservation，最后抛出 `BUDGET_EXHAUSTED`；
+       - `engine/workflow.js`、`engine/audit-workflow.js`、`engine/planning-workflow.js`、`engine/finding-verification.js`、`engine/agent-health.js`：各调用入口统一接收 `(attemptId, innerSignal)`，将有效取消信号透传到底层进程，并在所有工作流结束（`launch.finally`）时调用 `stopActiveTracking` 及存盘；
+       - `tests/workflow.tests.js`：新增预算超时终止底层子进程并防止延迟写入的真实进程级自动化测试。
+  2. **Issue 2 (P2，仲裁停止计时持久化与版本一致性)**：
+     - **根因**：`analyzeCase` 仲裁完成调用 `stopActiveTracking` 后未将停止状态存盘，磁盘保留 `stoppedAt: null` 的开放区间，导致等待人工决策期间持续累计活动时间；若在 `finally` 中重复保存又会导致 `updatedAt` 变动，引发后续 `decideCase` 时的 `CASE_VERSION_CONFLICT`；
+     - **修复**：
+       - `engine/decision-analysis.js:analyzeCase`：在正常状态迁移（`AWAITING_HUMAN` / `NEEDS_REVIEW`）及异常拦截（`catch`）块中，均在存盘前调用 `stopActiveTracking(caseRecord)` 并调用 `store.save('decision-cases', caseRecord)`，且置位 `savedFinal = true`；
+       - 在 `finally` 块中，仅当 `!savedFinal` 时才兜底存盘，防止重复刷新 `updatedAt` 触发版本冲突；
+       - 确保 `savedFinal` 与 `lease` 在 `try` 外部正确定界，在 `finally` 中可靠释放 `store.guard` 与 `lease`，杜绝任何异常导致的文件锁残留；
+       - `tests/decision-analysis.tests.js`：新增仲裁成功/失败后计时立即落盘、空闲时间不累计、锁租约可靠释放的单元与集成测试。
+- **验证结果**：
+  - R2 专项验证：`node .studio/review-v2.14-r2-edge.cjs` 全部指标 100% 达成（`pidAliveAtWorkflowEnd: false`, `fileAtWorkflowEnd: false`, `fileAfterInvocation: false`, `guardBusy: false`, `openIntervals: 0`, `secondsAfterOneMinuteIdle: 0`）；
+  - R1 历史验证：`node .studio/review-v2.14-repro.cjs` 与 `node .studio/review-v2.14-extra.cjs` 均通过且退出码 0；
+  - 端到端验收：`node scripts/browser-acceptance.cjs` 30/30 项浏览器验收检查全量 PASS，退出码 0；
+  - 全量自动化测试：`npm test` 退出码 0（45 个测试套件，226 项测试全量 PASS）。
+- **数据与安全约束**：
+  - 零外部 npm 运行时依赖；
+  - 严格保留根目录未跟踪的 `commit.cmd`；
+  - 代码与文档默认作者标签 `@author shuyongqiang`。

@@ -100,16 +100,17 @@ async function driveVerification(engine,record,run,signal){
                 item.report=await trackedCall(record,meta,{
                     signal,
                     persist:save,
-                    invoke:async()=>{
+                    invoke:async(attemptId, innerSignal)=>{
+                        const effectiveSignal = innerSignal || signal;
                         let answer;
                         try{
                             answer=await engine.agent({...run.verifier,prompt,role:'verify-finding',workspaceRoot:record.workspaceRoot,sessionId:item.sessionId,
-                                sessionDirectory:path.join(engine.store.root,'sessions')},{signal,timeoutMs:run.timeoutSeconds*1000,
+                                sessionDirectory:path.join(engine.store.root,'sessions')},{signal:effectiveSignal,timeoutMs:run.timeoutSeconds*1000,
                                 onSpawn:proc=>{item.activePid=proc.pid;save();},onOutput:(value,type)=>{
                                     fs.appendFileSync(file(`${prefix}.log.txt`),value);engine.emit('log',{message:`[验证 ${finding.id}] ${value}`,type,time:now()});
                                 }});
                         }finally{item.activePid=null;}
-                        if(signal?.aborted)throw new Error('RUN_CANCELLED');
+                        if(effectiveSignal?.aborted)throw effectiveSignal.reason || new Error('RUN_CANCELLED');
                         fs.writeFileSync(file(`${prefix}.response.txt`),answer);item.responseArtifact=path.basename(file(`${prefix}.response.txt`));
                         return answer;
                     },

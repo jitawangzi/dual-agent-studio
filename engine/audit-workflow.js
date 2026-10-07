@@ -154,7 +154,13 @@ class AuditWorkflow {
             } catch (err) {
                 record.status=controller.signal.aborted?'STOPPED':'FAILED';record.error=err.message;this.save(record);
             }
-        })().finally(()=>{stopActiveTracking(record);this.active?.lease?.release?.();this.active=null;this.emit('audit_idle',{id:record.id});});
+        })().finally(()=>{
+            stopActiveTracking(record);
+            try { this.save(record); } catch {}
+            this.active?.lease?.release?.();
+            this.active=null;
+            this.emit('audit_idle',{id:record.id});
+        });
         return record;
     }
     retry(id) {
@@ -346,18 +352,19 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             reviewer.report=await trackedCall(record,meta,{
                 signal,
                 persist:()=>this.save(record),
-                invoke:async()=>{
+                invoke:async(attemptId, innerSignal)=>{
+                    const effectiveSignal = innerSignal || signal;
                     let answer;
                     try{
                         answer=await this.agent({provider:reviewer.provider,model:reviewer.model,reasoningEffort:reviewer.reasoningEffort,
                             workspaceRoot:record.workspaceRoot,sessionId:reviewer.sessionId,role:'audit',prompt,
-                            sessionDirectory:path.join(this.store.root,'sessions')},{signal,timeoutMs:callTimeoutMs,
+                            sessionDirectory:path.join(this.store.root,'sessions')},{signal:effectiveSignal,timeoutMs:callTimeoutMs,
                             onSpawn:proc=>{reviewer.activePid=proc.pid;this.save(record);},
                             onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[${reviewer.name}] ${value}`,type,time:now()});}});
                     }finally{
                         reviewer.activePid=null;
                     }
-                    if(signal.aborted)throw new Error(budgetController?.signal?.aborted?'BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED':'RUN_CANCELLED');
+                    if(effectiveSignal.aborted)throw effectiveSignal.reason || new Error(budgetController?.signal?.aborted?'BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED':'RUN_CANCELLED');
                     fs.writeFileSync(file('response.txt'),answer);
                     reviewer.responseArtifact=path.basename(file('response.txt'));
                     return answer;

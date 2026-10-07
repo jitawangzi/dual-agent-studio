@@ -93,11 +93,12 @@ class AgentHealth {
                         await trackedCall(record,meta,{
                             signal,
                             persist:()=>this.store.save('health',record),
-                            invoke:async()=>{
+                            invoke:async(attemptId, innerSignal)=>{
+                                const effectiveSignal = innerSignal || signal;
                                 return this.agent({provider:item.provider,model:item.model,reasoningEffort:item.reasoningEffort,
                                     workspaceRoot:scratch,sessionDirectory:path.join(scratch,'sessions'),sessionId:crypto.randomUUID(),role:'audit',
                                     prompt:`Connectivity test only. Do not read files, invoke tools, or change anything. Reply with exactly ${marker}`},
-                                {signal,timeoutMs:90000});
+                                {signal:effectiveSignal,timeoutMs:90000});
                             },
                             accept:answer=>{
                                 if(answer.trim()!==marker)throw new Error('UNEXPECTED_RESPONSE');

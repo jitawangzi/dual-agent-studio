@@ -170,37 +170,66 @@ async function trackedCall(record, meta, { persist = () => {}, invoke, accept = 
     }
     const attemptId = beginAttempt(record, meta);
     persist();
+    const invocationController = new AbortController();
+    let budgetTimer = null;
+    let budgetExhaustedError = null;
+    let onExternalAbort = null;
+
+    if (signal) {
+        if (signal.aborted) {
+            invocationController.abort(signal.reason || new Error('RUN_CANCELLED'));
+        } else {
+            onExternalAbort = () => {
+                invocationController.abort(signal.reason || new Error('RUN_CANCELLED'));
+            };
+            signal.addEventListener('abort', onExternalAbort, { once: true });
+        }
+    }
+
+    if (budgetTimeoutMs !== null) {
+        if (budgetTimeoutMs <= 0) {
+            budgetExhaustedError = new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED');
+            budgetExhaustedError.code = 'BUDGET_EXHAUSTED';
+            invocationController.abort(budgetExhaustedError);
+        } else {
+            budgetTimer = setTimeout(() => {
+                budgetExhaustedError = new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED');
+                budgetExhaustedError.code = 'BUDGET_EXHAUSTED';
+                invocationController.abort(budgetExhaustedError);
+            }, budgetTimeoutMs);
+        }
+    }
+
     let answer;
     try {
         if (reservationId) {
             markAttemptStarted(record, reservationId);
             persist();
         }
-        let budgetTimer = null;
-        let onAbort = null;
-        const races = [invoke(attemptId)];
-        if (budgetTimeoutMs !== null) {
-            races.push(new Promise((_, reject) => {
-                budgetTimer = setTimeout(() => {
-                    const err = new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED');
-                    err.code = 'BUDGET_EXHAUSTED';
-                    reject(err);
-                }, budgetTimeoutMs);
-            }));
-        }
-        if (signal) {
-            races.push(new Promise((_, reject) => {
-                if (signal.aborted) return reject(new Error('RUN_CANCELLED'));
-                onAbort = () => reject(new Error('RUN_CANCELLED'));
-                signal.addEventListener('abort', onAbort, { once: true });
-            }));
-        }
+        let rawAnswer;
+        let invokeError = null;
         try {
-            answer = await Promise.race(races);
+            rawAnswer = await invoke(attemptId, invocationController.signal);
+        } catch (err) {
+            invokeError = err;
         } finally {
             if (budgetTimer) clearTimeout(budgetTimer);
-            if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+            if (signal && onExternalAbort) signal.removeEventListener('abort', onExternalAbort);
         }
+
+        if (budgetExhaustedError) {
+            throw budgetExhaustedError;
+        }
+        if (signal?.aborted) {
+            throw (signal.reason || new Error('RUN_CANCELLED'));
+        }
+        if (invocationController.signal.aborted && invocationController.signal.reason) {
+            throw invocationController.signal.reason;
+        }
+        if (invokeError) {
+            throw invokeError;
+        }
+        answer = rawAnswer;
     } catch (error) {
         const message = String(error?.message || '');
         const isBudget = error?.code === 'BUDGET_EXHAUSTED' || /BUDGET_EXHAUSTED/.test(message);

@@ -192,6 +192,7 @@ class Workflow {
             }
         })().finally(() => {
             stopActiveTracking(run);
+            try { this.save(run, 'stopped_tracking'); } catch {}
             this.active?.lease?.release?.();
             this.active = null; this.emit('run_idle', { id: run.id });
         });
@@ -252,15 +253,16 @@ class Workflow {
         const meta = { stepId: `round-${run.round}:${run.phase}`, role, phase: run.phase, provider: request.provider,
             model: request.model, reasoningEffort: request.reasoningEffort, sessionId: request.sessionId };
         return trackedCall(run, meta, { signal, accept, persist: () => this.save(run, 'call_ledger'),
-            invoke: async () => {
+            invoke: async (attemptId, innerSignal) => {
                 let response;
-                try { response = await this.agent(request, { signal, timeoutMs: run.config.timeoutSeconds * 1000,
+                const effectiveSignal = innerSignal || signal;
+                try { response = await this.agent(request, { signal: effectiveSignal, timeoutMs: run.config.timeoutSeconds * 1000,
                     onOutput: (text, stream) => {
                         fs.appendFileSync(artifact('log.txt'), text);
                         this.emit('log', { time: now(), type: stream, message: text, runId: run.id });
                     }, onSpawn: proc => { run.activePid = proc.pid; this.save(run, 'process_started', { pid: proc.pid, invocation }); } });
                 } finally { run.activePid = null; }
-                if (signal.aborted) throw new Error('RUN_CANCELLED');
+                if (effectiveSignal.aborted) throw effectiveSignal.reason || new Error('RUN_CANCELLED');
                 fs.writeFileSync(artifact('response.txt'), response);
                 run.lastResponseArtifact=path.basename(artifact('response.txt'));
                 return response;

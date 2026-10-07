@@ -12,6 +12,7 @@ const { createFixture } = require('./helpers/studio-fixture');
 const { createCase, presentCase } = require('../engine/decision-cases');
 const { parseArbitration, analyzeCase } = require('../engine/decision-analysis');
 const { evidenceKey } = require('../engine/audit-triage');
+const { currentActiveSeconds } = require('../engine/execution-budget');
 
 function setupCaseFixture(f) {
     const auditId = crypto.randomUUID();
@@ -270,3 +271,80 @@ test('analyzeCase: source modification during analysis marks analysis stale and 
     assert.equal(result.status, 'NEEDS_REVIEW');
     assert.notEqual(result.status, 'DECIDED');
 });
+
+test('analyzeCase: persists budget tracking on success and does not accumulate idle time', async (t) => {
+    const f = createFixture(t);
+    const { caseRecord } = setupCaseFixture(f);
+    const presented = presentCase(f.store, caseRecord.id);
+
+    await analyzeCase(f.store, caseRecord.id, {
+        workspaceRoot: f.workspace,
+        version: presented.version,
+        reviewer: { provider: 'mock' },
+        budget: { maxActiveSeconds: 10 }
+    }, {
+        snapshot: async () => 'snap-1',
+        agent: async () => JSON.stringify({
+            summary: 'Analysis summary',
+            positions: [{ referenceIndex: 0, claim: 'c', support: 's', limitations: 'l' }],
+            options: [{ id: 'O-1', action: 'DEFER', reason: 'r', risks: 'rk' }],
+            questions: []
+        })
+    });
+
+    const saved = f.store.read('decision-cases', caseRecord.id);
+    assert.equal(saved.status, 'AWAITING_HUMAN');
+    assert.equal(f.store.guard.isBusy(), false, 'guard lease must be released');
+    const openIntervals = saved.budget.timeTracking.activeIntervals.filter(i => i.stoppedAt === null);
+    assert.equal(openIntervals.length, 0, 'no open active interval on disk');
+
+    const activeNow = currentActiveSeconds(saved);
+    const activeLater = currentActiveSeconds(saved, Date.now() + 60000);
+    assert.equal(activeLater, activeNow, 'idle time while waiting for human decision must not accumulate');
+});
+
+test('analyzeCase: persists budget tracking on failure and releases guard lease', async (t) => {
+    const f = createFixture(t);
+    const { caseRecord } = setupCaseFixture(f);
+    const presented = presentCase(f.store, caseRecord.id);
+
+    await assert.rejects(async () => {
+        await analyzeCase(f.store, caseRecord.id, {
+            workspaceRoot: f.workspace,
+            version: presented.version,
+            reviewer: { provider: 'mock' },
+            budget: { maxActiveSeconds: 10 }
+        }, {
+            snapshot: async () => 'snap-1',
+            agent: async () => { throw new Error('AGENT_CRASHED'); }
+        });
+    }, /AGENT_CRASHED/);
+
+    const saved = f.store.read('decision-cases', caseRecord.id);
+    assert.equal(saved.status, 'OPEN');
+    assert.equal(f.store.guard.isBusy(), false, 'guard lease must be released on failure');
+    const openIntervals = saved.budget.timeTracking.activeIntervals.filter(i => i.stoppedAt === null);
+    assert.equal(openIntervals.length, 0, 'no open active interval on disk after failure');
+
+    const activeNow = currentActiveSeconds(saved);
+    const activeLater = currentActiveSeconds(saved, Date.now() + 60000);
+    assert.equal(activeLater, activeNow, 'idle time after failure must not accumulate');
+
+    // Second call can run without lock contention
+    await analyzeCase(f.store, caseRecord.id, {
+        workspaceRoot: f.workspace,
+        version: saved.version,
+        reviewer: { provider: 'mock' },
+        budget: { maxActiveSeconds: 10 }
+    }, {
+        snapshot: async () => 'snap-1',
+        agent: async () => JSON.stringify({
+            summary: 'Retry summary',
+            positions: [{ referenceIndex: 0, claim: 'c', support: 's', limitations: 'l' }],
+            options: [{ id: 'O-1', action: 'DEFER', reason: 'r', risks: 'rk' }],
+            questions: []
+        })
+    });
+    assert.equal(f.store.read('decision-cases', caseRecord.id).status, 'AWAITING_HUMAN');
+});
+

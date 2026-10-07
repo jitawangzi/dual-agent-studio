@@ -129,7 +129,13 @@ class PlanningWorkflow{
                 }
                 this.save(record);
             }
-        })().finally(()=>{stopActiveTracking(record);this.active?.lease?.release?.();this.active=null;this.emit('planning_idle',{id:record.id});});return record;
+        })().finally(()=>{
+            stopActiveTracking(record);
+            try { this.save(record); } catch {}
+            this.active?.lease?.release?.();
+            this.active=null;
+            this.emit('planning_idle',{id:record.id});
+        });return record;
     }
     async check(record,signal){if(await this.snapshot(record.workspaceRoot,signal)!==record.snapshot)throw new Error('PLANNING_SOURCE_CHANGED');if(signal?.aborted)throw new Error('RUN_CANCELLED');}
     async call(record,member,role,instructions,signal){
@@ -145,13 +151,14 @@ ${instructions}`;
             const result=await trackedCall(record,meta,{
                 signal,
                 persist:()=>this.save(record),
-                invoke:async()=>{
+                invoke:async(attemptId, innerSignal)=>{
+                    const effectiveSignal = innerSignal || signal;
                     let answer;
                     try{
                         answer=await this.agent({...member,workspaceRoot:record.workspaceRoot,role,prompt,sessionId:call.sessionId,sessionDirectory:path.join(this.store.root,'sessions')},
-                            {signal,timeoutMs:record.timeoutSeconds*1000,onSpawn:p=>{call.activePid=p.pid;this.save(record);},onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[方案 ${member.name}] ${value}`,type,time:now()});}});
+                            {signal:effectiveSignal,timeoutMs:record.timeoutSeconds*1000,onSpawn:p=>{call.activePid=p.pid;this.save(record);},onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[方案 ${member.name}] ${value}`,type,time:now()});}});
                     }finally{call.activePid=null;}
-                    if(signal?.aborted)throw new Error('RUN_CANCELLED');
+                    if(effectiveSignal?.aborted)throw effectiveSignal.reason || new Error('RUN_CANCELLED');
                     fs.writeFileSync(file('response.txt'),answer);call.responseArtifact=`${call.id}.response.txt`;
                     return answer;
                 },
