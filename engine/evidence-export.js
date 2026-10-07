@@ -120,40 +120,62 @@ function collectExportClosure(store, auditId) {
 
     const wsKey = rootAudit.workspaceKey;
 
-    // 2. Scan audits in same workspace for supplement/parent/targeted relationships
+    // 2. Discover full audit family transitively (BFS fixed point)
+    const auditIds = new Set([auditId]);
+    let allAudits = [];
     try {
-        const allAudits = store.list('audits');
-        for (const a of allAudits) {
-            if (a.id === auditId) continue;
-            const isSupplement = a.parentAuditId === auditId || a.parentAudit?.id === auditId;
-            const isParent = rootAudit.parentAuditId === a.id || rootAudit.parentAudit?.id === a.id;
-            if (isSupplement || isParent) {
-                tryFetch('audits', a.id);
-            }
-        }
+        allAudits = store.list('audits').filter(a => !a.workspaceKey || a.workspaceKey === wsKey);
     } catch {}
 
-    // 3. Scan runs for repair runs referencing these audits
-    try {
-        const allRuns = store.list('runs');
-        for (const r of allRuns) {
-            const matchesAudit = r.sourceAuditId === auditId ||
-                                 r.sourceAudit === auditId ||
-                                 r.sourceAudit?.id === auditId ||
-                                 r.closureAuditId === auditId;
-            if (matchesAudit) {
-                const fetchedRun = tryFetch('runs', r.id);
-                // Check if run references plans
-                if (fetchedRun) {
-                    if (fetchedRun.planId) tryFetch('plans', fetchedRun.planId);
-                    if (fetchedRun.approval?.planId) tryFetch('plans', fetchedRun.approval.planId);
+    let auditChanged = true;
+    while (auditChanged) {
+        auditChanged = false;
+        for (const a of allAudits) {
+            if (auditIds.has(a.id)) {
+                const parentId = a.parentAuditId || a.parentAudit?.id || a.targetedPlan?.baseAuditId;
+                if (parentId && !auditIds.has(parentId)) {
+                    auditIds.add(parentId);
+                    auditChanged = true;
+                }
+            } else {
+                const parentId = a.parentAuditId || a.parentAudit?.id || a.targetedPlan?.baseAuditId;
+                if (parentId && auditIds.has(parentId)) {
+                    auditIds.add(a.id);
+                    auditChanged = true;
                 }
             }
         }
+    }
+
+    // Fetch all collected audits
+    for (const aId of auditIds) {
+        tryFetch('audits', aId);
+    }
+
+    // 3. Scan runs for repair runs and runs referencing any collected audit
+    let allRuns = [];
+    try {
+        allRuns = store.list('runs').filter(r => !r.workspaceKey || r.workspaceKey === wsKey);
     } catch {}
 
-    // 4. Scan plans and discussions
-    if (rootAudit.planId) tryFetch('plans', rootAudit.planId);
+    for (const r of allRuns) {
+        const matchesAudit = auditIds.has(r.sourceAuditId) ||
+                             auditIds.has(r.sourceAudit) ||
+                             auditIds.has(r.sourceAudit?.id) ||
+                             auditIds.has(r.closureAuditId) ||
+                             (r.closureAudit?.id && auditIds.has(r.closureAudit.id));
+        if (matchesAudit) {
+            tryFetch('runs', r.id);
+        }
+    }
+
+    // 4. Scan plans and discussions referenced by audits or runs
+    for (const item of [...records]) {
+        if (item.record) {
+            if (item.record.planId) tryFetch('plans', item.record.planId);
+            if (item.record.approval?.planId) tryFetch('plans', item.record.approval.planId);
+        }
+    }
     for (const item of [...records]) {
         if (item.kind === 'plans' && item.record) {
             if (item.record.planningId) tryFetch('discussions', item.record.planningId);
@@ -161,12 +183,16 @@ function collectExportClosure(store, auditId) {
         }
     }
 
-    // 5. Scan decision cases referencing this audit
+    // 5. Scan decision cases referencing any audit or plan in closure
     try {
-        const allCases = store.list('decision-cases');
+        const allCases = store.list('decision-cases').filter(c => !c.workspaceKey || c.workspaceKey === wsKey);
         for (const c of allCases) {
-            const matchesAnchor = c.anchor?.auditId === auditId;
-            const matchesRef = Array.isArray(c.references) && c.references.some(r => r.recordId === auditId);
+            const matchesAnchor = c.anchor?.auditId && auditIds.has(c.anchor.auditId);
+            const matchesRef = Array.isArray(c.references) && c.references.some(ref => {
+                if (auditIds.has(ref.recordId)) return true;
+                if (visited.has(`plans:${ref.recordId}`)) return true;
+                return false;
+            });
             if (matchesAnchor || matchesRef) {
                 tryFetch('decision-cases', c.id);
             }
@@ -264,6 +290,10 @@ function planExport(store, options = {}) {
     };
 }
 
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Applies text and path redactions to string values in a data structure.
  */
@@ -273,13 +303,11 @@ function redactObject(value, pathReplacements, customRules = []) {
         let str = value;
         for (const { from, to } of pathReplacements) {
             if (from) {
-                // Global case-insensitive replacement for paths
-                str = str.split(from).join(to);
-                // Also handle backslash/forward slash variations
-                const altFrom = from.replace(/\\/g, '/');
-                str = str.split(altFrom).join(to);
-                const winFrom = from.replace(/\//g, '\\');
-                str = str.split(winFrom).join(to);
+                // Global case-insensitive and slash-agnostic replacement for paths
+                const escapedParts = from.split(/[\\/]/).map(escapeRegex);
+                const pattern = escapedParts.join('[\\\\/]');
+                const regex = new RegExp(pattern, 'gi');
+                str = str.replace(regex, to);
             }
         }
         for (const rule of customRules) {
@@ -327,11 +355,15 @@ function buildExport(store, options = {}) {
         const tmp = os.tmpdir();
         if (tmp) pathReplacements.push({ from: tmp, to: '<TMP_DIR>' });
 
-        // Collect workspace roots from records
+        // Collect workspace roots and workspace keys from records
         for (const r of rawRecords) {
             const ws = r.record?.workspaceRoot;
             if (ws && typeof ws === 'string') {
                 pathReplacements.push({ from: ws, to: '<WORKSPACE_ROOT>' });
+            }
+            const wk = r.record?.workspaceKey;
+            if (wk && typeof wk === 'string') {
+                pathReplacements.push({ from: wk, to: '<WORKSPACE_ROOT>' });
             }
         }
     }

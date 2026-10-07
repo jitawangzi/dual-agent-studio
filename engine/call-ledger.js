@@ -155,13 +155,18 @@ function errorCodeOf(error, fallback) {
  * `accept` performs post-output checks/parsing; its failure means INVALID_RESPONSE
  * (or DISCARDED when the source changed, STOPPED when cancelled).
  */
-const { reserveAttempt, markAttemptStarted, settleAttempt } = require('./execution-budget');
+const { reserveAttempt, markAttemptStarted, settleAttempt, remainingBudget } = require('./execution-budget');
 
 async function trackedCall(record, meta, { persist = () => {}, invoke, accept = value => value, signal } = {}) {
     let reservationId = null;
+    let budgetTimeoutMs = null;
     if (record.budget) {
         reservationId = reserveAttempt(record, { stepId: meta.stepId });
         persist();
+        const curBudget = remainingBudget(record);
+        if (curBudget.remainingActiveSeconds !== null) {
+            budgetTimeoutMs = Math.max(0, curBudget.remainingActiveSeconds * 1000);
+        }
     }
     const attemptId = beginAttempt(record, meta);
     persist();
@@ -171,13 +176,38 @@ async function trackedCall(record, meta, { persist = () => {}, invoke, accept = 
             markAttemptStarted(record, reservationId);
             persist();
         }
-        answer = await invoke(attemptId);
+        let budgetTimer = null;
+        let onAbort = null;
+        const races = [invoke(attemptId)];
+        if (budgetTimeoutMs !== null) {
+            races.push(new Promise((_, reject) => {
+                budgetTimer = setTimeout(() => {
+                    const err = new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED');
+                    err.code = 'BUDGET_EXHAUSTED';
+                    reject(err);
+                }, budgetTimeoutMs);
+            }));
+        }
+        if (signal) {
+            races.push(new Promise((_, reject) => {
+                if (signal.aborted) return reject(new Error('RUN_CANCELLED'));
+                onAbort = () => reject(new Error('RUN_CANCELLED'));
+                signal.addEventListener('abort', onAbort, { once: true });
+            }));
+        }
+        try {
+            answer = await Promise.race(races);
+        } finally {
+            if (budgetTimer) clearTimeout(budgetTimer);
+            if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+        }
     } catch (error) {
         const message = String(error?.message || '');
-        const status = signal?.aborted || /RUN_CANCELLED/.test(message) ? 'STOPPED' : /TIMEOUT/.test(message) ? 'TIMED_OUT' : 'CALL_FAILED';
-        finishAttempt(record, attemptId, { status, errorCode: errorCodeOf(error, status) });
+        const isBudget = error?.code === 'BUDGET_EXHAUSTED' || /BUDGET_EXHAUSTED/.test(message);
+        const status = isBudget ? 'STOPPED' : signal?.aborted || /RUN_CANCELLED/.test(message) ? 'STOPPED' : /TIMEOUT/.test(message) ? 'TIMED_OUT' : 'CALL_FAILED';
+        finishAttempt(record, attemptId, { status, errorCode: isBudget ? 'BUDGET_EXHAUSTED' : errorCodeOf(error, status) });
         if (reservationId) {
-            settleAttempt(record, reservationId, { status, attemptId, errorCode: errorCodeOf(error, status) });
+            settleAttempt(record, reservationId, { status, attemptId, errorCode: isBudget ? 'BUDGET_EXHAUSTED' : errorCodeOf(error, status) });
         }
         persist();
         throw error;
@@ -186,6 +216,19 @@ async function trackedCall(record, meta, { persist = () => {}, invoke, accept = 
     persist();
     try {
         const result = await accept(answer);
+        if (record.budget) {
+            const postBudget = remainingBudget(record);
+            if (postBudget.remainingActiveSeconds === 0) {
+                const err = new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED');
+                err.code = 'BUDGET_EXHAUSTED';
+                finishAttempt(record, attemptId, { status: 'STOPPED', errorCode: 'BUDGET_EXHAUSTED' });
+                if (reservationId) {
+                    settleAttempt(record, reservationId, { status: 'STOPPED', attemptId, errorCode: 'BUDGET_EXHAUSTED' });
+                }
+                persist();
+                throw err;
+            }
+        }
         finishAttempt(record, attemptId, { status: 'COMPLETED', usage: meta.usage });
         if (reservationId) {
             settleAttempt(record, reservationId, { status: 'COMPLETED', attemptId });
@@ -194,10 +237,11 @@ async function trackedCall(record, meta, { persist = () => {}, invoke, accept = 
         return result;
     } catch (error) {
         const message = String(error?.message || '');
-        const status = signal?.aborted || /RUN_CANCELLED/.test(message) ? 'STOPPED' : /SOURCE_CHANGED/.test(message) ? 'DISCARDED' : 'INVALID_RESPONSE';
-        finishAttempt(record, attemptId, { status, errorCode: status === 'INVALID_RESPONSE' ? 'INVALID_RESPONSE' : errorCodeOf(error, status) });
+        const isBudget = error?.code === 'BUDGET_EXHAUSTED' || /BUDGET_EXHAUSTED/.test(message);
+        const status = isBudget ? 'STOPPED' : signal?.aborted || /RUN_CANCELLED/.test(message) ? 'STOPPED' : /SOURCE_CHANGED/.test(message) ? 'DISCARDED' : 'INVALID_RESPONSE';
+        finishAttempt(record, attemptId, { status, errorCode: isBudget ? 'BUDGET_EXHAUSTED' : status === 'INVALID_RESPONSE' ? 'INVALID_RESPONSE' : errorCodeOf(error, status) });
         if (reservationId) {
-            settleAttempt(record, reservationId, { status, attemptId, errorCode: status === 'INVALID_RESPONSE' ? 'INVALID_RESPONSE' : errorCodeOf(error, status) });
+            settleAttempt(record, reservationId, { status, attemptId, errorCode: isBudget ? 'BUDGET_EXHAUSTED' : status === 'INVALID_RESPONSE' ? 'INVALID_RESPONSE' : errorCodeOf(error, status) });
         }
         persist();
         throw error;

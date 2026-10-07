@@ -192,88 +192,89 @@ async function analyzeCase(store, id, input = {}, options = {}) {
         lease = await store.guard.acquire({ kind: 'decision-analysis', id });
     }
 
-    const snapshotFn = options.snapshot || sourceSnapshot;
-    const preSnapshot = await snapshotFn(caseRecord.workspaceRoot, options.signal);
-
-    startActiveTracking(caseRecord);
-    caseRecord.status = 'ANALYZING';
-    store.save('decision-cases', caseRecord);
-
-    const prompt = buildArbitrationPrompt(caseRecord);
-    const agentFn = options.agent || (p => invokeAgent(p));
-
-    let parsedResult = null;
-    let rawAnswer = '';
-    let analysisStale = false;
-    let analysisStaleReason = null;
-
     try {
-        const stepId = `analysis-${crypto.randomUUID()}`;
-        parsedResult = await trackedCall(caseRecord, {
-            stepId,
-            role: 'arbitration',
-            provider: normalizedReviewer.provider,
-            model: normalizedReviewer.model,
-            reasoningEffort: normalizedReviewer.reasoningEffort,
-            sessionId: crypto.randomUUID()
-        }, {
-            persist: () => store.save('decision-cases', caseRecord),
-            signal: options.signal,
-            invoke: async (attemptId) => {
-                rawAnswer = await agentFn({
-                    workspaceRoot: caseRecord.workspaceRoot,
-                    provider: normalizedReviewer.provider,
-                    model: normalizedReviewer.model,
-                    reasoningEffort: normalizedReviewer.reasoningEffort,
-                    role: 'arbitration',
-                    prompt,
-                    signal: options.signal
-                });
-                return rawAnswer;
-            },
-            accept: async (answer) => {
-                const postSnapshot = await snapshotFn(caseRecord.workspaceRoot, options.signal);
-                if (postSnapshot !== preSnapshot) {
-                    analysisStale = true;
-                    analysisStaleReason = 'SOURCE_CHANGED_DURING_ANALYSIS';
-                }
-                const presentedNow = presentCase(store, id);
-                if (presentedNow.stale) {
-                    analysisStale = true;
-                    analysisStaleReason = analysisStaleReason || 'EVIDENCE_CHANGED_DURING_ANALYSIS';
-                }
-                return parseArbitration(answer, caseRecord.references.length);
-            }
-        });
-    } catch (error) {
-        stopActiveTracking(caseRecord);
-        const postPres = presentCase(store, id);
-        caseRecord.status = postPres.stale ? 'NEEDS_REVIEW' : 'OPEN';
+        const snapshotFn = options.snapshot || sourceSnapshot;
+        const preSnapshot = await snapshotFn(caseRecord.workspaceRoot, options.signal);
+
+        startActiveTracking(caseRecord);
+        caseRecord.status = 'ANALYZING';
         store.save('decision-cases', caseRecord);
-        throw error;
+
+        const prompt = buildArbitrationPrompt(caseRecord);
+        const agentFn = options.agent || (p => invokeAgent(p));
+
+        let parsedResult = null;
+        let rawAnswer = '';
+        let analysisStale = false;
+        let analysisStaleReason = null;
+
+        try {
+            const stepId = `analysis-${crypto.randomUUID()}`;
+            parsedResult = await trackedCall(caseRecord, {
+                stepId,
+                role: 'arbitration',
+                provider: normalizedReviewer.provider,
+                model: normalizedReviewer.model,
+                reasoningEffort: normalizedReviewer.reasoningEffort,
+                sessionId: crypto.randomUUID()
+            }, {
+                persist: () => store.save('decision-cases', caseRecord),
+                signal: options.signal,
+                invoke: async (attemptId) => {
+                    rawAnswer = await agentFn({
+                        workspaceRoot: caseRecord.workspaceRoot,
+                        provider: normalizedReviewer.provider,
+                        model: normalizedReviewer.model,
+                        reasoningEffort: normalizedReviewer.reasoningEffort,
+                        role: 'arbitration',
+                        prompt,
+                        signal: options.signal
+                    });
+                    return rawAnswer;
+                },
+                accept: async (answer) => {
+                    const postSnapshot = await snapshotFn(caseRecord.workspaceRoot, options.signal);
+                    if (postSnapshot !== preSnapshot) {
+                        analysisStale = true;
+                        analysisStaleReason = 'SOURCE_CHANGED_DURING_ANALYSIS';
+                    }
+                    const presentedNow = presentCase(store, id);
+                    if (presentedNow.stale) {
+                        analysisStale = true;
+                        analysisStaleReason = analysisStaleReason || 'EVIDENCE_CHANGED_DURING_ANALYSIS';
+                    }
+                    return parseArbitration(answer, caseRecord.references.length);
+                }
+            });
+        } catch (error) {
+            const postPres = presentCase(store, id);
+            caseRecord.status = postPres.stale ? 'NEEDS_REVIEW' : 'OPEN';
+            store.save('decision-cases', caseRecord);
+            throw error;
+        }
+
+        caseRecord.analysis = {
+            analyzedAt: now(),
+            reviewer: normalizedReviewer,
+            summary: parsedResult.summary,
+            positions: parsedResult.positions,
+            options: parsedResult.options,
+            questions: parsedResult.questions,
+            stale: analysisStale,
+            staleReason: analysisStaleReason,
+            rawResponse: rawAnswer
+        };
+
+        caseRecord.status = analysisStale ? 'NEEDS_REVIEW' : 'AWAITING_HUMAN';
+        store.save('decision-cases', caseRecord);
+
+        return presentCase(store, id);
     } finally {
         stopActiveTracking(caseRecord);
         if (lease) {
             try { await lease.release(); } catch {}
         }
     }
-
-    caseRecord.analysis = {
-        analyzedAt: now(),
-        reviewer: normalizedReviewer,
-        summary: parsedResult.summary,
-        positions: parsedResult.positions,
-        options: parsedResult.options,
-        questions: parsedResult.questions,
-        stale: analysisStale,
-        staleReason: analysisStaleReason,
-        rawResponse: rawAnswer
-    };
-
-    caseRecord.status = analysisStale ? 'NEEDS_REVIEW' : 'AWAITING_HUMAN';
-    store.save('decision-cases', caseRecord);
-
-    return presentCase(store, id);
 }
 
 module.exports = {

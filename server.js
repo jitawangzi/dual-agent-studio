@@ -94,13 +94,13 @@ if (require.main === module) {
     })();
 }
 
-function readRequestJson(req) {
+function readRequestJson(req, maxBytes = 1024 * 1024) {
     return new Promise((resolve, reject) => {
         let body = '', bytes = 0;
         req.setEncoding('utf8');
         req.on('data', data => {
             bytes += Buffer.byteLength(data);
-            if (bytes > 1024 * 1024) reject(new Error('REQUEST_TOO_LARGE'));
+            if (bytes > maxBytes) reject(new Error('REQUEST_TOO_LARGE'));
             else body += data;
         });
         req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch (e) { reject(e); } });
@@ -1312,7 +1312,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             if (req.method === 'POST' && parts.length === 2) {
-                const body = await readRequestJson(req);
+                const body = await readRequestJson(req, 35 * 1024 * 1024);
                 const validation = validateImportedBundle(body);
                 if (!validation.ok) {
                     sendJson(res, 400, { error: 'INVALID_IMPORT_BUNDLE', details: validation.errors });

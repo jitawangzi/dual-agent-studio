@@ -340,6 +340,40 @@
   - 严格保留根目录未跟踪的 `commit.cmd`；
   - 导出与归档绝不物理修改或删除本地原始数据，导入外部包绝不获得执行权限。
 
+## 2026-10-07 / 2.11–2.14 审核缺陷修复 (Review Findings Remediation) 闭环完成
+
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：针对 `.studio/review-v2.14-findings.md` 审核提出的 7 项缺陷（3 项 P1、4 项 P2）进行全量修复并闭环验证。
+- **修复详情**：
+  1. **Issue 1 (P1，时间硬预算中止与状态流转)**：
+     - 修改 `engine/call-ledger.js:trackedCall`：在执行 `invoke` 前根据 `remainingBudget.remainingActiveSeconds` 计算超时上限并使用 `Promise.race` 包装在途调用；在调用结束后若活动时长已达上限，抛出 `BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED` 并安全结算记账状态为 `STOPPED`；
+     - 修改 `engine/audit-workflow.js:drive` & `review`：基于 `remainingActiveSeconds` 创建独立 `budgetController` 中止信号与定时器；超时时中止所有在途审核员子进程；在审核结算时，若时间预算耗尽或存在因预算停止的审核员，将整个审核记录标记为 `STOPPED`，`pauseReason = 'BUDGET_EXHAUSTED'`，杜绝超额完成的假阳性。
+  2. **Issue 2 (P1，仲裁租约安全释放)**：
+     - 修改 `engine/decision-analysis.js:analyzeCase`：获取 `lease = await store.guard.acquire(...)` 后立即进入统一 `try { ... } finally { ... }` 块，确保在 `snapshot` 失败、初始化异常或任何运行期错误下，租约必定被释放，阻止运行锁残留导致的后续任务死锁。
+  3. **Issue 3 (P1，定向启动强制重算磁盘源码清单)**：
+     - 修改 `engine/audit-workflow.js:targetedStart`：公开启动接口仅信任持久化审核的基线清单并强制通过 `buildManifest(wsRoot)` 从当前磁盘重新计算清单，不再信任客户端在请求体中附带的旧 `manifestAfter`；当磁盘源码发生变动时严格抛出 `PLAN_VERSION_CONFLICT`；同时绑定批准时的源码快照到子审核记录。
+  4. **Issue 4 (P2，证据过期与仲裁失效拦截)**：
+     - 修改 `engine/decision-cases.js:presentCase`：将 `caseRecord.analysis?.stale` 明确纳入事项的 `stale` 计算与证据状态指纹，当仲裁依据因源码变动失效时标记事项为 `NEEDS_REVIEW` 并拒绝人类草率做决；
+     - 修改 `engine/decision-cases.js:applyDecision`：在分诊应用前先校验锚点冲突，再严格校验 `presented.stale`；当引用的计划或事实发生变更时，拒绝将已失效决策应用到审核分诊，抛出 `DECISION_EVIDENCE_STALE`。
+  5. **Issue 5 (P2，导出与归档递归闭包)**：
+     - 修改 `engine/evidence-export.js:collectExportClosure`：改用 BFS 固定点算法递归扫描祖先审核、主审核、补审、孙审核及定向审核完整族系，并严格按 `workspaceKey` 边界过滤；统一递归收集关联族系的所有 repair runs（及其引用的 plans）、方案审批、讨论以及锚定/引用整个族系的决策案例，形成完整自洽闭包。
+  6. **Issue 6 (P2，Windows 路径大小写安全脱敏)**：
+     - 修改 `engine/evidence-export.js:redactObject`：在正则替换中统一处理反斜杠与正斜杠，并采用 `gi` 全局不区分大小写模式，彻底覆盖 Windows 下因大小写和路径缩写导致的脱敏遗漏；
+     - 修改 `engine/evidence-export.js:buildExport`：在 `pathReplacements` 中显式添加所有收集记录的 `workspaceKey`，防止小写规范化路径泄露。
+  7. **Issue 7 (P2，合法导出包导入请求体上限)**：
+     - 修改 `server.js:readRequestJson`：扩展支持可选 `maxBytes` 参数（默认维持 1 MiB 安全限额）；
+     - 修改 `server.js:POST /api/imports`：将导入接口上限扩展至 35 MiB（覆盖 5 MiB 记录 + 20 MiB 附件 + base64 及 JSON 序列化膨胀），彻底解决合法导出包无法导入的问题。
+- **验证结果**：
+  - 复现脚本 1：`node .studio/review-v2.14-repro.cjs` 全部 6 项断言行为均达到安全预期（租约释放 busy: false, 仲裁失效 presentedStale: true 并报错, 时间预算超额中止 status: STOPPED, 族系完整闭包全部包含, 定向复查过期阻断 accepted: false, 路径完全脱敏）；
+  - 复现脚本 2：`node .studio/review-v2.14-extra.cjs` 全部 2 项断言行为均达到安全预期（过期证据拒绝应用并返回 DECISION_EVIDENCE_STALE, 1.2 MiB 合法导出包通过 HTTP POST 201 成功导入）；
+  - 全量自动化测试：`npm test` 退出码 0（45 个测试套件，224 项测试全量 PASS，覆盖 Node 单元/集成测试、服务器测试、前端契约、Provider 适配器与 PowerShell 编排回归测试）；
+  - 浏览器端到端验收：`node scripts/browser-acceptance.cjs` 退出码 0（30/30 项浏览器交互检查全部 PASS）。
+- **数据与安全约束**：
+  - 零外部 npm 运行时依赖；
+  - 严格保留根目录未跟踪的 `commit.cmd`；
+  - 作者标签 `@author shuyongqiang`。
+
+
 
 
 

@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { trackedCall, interruptOpenAttempts } = require('./call-ledger');
-const { ensureBudget, startActiveTracking, stopActiveTracking, recoverBudget } = require('./execution-budget');
+const { ensureBudget, startActiveTracking, stopActiveTracking, recoverBudget, remainingBudget } = require('./execution-budget');
 const {evidenceRefs, coverageDetails, evidenceInstructions}=require('./review-evidence');
 const { invokeAgent, execute } = require('./process-runner');
 const { sourceSnapshot, parseObject } = require('./workflow');
@@ -227,58 +227,95 @@ Return ONLY JSON:
 Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
     }
     async drive(record,signal){
+        const remAtStart = remainingBudget(record);
+        if (remAtStart.exhausted) {
+            const err = new Error(`BUDGET_EXHAUSTED: ${remAtStart.reason}`);
+            err.code = 'BUDGET_EXHAUSTED';
+            throw err;
+        }
+        const budgetController = new AbortController();
+        let budgetTimer = null;
+        if (remAtStart.remainingActiveSeconds !== null) {
+            budgetTimer = setTimeout(() => {
+                budgetController.abort(new Error('BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED'));
+            }, Math.max(0, remAtStart.remainingActiveSeconds * 1000));
+        }
+
+        const effectiveSignal = (typeof AbortSignal.any === 'function')
+            ? AbortSignal.any([signal, budgetController.signal])
+            : (() => {
+                const c = new AbortController();
+                const abort = s => c.abort(s.reason);
+                if (signal.aborted) c.abort(signal.reason);
+                else if (budgetController.signal.aborted) c.abort(budgetController.signal.reason);
+                else {
+                    signal.addEventListener('abort', () => abort(signal), { once: true });
+                    budgetController.signal.addEventListener('abort', () => abort(budgetController.signal), { once: true });
+                }
+                return c.signal;
+            })();
+
         try{
-            record.preflight=await this.preflight(record.reviewers.filter(r=>r.status==='QUEUED'),{signal});this.save(record);
+            record.preflight=await this.preflight(record.reviewers.filter(r=>r.status==='QUEUED'),{signal:effectiveSignal});this.save(record);
             if(!record.preflight.ok)throw new Error('AGENT_PREFLIGHT_FAILED: 请检查审核员环境诊断结果。');
-            const snapshot=await this.snapshot(record.workspaceRoot,signal);
+            const snapshot=await this.snapshot(record.workspaceRoot,effectiveSignal);
             if(record.snapshot&&record.snapshot!==snapshot)throw new Error('AUDIT_SOURCE_CHANGED');
             record.snapshot=snapshot;
             try {
-                record.manifest = await buildManifest(record.workspaceRoot, { signal });
+                record.manifest = await buildManifest(record.workspaceRoot, { signal: effectiveSignal });
             } catch (_) {}
             this.save(record);
             const queue=record.reviewers.filter(r=>r.status==='QUEUED');
             let cursor=0;
             const worker=async()=>{
-                while(cursor<queue.length&&!signal.aborted&&!record.sourceChanged){
-                    const reviewer=queue[cursor++]; await this.review(record,reviewer,signal);
+                while(cursor<queue.length&&!effectiveSignal.aborted&&!record.sourceChanged){
+                    const reviewer=queue[cursor++]; await this.review(record,reviewer,effectiveSignal,budgetController);
                 }
             };
             // Every child catches its failure; Promise.all waits for all process cleanup.
             const results=await Promise.allSettled(Array.from({length:Math.min(record.concurrency,queue.length)},worker));
             const rejected=results.find(r=>r.status==='rejected');if(rejected)throw rejected.reason;
-            if(!signal.aborted&&await this.snapshot(record.workspaceRoot,signal)!==record.snapshot)record.sourceChanged=true;
+            if(!effectiveSignal.aborted&&await this.snapshot(record.workspaceRoot,effectiveSignal)!==record.snapshot)record.sourceChanged=true;
             record.findings=aggregate(record);
             const success=record.reviewers.filter(r=>r.status==='COMPLETED');
-            const budgetExhausted=record.reviewers.some(r=>r.status==='STOPPED'&&r.pauseReason==='BUDGET_EXHAUSTED');
+            const remEnd = remainingBudget(record);
+            const timeExhausted = remEnd.remainingActiveSeconds === 0 && remEnd.maxActiveSeconds !== null;
+            const hasStoppedRev = record.reviewers.some(r=>r.status==='STOPPED'&&r.pauseReason==='BUDGET_EXHAUSTED');
+            const budgetExhausted = timeExhausted || budgetController.signal.aborted || hasStoppedRev;
             if (budgetExhausted) {
                 record.status='STOPPED';
                 record.pauseReason='BUDGET_EXHAUSTED';
                 record.allowedActions=['INCREASE_BUDGET','MANUAL_RESUME'];
-                record.error='BUDGET_EXHAUSTED: 调用次数或运行时间已达到上限，请调整预算后继续。';
+                record.error=`BUDGET_EXHAUSTED: ${remEnd.reason || '调用次数或运行时间已达到上限，请调整预算后继续。'}`;
             } else {
                 record.status=record.sourceChanged?'INVALIDATED':signal.aborted?'STOPPED':
                     success.length===record.reviewers.length&&success.every(r=>r.report.scopeComplete)?'COMPLETED':success.length?'PARTIAL':'FAILED';
             }
             if(record.sourceChanged)record.error='审核期间源码变化，报告已失效，请重新审核。';
         }catch(error){
-            if(error.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(error.message)){
+            const remCatch = remainingBudget(record);
+            const timeExhausted = remCatch.remainingActiveSeconds === 0 && remCatch.maxActiveSeconds !== null;
+            if(error.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(error.message)||timeExhausted||budgetController.signal.aborted){
                 record.status='STOPPED';
                 record.pauseReason='BUDGET_EXHAUSTED';
                 record.allowedActions=['INCREASE_BUDGET','MANUAL_RESUME'];
-                record.error=error.message;
+                record.error=error.message.includes('BUDGET_EXHAUSTED')?error.message:`BUDGET_EXHAUSTED: ${remCatch.reason||'运行时间已达上限'}`;
             } else {
                 record.status=error.message==='AUDIT_SOURCE_CHANGED'?'INVALIDATED':signal.aborted?'STOPPED':'FAILED';
                 record.error=error.message;
             }
         }
         finally{
-            for(const reviewer of record.reviewers)if(['QUEUED','RUNNING'].includes(reviewer.status))reviewer.status=signal.aborted?'STOPPED':'INTERRUPTED';
+            if (budgetTimer) clearTimeout(budgetTimer);
+            for(const reviewer of record.reviewers)if(['QUEUED','RUNNING'].includes(reviewer.status)) {
+                reviewer.status=(signal.aborted||budgetController.signal.aborted)?'STOPPED':'INTERRUPTED';
+                if (budgetController.signal.aborted) reviewer.pauseReason = 'BUDGET_EXHAUSTED';
+            }
             record.findings=aggregate(record);this.save(record);
         }
         return record;
     }
-    async review(record,reviewer,signal){
+    async review(record,reviewer,signal,budgetController=null){
         reviewer.status='RUNNING';reviewer.attempt++;reviewer.startedAt=now();reviewer.error='';delete reviewer.pauseReason;this.save(record);
         const prefix=`${reviewer.id}-${reviewer.attempt}`;
         const file=name=>this.store.file('audits',record.id,`${prefix}.${name}`);
@@ -292,6 +329,17 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             sessionId:reviewer.sessionId
         };
         try{
+            const rem = remainingBudget(record);
+            if (rem.exhausted) {
+                const err = new Error(`BUDGET_EXHAUSTED: ${rem.reason}`);
+                err.code = 'BUDGET_EXHAUSTED';
+                throw err;
+            }
+            let callTimeoutMs = record.timeoutSeconds * 1000;
+            if (rem.remainingActiveSeconds !== null) {
+                callTimeoutMs = Math.min(callTimeoutMs, Math.max(0, rem.remainingActiveSeconds * 1000));
+            }
+
             if(await this.snapshot(record.workspaceRoot,signal)!==record.snapshot){record.sourceChanged=true;throw new Error('AUDIT_SOURCE_CHANGED');}
             const prompt=this.prompt(record,reviewer);fs.writeFileSync(file('prompt.txt'),prompt);
             reviewer.promptArtifact=path.basename(file('prompt.txt'));
@@ -303,13 +351,13 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
                     try{
                         answer=await this.agent({provider:reviewer.provider,model:reviewer.model,reasoningEffort:reviewer.reasoningEffort,
                             workspaceRoot:record.workspaceRoot,sessionId:reviewer.sessionId,role:'audit',prompt,
-                            sessionDirectory:path.join(this.store.root,'sessions')},{signal,timeoutMs:record.timeoutSeconds*1000,
+                            sessionDirectory:path.join(this.store.root,'sessions')},{signal,timeoutMs:callTimeoutMs,
                             onSpawn:proc=>{reviewer.activePid=proc.pid;this.save(record);},
                             onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[${reviewer.name}] ${value}`,type,time:now()});}});
                     }finally{
                         reviewer.activePid=null;
                     }
-                    if(signal.aborted)throw new Error('RUN_CANCELLED');
+                    if(signal.aborted)throw new Error(budgetController?.signal?.aborted?'BUDGET_EXHAUSTED: MAX_ACTIVE_SECONDS_EXCEEDED':'RUN_CANCELLED');
                     fs.writeFileSync(file('response.txt'),answer);
                     reviewer.responseArtifact=path.basename(file('response.txt'));
                     return answer;
@@ -321,11 +369,15 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             });
             reviewer.status='COMPLETED';
         }catch(error){
-            reviewer.status=signal.aborted?'STOPPED':'FAILED';
+            const isBudget = error.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(error.message)||budgetController?.signal?.aborted;
+            reviewer.status=(isBudget || signal.aborted)?'STOPPED':'FAILED';
             reviewer.error=error.message;
-            if(error.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(error.message)){
+            if(isBudget){
                 reviewer.status='STOPPED';
                 reviewer.pauseReason='BUDGET_EXHAUSTED';
+                if (/MAX_ACTIVE_SECONDS_EXCEEDED/.test(error.message)) {
+                    budgetController?.abort(error);
+                }
             }
         }
         finally{reviewer.activePid=null;reviewer.finishedAt=now();record.findings=aggregate(record);this.save(record);}
@@ -392,11 +444,16 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             throw new Error('WORKSPACE_MISMATCH: Target workspace does not match base audit workspace');
         }
 
-        // 1. Re-calculate plan on server side
-        const plan = await this.targetedPreview(id, {
-            workspaceRoot: wsRoot,
-            manifestBefore: body.manifestBefore,
-            manifestAfter: body.manifestAfter
+        // 1. Re-calculate plan on server side directly from current disk state and persistent parent
+        const currentManifest = await buildManifest(wsRoot);
+        const manifestBefore = parent.manifest || null;
+        const findings = presentAudit(parent).findings || parent.findings || [];
+        const plan = buildTargetedPlan({
+            audit: parent,
+            manifestBefore,
+            manifestAfter: currentManifest,
+            findings,
+            reviewers: parent.reviewers
         });
 
         // 2. Validate version
@@ -447,6 +504,7 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             };
         });
 
+        const childSnapshot = await this.snapshot(wsRoot);
         const childRecord = {
             id: crypto.randomUUID(),
             schemaVersion: '1.0',
@@ -459,7 +517,8 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             timeoutSeconds: parent.timeoutSeconds,
             reviewers: childReviewers,
             status: 'CREATED',
-            snapshot: null,
+            snapshot: childSnapshot,
+            manifest: currentManifest,
             findings: [],
             triage: {},
             repairRuns: [],

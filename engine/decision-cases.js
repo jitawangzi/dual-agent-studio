@@ -327,7 +327,8 @@ function presentCase(store, id) {
         };
     });
 
-    const stale = anchorStale || referencesStale;
+    const analysisStale = Boolean(caseRecord.analysis?.stale);
+    const stale = anchorStale || referencesStale || analysisStale;
     let effectiveStatus = caseRecord.status;
     if (stale) {
         effectiveStatus = 'NEEDS_REVIEW';
@@ -338,8 +339,10 @@ function presentCase(store, id) {
     const currentEvidenceState = hash(JSON.stringify({
         anchorStale,
         referencesStale,
+        analysisStale,
         anchorHash: presentedAnchor ? (presentedAnchor.stale ? 'stale' : caseRecord.anchor.snapshotHash) : null,
-        refHashes: presentedReferences.map(r => r.stale ? 'stale' : r.snapshotHash)
+        refHashes: presentedReferences.map(r => r.stale ? 'stale' : r.snapshotHash),
+        analysisStaleReason: caseRecord.analysis?.staleReason || null
     }));
 
     const version = hash(JSON.stringify([
@@ -535,6 +538,13 @@ function applyDecision(store, { caseId, decisionId, version, workspaceRoot }, op
         appLog.error = 'ANCHOR_VERIFICATION_MODIFIED';
         store.save('decision-cases', caseRecord);
         throw new Error('ANCHOR_CONFLICT: Anchor finding verification was modified');
+    }
+
+    if (presented.stale) {
+        appLog.status = 'CONFLICT';
+        appLog.error = 'DECISION_EVIDENCE_STALE';
+        store.save('decision-cases', caseRecord);
+        throw new Error('DECISION_EVIDENCE_STALE: 证据或引用已过期，无法应用该决策');
     }
 
     // Apply triage using applyTriage
