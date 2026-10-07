@@ -284,6 +284,7 @@
         <select id="triageStatus-${escape(f.id)}" ${!selectable?'disabled':''}>${Object.entries(triageLabels).filter(([key])=>key!=='CONFIRMED'||['BUG','RISK'].includes(f.category)).filter(([key])=>key!=='ACCEPTED'||f.category==='SUGGESTION').map(([key,label])=>`<option value="${key}" ${key===(draftTriage(f)?.status||'UNREVIEWED')?'selected':''}>${label}</option>`).join('')}</select>
         <label for="triageNote-${escape(f.id)}">判断依据 / 复现记录</label><textarea id="triageNote-${escape(f.id)}" rows="2" maxlength="10000" ${!selectable?'disabled':''} placeholder="记录触发条件、实际结果或业务取舍；这是人工记录，不是系统已验证。">${escape(draftTriage(f)?.note||'')}</textarea>
         <button id="triageSave-${escape(f.id)}" data-triage="${escape(f.id)}" type="button" class="btn btn-sm btn-secondary" ${!selectable?'disabled':''}>保存分诊</button>
+        <button type="button" class="btn btn-sm btn-secondary" style="margin-left: 6px;" onclick="window.decisionsApp?.openFromFinding('${escape(next.id)}', '${escape(f.id)}')">⚖️ 发起争议决策</button>
         <details><summary>分诊历史（${f.triageHistory?.length||0}）</summary><pre>${escape((f.triageHistory||[]).map(t=>`${t.at} · ${triageLabels[t.status]}\n${t.note}`).join('\n\n')||'尚无记录')}</pre></details>
       </div>
       <details><summary>全部来源与依据（${f.sources.length}）</summary>${f.sources.map(s=>`<div class="audit-source"><strong>${escape(s.reviewerName)} · ${escape(s.provider)} / ${escape(s.model||'默认')} · ${escape(s.severity)}</strong>

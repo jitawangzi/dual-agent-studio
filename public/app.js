@@ -243,6 +243,8 @@ function switchTab(tab) {
 
   if (tab === 'diff') {
     fetchDiff();
+  } else if (tab === 'decisions') {
+    window.decisionsApp?.refresh();
   }
 }
 

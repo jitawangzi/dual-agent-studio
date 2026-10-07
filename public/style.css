@@ -1251,3 +1251,30 @@ body {
 .pause-body label { display: block; font-size: 12px; margin-bottom: 4px; color: #94a3b8; }
 .pause-body input { background: var(--bg-input, #1e293b); color: var(--text-main, #f1f5f9); border: 1px solid var(--border-color, #334155); border-radius: 6px; padding: 6px 10px; font-size: 13px; width: 100%; box-sizing: border-box; }
 .pause-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+
+/* --- DECISION WORKBENCH STYLING (2.13) --- */
+.decision-case-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.decision-case-card:hover {
+  border-color: var(--accent-blue);
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.decision-case-card.selected {
+  border-color: var(--accent-blue);
+  background: rgba(59, 130, 246, 0.08);
+  box-shadow: 0 0 0 1px var(--accent-blue);
+}
+
+.status-pill.badge-warning {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid #f59e0b;
+}

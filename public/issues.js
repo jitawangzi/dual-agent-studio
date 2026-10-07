@@ -14,6 +14,7 @@
       <p>在 ${esc(r.occurrenceCount)} 次审核中出现${r.occurrenceCount>1?'（重复发现）':'（首次记录）'}${r.needsReview?'；证据或源码版本变化，请重新确认':''}。</p>
       ${r.lastReview?`<p>最近复核：${esc(r.lastReview.evidence)}</p>`:''}
       ${r.decisions[0]?`<p>最近人工记录：${esc(labels[r.decisions[0].status]||r.decisions[0].status)} · ${esc(r.decisions[0].note)}（历史依据，不自动批准新审核）</p>`:''}
+      <div style="margin: 6px 0;"><button class="btn btn-sm btn-secondary" onclick="window.decisionsApp?.openFromIssue('${esc(r.id)}')">⚖️ 发起争议决策</button></div>
       <details><summary>来源审核与修复记录</summary>${r.occurrences.map(o=>`<p>${esc(o.at)} · ${esc(o.auditStatus)} <button class="btn btn-sm btn-secondary" data-issue-audit="${esc(o.auditId)}">查看审核</button><br>${esc(o.evidence)}</p>`).join('')}
       ${r.repairRuns.map(x=>`<p>${esc(x.bugId)} · ${esc(x.status)} <button class="btn btn-sm btn-secondary" data-issue-run="${esc(x.runId)}">查看修复</button></p>`).join('')}</details>
       <details><summary>完整证据与人工判断历史</summary><pre>${esc(JSON.stringify({history:r.history,decisions:r.decisions},null,2))}</pre></details></article>`).join('')||'<p>没有符合条件的历史问题。</p>';

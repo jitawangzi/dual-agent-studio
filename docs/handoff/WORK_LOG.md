@@ -274,6 +274,41 @@
 - **版本更新**：`package.json` 版本升级至 `2.12.0`。
 - **数据与安全约束**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
 
+## 2026-10-07 Version 2.13 争议处理与人工决策开发日志
+
+- **执行模型**：Antigravity Agent
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：把审核冲突、实现约束和业务疑问转化为可追溯的结构化决策事项（`decision-cases`），支持引用已有证据与目标锚定（anchor）；支持可选单次独立只读仲裁；提供人工决策（`CONFIRM` / `ACCEPT_SUGGESTION` / `DEFER` / `DISMISS` / `VERIFY_MORE` / `REPLAN`）；支持幂等分诊应用与操作日志日志恢复；严禁 Agent 多数票自动裁决或未经验证直接关闭 Bug。
+- **已完成任务**：
+  1. **Task 1（决策事项与证据引用）**：
+     - 扩展 `engine/run-store.js`、`engine/storage-schema.js`、`engine/storage-migration.js` 支持 `decision-cases` kind；
+     - 新建 `engine/decision-cases.js`：实现 `createCase`、`presentCase`，实现跨工作区引用防御、未知项校验、同项重复去重校验与非空业务问题校验；动态计算基于证据与分诊版本的确定性 version 与 stale 失效状态；
+     - 新建 `tests/fixtures/storage-v0/decision-cases/e0000000-0000-0000-0000-000000000001/state.json`；
+     - 新建 `tests/decision-cases.tests.js`（6/6 PASS），`tests/storage-compatibility.tests.js`（8/8 PASS）。
+  2. **Task 2（可选单次仲裁与证据结构）**：
+     - 新建 `engine/decision-analysis.js`：实现 `analyzeCase` 与 `parseArbitration`；严格校验 `positions`（`referenceIndex` 边界）、`options`（白名单动作）、单次调用保护、预算超限阻断及前后源码/证据指纹比对失效机制；
+     - 更新 `engine/provider-adapters.ps1`：支持 `arbitration` 角色的 Mock 仿真输出，返回结构化观点与建议动作；
+     - 新建 `tests/decision-analysis.tests.js`（4/4 PASS）。
+  3. **Task 3（人工决定、应用分诊与幂等恢复）**：
+     - 扩展 `engine/decision-cases.js`：实现 `decideCase`（版本校验、非空理由、问答完整校验、追加历史）与 `applyDecision`（幂等操作日志 `PENDING` -> `APPLIED`、锚定冲突检测、重复重试复用 `applicationId`）；
+     - 修改 `engine/audit-triage.js`：导出 `verificationKey`，在分诊记录 entry 中保留服务端 `decisionApplicationId`；
+     - 修改 `server.js`：新增 `POST /api/decision-cases`、`GET /api/decision-cases/:id`、`POST /api/decision-cases/:id/analyze`、`POST /api/decision-cases/:id/decide`、`POST /api/decision-cases/:id/apply` 端点；
+     - 新建 `tests/decision-application.tests.js`（5/5 PASS，含 HTTP API 端到端测试）。
+  4. **Task 4（争议工作台与验收）**：
+     - 新建 `public/decisions.js`：实现 `window.decisionsApp`（列表/详情/并排证据对比/发起仲裁/人工决策表单/显式应用分诊/模态框创建）；
+     - 修改 `public/index.html`：新增 `tabBtnDecisions` 标签按钮、`#tab-decisions` 争议决策工作台容器、`#createDecisionModal` 模态框及 `<script src="decisions.js"></script>`；修复 tab 容器闭合层级；
+     - 修改 `public/app.js`：在 `switchTab` 中触发 `decisionsApp.refresh()`；
+     - 修改 `public/audit.js` & `public/issues.js`：在发现卡片和问题台账中注入 `[⚖️ 发起争议决策]` 按钮；
+     - 修改 `public/style.css`：添加决策卡片和状态药丸样式；
+     - 新建 `tests/decisions-ui.tests.js`（2/2 PASS）；
+     - 修改 `scripts/browser-acceptance.cjs`：扩展新增 4 项争议决策端到端浏览器检查（创建争议事项、Mock 仲裁、人工暂缓并应用到审核闭环、证据变化失效检测），总项数升至 23 项。
+- **验证结果**：
+  - `npm test`：40 个测试套件，202 项测试全部 PASS，退出码 0；
+  - `node scripts/browser-acceptance.cjs`：23 项端到端浏览器验收测试全部 PASS，退出码 0。
+- **版本更新**：`package.json` 版本升级至 `2.13.0`。
+- **数据与安全约束**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
+
+
 
 
 

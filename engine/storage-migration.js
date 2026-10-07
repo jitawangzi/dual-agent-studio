@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { CURRENT_STORAGE_VERSION, validateRecord } = require('./storage-schema');
 const { hash, now, atomicJson } = require('./run-store');
 
-const KINDS = ['runs', 'plans', 'audits', 'discussions'];
+const KINDS = ['runs', 'plans', 'audits', 'discussions', 'decision-cases'];
 
 function recordsMatchExceptVersion(rec, backupRec, targetVersion) {
     if (!rec || !backupRec || typeof rec !== 'object' || typeof backupRec !== 'object') return false;

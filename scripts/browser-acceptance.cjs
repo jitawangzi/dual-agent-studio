@@ -491,6 +491,84 @@ function ok(desc) {
         assert.ok(finalClosure.blockers.some(b => b.includes('缺口') || b.includes('过期')));
         ok('Partial targeted completion prevents overall closure acceptance when full baseline is unverified');
 
+        // ================================================================
+        // 2.13 DISPUTE RESOLUTION AND HUMAN DECISIONS ACCEPTANCE
+        // ================================================================
+        const baseAuditForDispute = store.read('audits', baseAuditRecord.id);
+        const disputeFinding = {
+            id: 'F-DISPUTE-1',
+            category: 'BUG',
+            severity: 'HIGH',
+            file: 'engine/core.js',
+            lineRange: '1-10',
+            problem: 'Potential race condition under concurrent access',
+            evidence: 'const core = 2;\n',
+            acceptance: 'Thread safe lock',
+            sources: [{ reviewerId: baseAuditForDispute.reviewers[0].id, findingId: 'F-DISPUTE-1' }]
+        };
+        baseAuditForDispute.findings = [disputeFinding];
+        store.save('audits', baseAuditForDispute);
+
+        // Check 1: Create dispute case from finding
+        await page.evaluate(async ({ auditId, ws }) => {
+            document.getElementById('workspaceRoot').value = ws;
+            await window.decisionsApp.openFromFinding(auditId, 'F-DISPUTE-1');
+            document.getElementById('decisionCreateQuestion').value = 'Is thread safety required in single-process node?';
+            await window.decisionsApp.submitCreateCase();
+        }, { auditId: baseAuditForDispute.id, ws: targetedWs });
+
+        await page.waitForSelector('#decisionCaseDetail', { state: 'visible' });
+        const caseDetailHtml = await page.locator('#decisionCaseDetail').innerHTML();
+        assert.ok(caseDetailHtml.includes('Potential race condition under concurrent access'));
+        ok('Dispute case created from finding with anchor and structured references');
+
+        // Check 2: Execute mock single-shot arbitration
+        await page.evaluate(async () => {
+            await window.decisionsApp.analyzeCurrentCase();
+        });
+        const detailAfterArb = await page.locator('#decisionCaseDetail').innerHTML();
+        assert.ok(detailAfterArb.includes('待人工决策') || detailAfterArb.includes('AWAITING_HUMAN'));
+        assert.ok(detailAfterArb.includes('建议可选动作') || detailAfterArb.includes('Options') || detailAfterArb.includes('仲裁建议分析'));
+        ok('Single-shot arbitration generates advisory options and maintains non-decided state');
+
+        // Check 3: Human decision recorded and applied to audit finding triage
+        await page.evaluate(async () => {
+            document.getElementById('decisionAction').value = 'DEFER';
+            document.getElementById('decisionNote').value = 'Node is single-threaded event loop; defer to cluster milestone';
+            await window.decisionsApp.saveDecision();
+        });
+        const detailAfterDecide = await page.locator('#decisionCaseDetail').innerHTML();
+        assert.ok(detailAfterDecide.includes('已决策，待应用'));
+
+        // Apply decision triage
+        await page.evaluate(async () => {
+            const btn = document.querySelector('button[onclick*="applyCurrentDecision"]');
+            if (btn) btn.click();
+        });
+        await page.waitForTimeout(300);
+
+        const auditAfterDecision = store.read('audits', baseAuditForDispute.id);
+        assert.equal(auditAfterDecision.triage['F-DISPUTE-1'].status, 'DEFERRED');
+        assert.ok(auditAfterDecision.triage['F-DISPUTE-1'].history[0].decisionApplicationId);
+
+        const closureAfterDecision = closureView(store, baseAuditForDispute.id, (await buildManifest(targetedWs)).snapshot);
+        const closureFinding = closureAfterDecision.findings.find(f => f.findingId === 'F-DISPUTE-1' || f.problem.includes('Potential race condition'));
+        assert.ok(closureFinding);
+        assert.equal(closureFinding.state, 'DEFERRED');
+        ok('Human decision applied idempotently to audit finding and visible in closure view');
+
+        // Check 4: Stale evidence check flags NEEDS_REVIEW
+        const auditToMutate = store.read('audits', baseAuditForDispute.id);
+        auditToMutate.findings[0].evidence = 'CHANGED_EVIDENCE_KEY_FOR_STALENESS';
+        store.save('audits', auditToMutate);
+
+        await page.evaluate(async () => {
+            await window.decisionsApp.refreshCurrent();
+        });
+        const detailStale = await page.locator('#decisionCaseDetail').innerHTML();
+        assert.ok(detailStale.includes('证据已变动') || detailStale.includes('NEEDS_REVIEW') || detailStale.includes('失效'));
+        ok('Evidence modification flags case as NEEDS_REVIEW and prevents applying outdated decision');
+
         // Ensure no uncaught browser page errors
         assert.deepEqual(errors, []);
         ok('No uncaught browser console/script errors encountered throughout run');

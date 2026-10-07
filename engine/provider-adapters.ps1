@@ -23,6 +23,50 @@ function Invoke-AgentText {
             return (@{reviews=$mockReviews;questions=@()} | ConvertTo-Json -Depth 8 -Compress)
         }
         if ($Role -eq 'verify-finding') { return '{"verdict":"INSUFFICIENT_EVIDENCE","summary":"Mock verification only","evidence":"Mock does not inspect source","steps":["Use a real verifier to inspect source and reproduce"],"expected":"Real source evidence","actual":"No actual model verification","limitations":"Mock cannot establish whether the finding is valid","executionQuote":""}' }
+        if ($Role -eq 'arbitration') {
+            $refCount = 0
+            $match = [regex]::Match($Prompt, 'Provided Evidence References \((\d+) items\)')
+            if ($match.Success) { $refCount = [int]$match.Groups[1].Value }
+            $positions = @()
+            if ($refCount -gt 0) {
+                for ($i = 0; $i -lt [Math]::Min($refCount, 3); $i++) {
+                    $positions += @{
+                        referenceIndex = $i
+                        claim = "Mock claim for reference $i"
+                        support = "Mock evidence support for reference $i"
+                        limitations = "Mock limitation for reference $i"
+                    }
+                }
+            } else {
+                $positions += @{
+                    referenceIndex = 0
+                    claim = "Default dispute position"
+                    support = "Mock general boundary support"
+                    limitations = "No specific reference supplied"
+                }
+            }
+            $options = @(
+                @{
+                    id = "O-1"
+                    action = "DEFER"
+                    reason = "Mock arbitration suggests deferring to cluster milestone"
+                    risks = "Concurrent race risk remains until cluster milestone"
+                },
+                @{
+                    id = "O-2"
+                    action = "CONFIRM"
+                    reason = "Mock alternative recommends confirming bug immediately"
+                    risks = "May require non-trivial architectural changes"
+                }
+            )
+            $questions = @()
+            return (@{
+                summary = "Mock single-shot arbitration analysis for dispute"
+                positions = $positions
+                options = $options
+                questions = $questions
+            } | ConvertTo-Json -Depth 8 -Compress)
+        }
         if ($Role -eq 'audit') { return '{"summary":"Mock audit: workflow verification only","scopeComplete":true,"coverage":["Mock scope; no real code review"],"findings":[]}' }
         if ($Role -eq 'review') {
             $criteriaLine = [regex]::Match($Prompt, '(?m)^Structured acceptance criteria: (.+)$').Groups[1].Value

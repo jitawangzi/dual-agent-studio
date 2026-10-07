@@ -28,10 +28,11 @@ function applyTriage(record,input){
     if(!states.includes(input.status))throw new Error('INVALID_TRIAGE_STATUS');
     if(input.status==='CONFIRMED'&&!['BUG','RISK'].includes(finding.category)||input.status==='ACCEPTED'&&finding.category!=='SUGGESTION')throw new Error('INVALID_TRIAGE_CATEGORY');
     if(typeof input.note!=='string'||input.note.length>10000||input.status!=='UNREVIEWED'&&!input.note.trim())throw new Error('TRIAGE_REASON_REQUIRED');
-    const entry={status:input.status,note:input.note.trim(),evidenceKey:key,verificationKey:verificationKey(record,finding),version:(previous?.version||0)+1,at:now()};
+    const entry={status:input.status,note:input.note.trim(),evidenceKey:key,verificationKey:verificationKey(record,finding),version:(previous?.version||0)+1,at:now(),
+        ...(input.decisionApplicationId ? {decisionApplicationId: input.decisionApplicationId} : {})};
     record.triage||={};record.triage[finding.id]={...entry,history:[...(previous?.history||[]),entry]};return record;
 }
 function presentAudit(record){return {...record,gaps:auditGaps(record),supplementVersion:supplementVersion(record),findings:record.findings.map(f=>({...f,evidenceKey:evidenceKey(f),
     verificationKey:verificationKey(record,f),verification:verificationHistory(record,f).at(-1)||null,verificationHistory:verificationHistory(record,f),
     triage:decisionFor(record,f),triageVersion:record.triage?.[f.id]?.version||0,triageHistory:record.triage?.[f.id]?.history||[],repairable:canRepair(record,f)}))};}
-module.exports={applyTriage,canRepair,presentAudit,evidenceKey};
+module.exports={applyTriage,canRepair,presentAudit,evidenceKey,verificationKey};

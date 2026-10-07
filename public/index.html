@@ -302,6 +302,7 @@
           <button class="tab-btn active" onclick="switchTab('timeline')">📊 轮次流转 (Timeline)</button>
           <button class="tab-btn" id="tabBtnDiscuss" onclick="switchTab('discussion')">💬 需求讨论区 (Discussion)</button>
           <button class="tab-btn" onclick="switchTab('audit')">👥 审核报告</button>
+          <button class="tab-btn" id="tabBtnDecisions" onclick="switchTab('decisions')">⚖️ 争议决策 (Decisions)</button>
           <button class="tab-btn" onclick="switchTab('issues')">📋 项目问题台账</button>
           <button class="tab-btn" onclick="switchTab('diff')">🔍 代码变更 (Git Diff)</button>
           <button class="tab-btn" onclick="switchTab('logs')">💻 实时终端日志 (Live Logs)</button>
@@ -338,6 +339,38 @@
             </div>
             <div id="roundsList" class="rounds-list"></div>
           </div>
+        </div>
+
+        <div id="tab-decisions" class="tab-content">
+          <section class="audit-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+              <div>
+                <h3 style="margin: 0 0 4px 0;">⚖️ 争议处理与人工决策工作台</h3>
+                <p class="audit-help" style="margin: 0;">
+                  把审核冲突、实现约束和业务疑问变成可追溯的决策事项；支持单次只读仲裁与幂等分诊应用。
+                </p>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-sm btn-secondary" onclick="window.decisionsApp.refresh()">🔄 刷新列表</button>
+                <button class="btn btn-sm btn-primary" id="btnNewDecisionCase">➕ 新建决策事项</button>
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 320px 1fr; gap: 16px; min-height: 520px;">
+              <!-- Left: Case List -->
+              <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column;">
+                <h4 style="margin: 0 0 8px 0; font-size: 13px;">决策事项清单</h4>
+                <div id="decisionCaseList" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                  <!-- Populated dynamically -->
+                </div>
+              </div>
+
+              <!-- Right: Case Detail -->
+              <div id="decisionCaseDetail" style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; overflow-y: auto;">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+          </section>
         </div>
 
         <div id="tab-issues" class="tab-content">
@@ -675,11 +708,43 @@
         </div>
       </div>
     </div>
+    <!-- CREATE DECISION CASE MODAL -->
+    <div id="createDecisionModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="width: 640px; max-width: 90vw;">
+        <div class="modal-header">
+          <h3>➕ 新建争议决策事项</h3>
+          <button class="modal-close" onclick="window.decisionsApp.closeCreateModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label for="decisionCreateTitle">事项标题 (Title)</label>
+            <input type="text" id="decisionCreateTitle" class="form-control" placeholder="例如: 关于输入空字符串的异常处理争议">
+          </div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label for="decisionCreateQuestion">争议核心业务/技术问题 (Question, 必填)</label>
+            <textarea id="decisionCreateQuestion" class="form-control" rows="3" placeholder="例如: 网关层是否会过滤空 payload？业务允许返回 fallback 还是必须抛出异常？"></textarea>
+          </div>
+          <div id="decisionCreateAnchorInfo" style="margin-bottom: 12px; display: none;">
+            <label>锚定审核项 (Anchor)</label>
+            <div id="decisionCreateAnchorSummary" style="font-size: 12px; padding: 8px; background: rgba(255,255,255,0.03); border-radius: 4px;"></div>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <label>引用证据 (References)</label>
+            <div id="decisionCreateReferencesList" style="padding: 8px; background: rgba(255,255,255,0.03); border-radius: 4px; max-height: 120px; overflow-y: auto;"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" id="btnCancelCreateCase">取消</button>
+          <button class="btn btn-sm btn-primary" id="btnSubmitCreateCase">创建决策事项</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="review-evidence.js"></script>
   <script src="execution-budget.js"></script>
   <script src="targeted-review.js"></script>
+  <script src="decisions.js"></script>
   <script src="app.js"></script>
   <script src="audit.js"></script>
   <script src="audit-closure.js"></script>

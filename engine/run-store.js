@@ -23,7 +23,7 @@ class RunStore {
         this.guard = new RuntimeGuard(this.root);
     }
     file(kind, id, name = 'state.json') {
-        if (!['runs', 'plans', 'audits', 'discussions', 'health'].includes(kind) || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('INVALID_RECORD_ID');
+        if (!['runs', 'plans', 'audits', 'discussions', 'health', 'decision-cases'].includes(kind) || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('INVALID_RECORD_ID');
         if (path.basename(name) !== name) throw new Error('INVALID_ARTIFACT_NAME');
         return path.join(this.root, kind, id, name);
     }
@@ -43,7 +43,7 @@ class RunStore {
         return value;
     }
     listWithDiagnostics(kind, workspace) {
-        if (!['runs', 'plans', 'audits', 'discussions', 'health'].includes(kind)) throw new Error('INVALID_RECORD_KIND');
+        if (!['runs', 'plans', 'audits', 'discussions', 'health', 'decision-cases'].includes(kind)) throw new Error('INVALID_RECORD_KIND');
         const dir = path.join(this.root, kind);
         if (!fs.existsSync(dir)) return { records: [], errors: [] };
         const key = workspace ? workspaceKey(workspace) : null;

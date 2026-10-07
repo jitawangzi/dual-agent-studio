@@ -1,0 +1,15 @@
+{
+  "id": "e0000000-0000-0000-0000-000000000001",
+  "storageVersion": 0,
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "title": "Legacy dispute over input sanitization",
+  "question": "Should input sanitization throw or return fallback?",
+  "status": "OPEN",
+  "anchor": null,
+  "references": [],
+  "decisions": [],
+  "applications": [],
+  "createdAt": "2026-10-06T12:00:00.000Z",
+  "updatedAt": "2026-10-06T12:00:00.000Z"
+}

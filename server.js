@@ -18,6 +18,8 @@ const { presentAudit } = require('./engine/audit-triage');
 const { issueLedger } = require('./engine/issue-ledger');
 const { PlanningWorkflow } = require('./engine/planning-workflow');
 const { planMigration, applyMigration } = require('./engine/storage-migration');
+const { createCase, presentCase, decideCase, applyDecision } = require('./engine/decision-cases');
+const { analyzeCase } = require('./engine/decision-analysis');
 const runStore = new RunStore(process.env.STUDIO_DATA_DIR || path.join(__dirname, '.studio'));
 const agentHealth = new AgentHealth({store: runStore, catalog:getModelsConfig});
 const auditTemplates = new AuditTemplates(runStore.root,getModelsConfig);
@@ -842,6 +844,55 @@ const server = http.createServer(async (req, res) => {
         try{sendJson(res,200,issueLedger(runStore,url.searchParams.get('workspace')));}
         catch(error){sendJson(res,400,{error:error.message});}return;
     }
+    if (pathname === '/api/decision-cases' || pathname.startsWith('/api/decision-cases/')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean);
+            const id = parts[2];
+            const action = parts[3];
+
+            if (req.method === 'GET' && parts.length <= 3) {
+                if (id) {
+                    sendJson(res, 200, presentCase(runStore, id));
+                } else {
+                    const ws = url.searchParams.get('workspace');
+                    const cases = runStore.list('decision-cases', ws).map(c => presentCase(runStore, c.id));
+                    sendJson(res, 200, cases);
+                }
+                return;
+            }
+
+            if (req.method === 'POST') {
+                const body = await readRequestJson(req);
+                if (!id && parts.length === 2) {
+                    const created = createCase(runStore, body);
+                    sendJson(res, 201, presentCase(runStore, created.id));
+                    return;
+                }
+                if (id && action === 'analyze' && parts.length === 4) {
+                    const result = await analyzeCase(runStore, id, body, { catalog: getModelsConfig });
+                    sendJson(res, 200, result);
+                    return;
+                }
+                if (id && action === 'decide' && parts.length === 4) {
+                    const result = decideCase(runStore, id, body);
+                    sendJson(res, 200, result);
+                    return;
+                }
+                if (id && action === 'apply' && parts.length === 4) {
+                    const result = applyDecision(runStore, { caseId: id, ...body });
+                    sendJson(res, 200, result);
+                    return;
+                }
+            }
+
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) {
+            const status = /CONFLICT|BUSY|CHANGED|MISMATCH|STILL_RUNNING/.test(error.message) ? 409 :
+                           /NOT_FOUND/.test(error.message) ? 404 : 400;
+            sendJson(res, status, { error: error.message });
+        }
+        return;
+    }
     if (pathname === '/api/audits' || pathname.startsWith('/api/audits/')) {
         try {
             const parts = pathname.split('/').filter(Boolean), id = parts[2], action = parts[3];
@@ -1122,7 +1173,7 @@ const server = http.createServer(async (req, res) => {
             if (pathname === '/api/maintenance/storage') {
                 if (req.method !== 'GET') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
                 const plan = planMigration(runStore);
-                const kinds = ['runs', 'plans', 'audits', 'discussions'];
+                const kinds = ['runs', 'plans', 'audits', 'discussions', 'decision-cases'];
                 const diagnostics = {};
                 for (const k of kinds) {
                     diagnostics[k] = runStore.listWithDiagnostics(k, url.searchParams.get('workspace'));

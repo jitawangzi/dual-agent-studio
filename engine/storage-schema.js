@@ -23,6 +23,11 @@ function normalizeRecord(kind, raw) {
         normalized.findings = Array.isArray(raw.findings) ? raw.findings : (raw.findings ?? []);
         normalized.reviewers = Array.isArray(raw.reviewers) ? raw.reviewers : (raw.reviewers ?? []);
     }
+    if (kind === 'decision-cases') {
+        normalized.references = Array.isArray(raw.references) ? raw.references : [];
+        normalized.decisions = Array.isArray(raw.decisions) ? raw.decisions : [];
+        normalized.applications = Array.isArray(raw.applications) ? raw.applications : [];
+    }
     return normalized;
 }
 
@@ -41,6 +46,20 @@ function validateRecord(kind, raw, expectedId = null) {
         const hasWsRoot = typeof raw.workspaceRoot === 'string' && raw.workspaceRoot.trim().length > 0;
         if (!hasWsKey && !hasWsRoot) {
             errors.push({ path: 'workspaceKey', code: 'MISSING_WORKSPACE' });
+        }
+    }
+    if (kind === 'decision-cases') {
+        if (typeof raw.title !== 'string' || !raw.title.trim()) {
+            errors.push({ path: 'title', code: 'INVALID_TITLE' });
+        }
+        if (typeof raw.question !== 'string' || !raw.question.trim()) {
+            errors.push({ path: 'question', code: 'INVALID_QUESTION' });
+        }
+        if (!['OPEN', 'ANALYZING', 'AWAITING_HUMAN', 'DECIDED', 'NEEDS_REVIEW'].includes(raw.status)) {
+            errors.push({ path: 'status', code: 'INVALID_STATUS' });
+        }
+        if (!Array.isArray(raw.references)) {
+            errors.push({ path: 'references', code: 'INVALID_REFERENCES' });
         }
     }
     if (raw.findings !== undefined && !Array.isArray(raw.findings)) {
