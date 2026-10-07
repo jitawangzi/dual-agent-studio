@@ -405,6 +405,7 @@
                 <h4>审核闭环总览与人工验收</h4>
                 <p class="audit-help">关联原审核、补审和修复记录。检查完成不等于没有 Bug；源码变化后需刷新证据。原报告保持原状态。</p>
                 <button id="btnRefreshClosure" class="btn btn-secondary btn-sm">刷新闭环与源码状态</button>
+                <button id="btnTargetedReview" class="btn btn-primary btn-sm">🎯 定向复查变更</button>
                 <button id="btnRecheckClosure" class="btn btn-secondary btn-sm">按原团队重新审核当前源码</button>
                 <p id="auditClosureSummary" role="status"></p>
                 <div id="auditClosureCoverage"></div>
@@ -657,10 +658,28 @@
         </div>
       </div>
     </div>
+    <!-- TARGETED REVIEW MODAL -->
+    <div id="targetedReviewModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="width: 760px; max-width: 92vw;">
+        <div class="modal-header">
+          <h3>🎯 变更分析与定向复查</h3>
+          <button class="modal-close" onclick="window.TargetedReviewUI.closePreview()">✕</button>
+        </div>
+        <div class="modal-body" id="targetedPreviewContent">
+          <!-- Populated dynamically by TargetedReviewUI -->
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" onclick="window.TargetedReviewUI.closePreview()">取消</button>
+          <button class="btn btn-sm btn-secondary" onclick="window.TargetedReviewUI.switchToFullAudit()">🔄 切换到完整重新审核</button>
+          <button id="btnConfirmTargetedStart" class="btn btn-sm btn-primary" onclick="window.TargetedReviewUI.confirmStart()" disabled>🚀 启动定向复查</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="review-evidence.js"></script>
   <script src="execution-budget.js"></script>
+  <script src="targeted-review.js"></script>
   <script src="app.js"></script>
   <script src="audit.js"></script>
   <script src="audit-closure.js"></script>

@@ -27,7 +27,7 @@ function closureView(store,id,snapshot){
             const check=taskId.startsWith('C-')?r.report?.taskChecks?.find(c=>c.id===taskId):taskId.startsWith('G-')?r.report?.coverageDetails?.[Number(taskId.slice(2))-1]:null;
             if(check?.status==='CHECKED'||taskId==='SCOPE'&&r.report?.scopeComplete)return {auditId:a.id,reviewerId:r.id,evidence:check?.evidence||check?.checks||r.report.summary};
         }
-        for(const child of family.filter(c=>c.parentAudit?.id===a.id&&c.parentAudit.mode!=='RECHECK'&&c.parentAudit.version===supplementVersion(a)).reverse()){
+        for(const child of family.filter(c=>c.parentAudit?.id===a.id&&c.parentAudit.mode!=='RECHECK'&&c.parentAudit.mode!=='TARGETED'&&c.parentAudit.version===supplementVersion(a)).reverse()){
             const selections=child.parentAudit.selections||[],owners=a.reviewers.filter(x=>selections.some(s=>s.reviewerId===x.id));
             const index=selections.filter(s=>s.reviewerId===r.id).findIndex(s=>s.taskId===taskId),cr=child.reviewers[owners.findIndex(x=>x.id===r.id)];
             if(index<0||!cr)continue;
@@ -47,7 +47,7 @@ function closureView(store,id,snapshot){
         tasks:(r.checklist||[]).map((task,i)=>({task,proof:resolve(baseline,r,`C-${i+1}`)})),
         gaps:auditGaps({...baseline,reviewers:[r]}).map(g=>({...g,proof:resolve(baseline,r,g.taskId)}))}));
     const relevant=new Set([baseline.id]);
-    for(let changed=true;changed;){changed=false;for(const a of family)if(!relevant.has(a.id)&&relevant.has(a.parentAudit?.id)&&a.parentAudit.mode!=='RECHECK'){relevant.add(a.id);changed=true;}}
+    for(let changed=true;changed;){changed=false;for(const a of family)if(!relevant.has(a.id)&&relevant.has(a.parentAudit?.id)&&a.parentAudit.mode!=='RECHECK'&&a.parentAudit.mode!=='TARGETED'){relevant.add(a.id);changed=true;}}
     for(const a of family.filter(a=>a.id!==baseline.id&&relevant.has(a.id)))for(const r of a.reviewers){
         // A sibling may finish the requested task, but it cannot erase additional gaps discovered here.
         const gaps=auditGaps({...a,reviewers:[r]}).filter(g=>!g.taskId.startsWith('C-')).map(g=>({...g,proof:resolve(a,r,g.taskId)}));

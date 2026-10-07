@@ -863,10 +863,20 @@ const server = http.createServer(async (req, res) => {
             }
             if (req.method === 'POST') {
                 const body = await readRequestJson(req);
+                if (id && action === 'targeted-preview' && parts.length === 4) {
+                    const plan = await auditWorkflow.targetedPreview(id, body);
+                    sendJson(res, 200, plan);
+                    return;
+                }
                 if (activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
                 if (!id && parts.length === 2) {
                     const record = auditWorkflow.create(body); auditWorkflow.launch(record);
                     sendJson(res, 202, { auditId: record.id }); return;
+                }
+                if (id && action === 'targeted-start' && parts.length === 4) {
+                    const record = await auditWorkflow.targetedStart(id, body);
+                    sendJson(res, 202, { auditId: record.id });
+                    return;
                 }
                 if (id && action === 'supplement' && parts.length === 4) {
                     const record=await auditWorkflow.supplement(id,body);sendJson(res,202,{auditId:record.id});return;
@@ -888,7 +898,7 @@ const server = http.createServer(async (req, res) => {
                 }
             }
             sendJson(res, 404, { error: 'NOT_FOUND' });
-        } catch (error) { sendJson(res, /BUSY|CONFLICT|SOURCE_CHANGED|INVALIDATED|MISMATCH|STILL_RUNNING/.test(error.message) ? 409 : 400, { error: error.message }); }
+        } catch (error) { sendJson(res, /BUSY|CONFLICT|SOURCE_CHANGED|INVALIDATED|MISMATCH|STILL_RUNNING|FULL_AUDIT_REQUIRED/.test(error.message) ? 409 : 400, { error: error.message }); }
         return;
     }
 

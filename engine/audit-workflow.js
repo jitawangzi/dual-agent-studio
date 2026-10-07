@@ -14,6 +14,8 @@ const { normalizeReviewer } = require('./audit-config');
 const { checkReviewers } = require('./agent-health');
 const { applyTriage, canRepair, presentAudit } = require('./audit-triage');
 const { createVerification, driveVerification } = require('./finding-verification');
+const { buildManifest } = require('./source-manifest');
+const { buildTargetedPlan } = require('./targeted-review-plan');
 
 function text(value, field) {
     if (typeof value !== 'string' || !value.trim()) throw new Error(`INVALID_AUDIT: ${field} is required`);
@@ -230,7 +232,11 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             if(!record.preflight.ok)throw new Error('AGENT_PREFLIGHT_FAILED: 请检查审核员环境诊断结果。');
             const snapshot=await this.snapshot(record.workspaceRoot,signal);
             if(record.snapshot&&record.snapshot!==snapshot)throw new Error('AUDIT_SOURCE_CHANGED');
-            record.snapshot=snapshot;this.save(record);
+            record.snapshot=snapshot;
+            try {
+                record.manifest = await buildManifest(record.workspaceRoot, { signal });
+            } catch (_) {}
+            this.save(record);
             const queue=record.reviewers.filter(r=>r.status==='QUEUED');
             let cursor=0;
             const worker=async()=>{
@@ -354,6 +360,146 @@ Use findings:[] if no issue is found; never claim absolute bug-freedom.`;
             workflow.launch(run);return run;
         };
         this.active.promise=perform().finally(()=>{this.active=null;});return this.active.promise;
+    }
+    async targetedPreview(id, body = {}) {
+        const record = this.store.read('audits', id);
+        const wsRoot = body.workspaceRoot ? fs.realpathSync(text(body.workspaceRoot, 'workspaceRoot')) : record.workspaceRoot;
+        if (workspaceKey(wsRoot) !== record.workspaceKey) {
+            throw new Error('WORKSPACE_MISMATCH: Target workspace does not match base audit workspace');
+        }
+        let manifestAfter;
+        if (body.manifestAfter && Array.isArray(body.manifestAfter.entries)) {
+            manifestAfter = body.manifestAfter;
+        } else {
+            manifestAfter = await buildManifest(wsRoot);
+        }
+        const manifestBefore = body.manifestBefore || record.manifest || null;
+        const findings = presentAudit(record).findings || record.findings || [];
+        const plan = buildTargetedPlan({
+            audit: record,
+            manifestBefore,
+            manifestAfter,
+            findings,
+            reviewers: record.reviewers
+        });
+        return plan;
+    }
+    async targetedStart(id, body = {}) {
+        if (this.active || this.store?.guard?.isBusy()) throw new Error('WORKFLOW_BUSY');
+        const parent = this.store.read('audits', id);
+        const wsRoot = body.workspaceRoot ? fs.realpathSync(text(body.workspaceRoot, 'workspaceRoot')) : parent.workspaceRoot;
+        if (workspaceKey(wsRoot) !== parent.workspaceKey) {
+            throw new Error('WORKSPACE_MISMATCH: Target workspace does not match base audit workspace');
+        }
+
+        // 1. Re-calculate plan on server side
+        const plan = await this.targetedPreview(id, {
+            workspaceRoot: wsRoot,
+            manifestBefore: body.manifestBefore,
+            manifestAfter: body.manifestAfter
+        });
+
+        // 2. Validate version
+        if (!body.version || body.version !== plan.version) {
+            throw new Error('PLAN_VERSION_CONFLICT: 计划版本已失效或工作区源码已发生变动，请重新预览计划');
+        }
+
+        // 3. Validate task selection
+        if (!Array.isArray(body.taskIds) || body.taskIds.length === 0) {
+            throw new Error('EMPTY_TASK_SELECTION: 请至少选择一项定向复查任务');
+        }
+        if (new Set(body.taskIds).size !== body.taskIds.length) {
+            throw new Error('DUPLICATE_TASK_SELECTION: 任务选择包含重复项');
+        }
+        const availableTaskMap = new Map(plan.proposedTasks.map(t => [t.id, t]));
+        for (const taskId of body.taskIds) {
+            if (!availableTaskMap.has(taskId)) {
+                throw new Error(`UNKNOWN_TASK_ID: 包含未知的定向任务 ID '${taskId}'`);
+            }
+        }
+
+        // 4. Validate requiresFullAudit acknowledgment
+        if (plan.requiresFullAudit && !body.acknowledgeFullAudit && !body.allowPartialScope) {
+            throw new Error('FULL_AUDIT_REQUIRED: 本次变更包含全局或高风险改动，必须显式确认仅执行定向任务且知晓完整审核仍待完成');
+        }
+
+        // 5. Build child reviewers from selected tasks
+        const selectedTasks = body.taskIds.map(tid => availableTaskMap.get(tid));
+        const childReviewers = selectedTasks.map(task => {
+            const parentRev = parent.reviewers.find(r => r.id === task.reviewerId);
+            return {
+                id: crypto.randomUUID(),
+                sessionId: crypto.randomUUID(),
+                name: task.totalBatches > 1 ? `${task.reviewerName} (批次 ${task.batch}/${task.totalBatches})` : task.reviewerName,
+                provider: task.provider || parentRev?.provider || 'mock',
+                model: task.model || parentRev?.model || '',
+                reasoningEffort: task.reasoningEffort || parentRev?.reasoningEffort || '',
+                scope: `定向复查任务 [${task.id}] 范围: ${task.scope}。原全局范围仅作参考。`,
+                prompt: `${parentRev?.prompt || ''}\n本次仅复查选定的定向任务清单。`,
+                checklist: task.checklist,
+                taskId: task.id,
+                sourceFindingIds: task.sourceFindingIds || [],
+                status: 'QUEUED',
+                report: null,
+                error: '',
+                activePid: null,
+                attempt: 0
+            };
+        });
+
+        const childRecord = {
+            id: crypto.randomUUID(),
+            schemaVersion: '1.0',
+            workspaceRoot: wsRoot,
+            workspaceKey: parent.workspaceKey,
+            feature: `定向复查：${parent.feature}`,
+            commonPrompt: parent.commonPrompt,
+            scope: `定向复查（${selectedTasks.length} 项任务）`,
+            concurrency: Math.min(parent.concurrency, childReviewers.length),
+            timeoutSeconds: parent.timeoutSeconds,
+            reviewers: childReviewers,
+            status: 'CREATED',
+            snapshot: null,
+            findings: [],
+            triage: {},
+            repairRuns: [],
+            error: '',
+            createdAt: now(),
+            targetedPlan: {
+                version: plan.version,
+                baseAuditId: parent.id,
+                selectedTaskIds: body.taskIds,
+                changedFiles: plan.changedFiles,
+                uncoveredScopes: plan.uncoveredScopes,
+                requiresFullAudit: plan.requiresFullAudit,
+                reasons: plan.reasons,
+                note: (body.note || '').trim()
+            },
+            parentAudit: {
+                id: parent.id,
+                feature: parent.feature,
+                mode: 'TARGETED',
+                snapshot: parent.snapshot,
+                version: plan.version,
+                selectedTaskIds: body.taskIds,
+                requiresFullAudit: plan.requiresFullAudit,
+                reasons: plan.reasons
+            }
+        };
+
+        ensureBudget(childRecord, body.budget);
+        this.save(childRecord);
+
+        parent.targetedRuns ||= [];
+        parent.targetedRuns.push({
+            auditId: childRecord.id,
+            version: plan.version,
+            selectedTaskIds: body.taskIds,
+            at: now()
+        });
+        this.save(parent);
+
+        return this.launch(childRecord);
     }
 }
 module.exports={AuditWorkflow,parseReport,aggregate};

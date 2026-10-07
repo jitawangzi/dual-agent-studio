@@ -236,6 +236,45 @@
 - **版本更新**：`package.json` 版本升级至 `2.11.0`。
 - **数据与文件状态**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
 
+---
+
+## 2026-10-07 Version 2.12 变更分析与定向复查开发日志
+
+- **执行模型**：Antigravity Agent
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：为小改动生成可审阅的定向复查计划，减少无关上下文与冗余调用，同时明确标识未覆盖区域，严禁定向模式绕过完整闭环基准。
+- **已完成任务**：
+  1. **Task 1（可靠文件清单及变化分类）**：
+     - 新建 `engine/source-manifest.js`：实现 `buildManifest(workspace, { signal })` 生成确定性清单结构，扫描前后校验指纹防并发篡改；实现 `compareManifests(before, after)` 对比增删改查与重命名候选，支持非 Git 目录与标准排除规则；删除文件、全局关键配置变动或超 20 个变更自动标记 `requiresFullAudit = true`；
+     - 重构 `engine/workflow.js`：`sourceSnapshot` 委托给 `source-manifest.js` 的底层枚举，严格保持原有编码单元排序与 100% 字节级 SHA-256 哈希兼容性；
+     - 新建 `tests/source-manifest.tests.js`（7/7 测试全绿）。
+  2. **Task 2（定向计划和保守扩大范围）**：
+     - 新建 `engine/targeted-review-plan.js`：实现 `buildTargetedPlan({ audit, manifestBefore, manifestAfter, findings, reviewers, options })`；
+     - 确定性路径匹配审核员范围，无法匹配的变更文件自动列入 `uncoveredScopes`（“未分配”）；
+     - 将未关闭问题与旧关闭证据过期的 Bug 列为复查候选，删除文件仍保留关联旧问题；
+     - 保守扩大范围：配置/锁文件、数据库迁移、公共路由与 API 契约变更、删除文件、范围不明确、无基准清单均设置 `requiresFullAudit = true` 并附带明确原因；
+     - 单个 reviewer 超过 20 项时按 20 项显式拆分批次，严禁静默丢项；
+     - 输入摘要与版本绑定确定性 SHA-256 版本标识；复用 2.11 `estimateExecution` 静态计算预估调用次数；
+     - 新建 `tests/targeted-review-plan.tests.js`（9/9 测试全绿）。
+  3. **Task 3（批准定向范围并生成独立报告）**：
+     - 修改 `engine/audit-workflow.js`：增加 `targetedPreview(id, body)` 与 `targetedStart(id, body)` 方法；在 `drive` 阶段生成并保存 `record.manifest`；
+     - 修改 `server.js`：接入 `POST /api/audits/:id/targeted-preview`（只读预览无 Agent 授权）与 `POST /api/audits/:id/targeted-start`（受租约与预算保护，返回 202）；
+     - 审批前严格防线：版本变化冲突（409）、审批前源码变化（409）、未知任务 ID（400）、空选项（400）、重复选择（400）、未显式确认 `requiresFullAudit`（409）一律严格拒绝；
+     - 修改 `engine/audit-closure.js`：TARGETED 模式审核记录不作为 RECHECK 基准，不能通过现有补审递归路径偷换完整覆盖；定向发现仍进入关联问题待办，定向未发现原问题不能自动关闭原问题；
+     - 新建 `tests/targeted-review-api.tests.js`（包含高风险场景：原审核 A 项检查、B 项未检查，源码变动后定向补 B 时 A 仍显示过期阻断整体闭环）。
+  4. **Task 4（变更预览、前端 UI 与浏览器验收）**：
+     - 新建 `public/targeted-review.js`：实现 `TargetedReviewUI`，包含 `openPreview` 对话框（变更文件树、全量审核警告规则、确认知晓多选框、定向任务清单、预算估算看板、启动与切换完整重审操作）与 `renderTargetedBannerHtml` 报告常驻持久状态条；
+     - 更新 `public/index.html`：新增 `btnTargetedReview` 按钮、`#targetedReviewModal` 弹窗与脚本引入；
+     - 更新 `public/audit.js` 与 `public/audit-closure.js`：接入定向复查按钮与常驻横幅；
+     - 新建 `tests/targeted-review-ui.tests.js`（2/2 测试全绿）；
+     - 更新 `scripts/browser-acceptance.cjs`：加入 5 项 2.12 定向复查端到端浏览器验收（单文件变更预览、公共配置变更全量警告与知晓互斥、过期计划 409 拦截、定向复查启动与常驻横幅、局部完成仍阻止整体验收）；验收总检查数增至 19 项。
+- **验证结果**：
+  - `npm test`：36 个测试套件，185 项测试全部 PASS，退出码 0；
+  - `node scripts/browser-acceptance.cjs`：19 项端到端浏览器验收测试全部 PASS，退出码 0。
+- **版本更新**：`package.json` 版本升级至 `2.12.0`。
+- **数据与安全约束**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
+
+
 
 
 

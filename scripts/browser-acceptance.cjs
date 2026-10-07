@@ -350,6 +350,147 @@ function ok(desc) {
         assert.equal(finalAudit.budget.reservations.filter(r => r.status === 'SETTLED').length, 2);
         ok('Resumed audit only executes previously unfinished reviewers and completes cleanly within new budget');
 
+        // -------------------------------------------------------------
+        // 2.12 Targeted Review Acceptance Checks
+        // -------------------------------------------------------------
+        const targetedWs = path.join(fixtureRoot, 'targeted-ws');
+        fs.mkdirSync(path.join(targetedWs, 'engine'), { recursive: true });
+        fs.mkdirSync(path.join(targetedWs, 'public'), { recursive: true });
+        fs.writeFileSync(path.join(targetedWs, 'engine', 'core.js'), 'const core = 1;\n', 'utf8');
+        fs.writeFileSync(path.join(targetedWs, 'public', 'app.js'), 'const app = 1;\n', 'utf8');
+
+        // Baseline audit
+        auditEngine.agent = async (req) => {
+            const checklistMatch = [req?.prompt].join('').match(/Required checklist.*?:\s*(\[.+\])/);
+            let taskChecks = [];
+            if (checklistMatch) {
+                try {
+                    const list = JSON.parse(checklistMatch[1]);
+                    taskChecks = list.map(item => ({ id: item.id, status: 'CHECKED', evidence: 'Mock verified' }));
+                } catch {}
+            }
+            return JSON.stringify({
+                summary: 'Fixture code inspected',
+                scopeComplete: true,
+                coverage: ['engine/core.js', 'public/app.js'],
+                findings: [],
+                taskChecks
+            });
+        };
+
+        const baseAuditRecord = auditEngine.create({
+            workspaceRoot: targetedWs,
+            feature: 'Targeted Review Base',
+            commonPrompt: 'Baseline inspection',
+            scope: '全量审核',
+            reviewers: [
+                { provider: 'mock', name: 'Engine Reviewer', scope: 'engine/' },
+                { provider: 'mock', name: 'UI Reviewer', scope: 'public/' }
+            ]
+        });
+        auditEngine.launch(baseAuditRecord);
+        await auditEngine.active.promise;
+
+        const baseLoaded = store.read('audits', baseAuditRecord.id);
+        assert.equal(baseLoaded.status, 'COMPLETED');
+
+        // Check 1: Single file change preview in modal
+        fs.writeFileSync(path.join(targetedWs, 'engine', 'core.js'), 'const core = 2;\n', 'utf8');
+        await page.evaluate(async ({ auditId, ws }) => {
+            document.getElementById('workspaceRoot').value = ws;
+            await window.TargetedReviewUI.openPreview(auditId, ws);
+        }, { auditId: baseAuditRecord.id, ws: targetedWs });
+
+        await page.waitForSelector('#targetedReviewModal', { state: 'visible' });
+        const modalHtml = await page.locator('#targetedPreviewContent').innerHTML();
+        assert.ok(modalHtml.includes('engine/core.js'));
+        assert.ok(modalHtml.includes('适用定向复查') || modalHtml.includes('✅'));
+        ok('Targeted review modal opens and displays single file change without requiring full audit');
+
+        // Check 2: Global configuration change triggers full audit warning and disables start until acknowledged
+        fs.writeFileSync(path.join(targetedWs, 'package.json'), '{"name":"targeted-pkg"}\n', 'utf8');
+        await page.evaluate(async ({ auditId, ws }) => {
+            await window.TargetedReviewUI.openPreview(auditId, ws);
+        }, { auditId: baseAuditRecord.id, ws: targetedWs });
+
+        const modalWithConfig = await page.locator('#targetedPreviewContent').innerHTML();
+        assert.ok(modalWithConfig.includes('package.json'));
+        assert.ok(modalWithConfig.includes('GLOBAL_CONFIG_CHANGED') || modalWithConfig.includes('建议全量审核'));
+        const btnStartDisabled = await page.locator('#btnConfirmTargetedStart').isDisabled();
+        assert.equal(btnStartDisabled, true);
+
+        // Check acknowledgment checkbox enables the start button
+        await page.locator('#chkAcknowledgeFullAudit').check();
+        const btnStartEnabled = await page.locator('#btnConfirmTargetedStart').isEnabled();
+        assert.equal(btnStartEnabled, true);
+        ok('Global configuration change enforces full audit warning and requires explicit acknowledgment');
+
+        // Check 3: Stale preview 409 rejection
+        const staleRes = await fetch(`http://127.0.0.1:${port}/api/audits/${baseAuditRecord.id}/targeted-start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workspaceRoot: targetedWs,
+                version: 'stale-version-xyz',
+                taskIds: ['TP-1'],
+                acknowledgeFullAudit: true
+            })
+        });
+        assert.equal(staleRes.status, 409);
+        ok('Outdated preview plan version is rejected with 409 PLAN_VERSION_CONFLICT');
+
+        // Check 4: Start targeted review and verify persistent banner in report
+        const freshPreviewRes = await fetch(`http://127.0.0.1:${port}/api/audits/${baseAuditRecord.id}/targeted-preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceRoot: targetedWs })
+        });
+        const freshPlan = await freshPreviewRes.json();
+        const startTargetedRes = await fetch(`http://127.0.0.1:${port}/api/audits/${baseAuditRecord.id}/targeted-start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workspaceRoot: targetedWs,
+                version: freshPlan.version,
+                taskIds: [freshPlan.proposedTasks[0].id],
+                acknowledgeFullAudit: true,
+                note: 'Browser acceptance targeted run'
+            })
+        });
+        assert.equal(startTargetedRes.status, 202);
+        const { auditId: targetedRunId } = await startTargetedRes.json();
+
+        // Wait for targeted run to complete
+        for (let i = 0; i < 100; i++) {
+            const checkAudit = store.read('audits', targetedRunId);
+            if (checkAudit.status !== 'RUNNING' && checkAudit.status !== 'CREATED') break;
+            await new Promise(r => setTimeout(r, 50));
+        }
+        const completedTargeted = store.read('audits', targetedRunId);
+        assert.ok(['COMPLETED', 'PARTIAL'].includes(completedTargeted.status));
+        assert.equal(completedTargeted.parentAudit.mode, 'TARGETED');
+
+        // Load targeted audit in browser
+        await page.evaluate(async (id) => {
+            window.TargetedReviewUI.closePreview();
+            await window.auditApp.openAudit(id);
+        }, targetedRunId);
+
+        await page.waitForSelector('.audit-targeted-banner', { state: 'attached' });
+        const bannerText = await page.locator('.audit-targeted-banner').textContent();
+        assert.ok(bannerText.includes('定向复查（局部范围）'));
+        assert.ok(bannerText.includes('完整审核仍待完成') || bannerText.includes('局部范围'));
+        ok('Targeted review completes and renders persistent partial scope banner in audit report');
+
+        // Check 5: Partial targeted completion prevents overall closure acceptance
+        const { closureView } = require('../engine/audit-closure');
+        const { buildManifest } = require('../engine/source-manifest');
+        const finalManifest = await buildManifest(targetedWs);
+        const finalClosure = closureView(store, baseAuditRecord.id, finalManifest.snapshot);
+        assert.equal(finalClosure.ready, false);
+        assert.ok(finalClosure.blockers.some(b => b.includes('缺口') || b.includes('过期')));
+        ok('Partial targeted completion prevents overall closure acceptance when full baseline is unverified');
+
         // Ensure no uncaught browser page errors
         assert.deepEqual(errors, []);
         ok('No uncaught browser console/script errors encountered throughout run');

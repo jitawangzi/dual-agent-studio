@@ -6,7 +6,7 @@
   const errors={CLOSURE_VERSION_CONFLICT:'证据或源码已变化，请刷新总览后重新判断。',CLOSURE_BLOCKED:'尚未满足验收条件，请处理待办。',CLOSURE_NOTE_REQUIRED:'请填写人工验收说明。',WORKFLOW_BUSY:'其他任务正在运行，请稍后重试。',CLOSURE_EXECUTION_ACK_REQUIRED:'请先确认执行测试命令。'};
   async function request(url,body){const response=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(errors[data.error]||data.error);return data;}
   function buttons(){
-    for(const button of ['btnRecheckClosure','btnTestClosure','btnAcceptClosure'])$(button).disabled=!id||busy||pending;
+    for(const button of ['btnRecheckClosure','btnTestClosure','btnAcceptClosure','btnTargetedReview'])if($(button))$(button).disabled=!id||busy||pending;
     const staleNote=!!$('auditClosureNote').value.trim()&&noteVersion!==view?.version;
     $('auditClosureDraftHint').textContent=staleNote?'证据已变化，请核对总览并重新编辑验收说明。':'';
     $('btnAcceptClosure').disabled||=!view?.ready||!!view?.acceptance?.current||!$('auditClosureNote').value.trim()||staleNote;
@@ -45,6 +45,7 @@
   window.auditClosure={load,setBusy:value=>{const ended=busy&&!value;busy=value;buttons();if(ended&&id)load();},clear:()=>{id='';view=null;sequence++;$('auditClosureBox').hidden=true;}};
   document.addEventListener('DOMContentLoaded',()=>{
     $('btnRefreshClosure').onclick=()=>load();$('btnRecheckClosure').onclick=()=>act('recheck');$('btnTestClosure').onclick=()=>act('test');$('btnAcceptClosure').onclick=()=>act('accept');
+    if($('btnTargetedReview'))$('btnTargetedReview').onclick=()=>{if(id&&window.TargetedReviewUI?.openPreview)window.TargetedReviewUI.openPreview(id,$('workspaceRoot').value.trim());};
     $('btnStopClosure').onclick=()=>request('/api/stop',{}).catch(e=>showToast(e.message,'error'));
     for(const name of ['auditClosureNote','auditClosureCommand','auditClosureExecute'])$(name).oninput=buttons;
     $('auditClosureNote').oninput=()=>{noteVersion=view?.version||'';buttons();};

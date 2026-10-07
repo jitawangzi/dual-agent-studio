@@ -236,6 +236,7 @@
       (next.preflight?'\n启动环境检查：\n'+healthText(next.preflight):'');
     if ($('auditBudgetBox') && window.ExecutionBudgetUI) {
       $('auditBudgetBox').innerHTML =
+        (window.TargetedReviewUI ? window.TargetedReviewUI.renderTargetedBannerHtml(next) : '') +
         window.ExecutionBudgetUI.renderBudgetPauseBanner(next, 'audit', () => refresh()) +
         window.ExecutionBudgetUI.renderBudgetSummaryHtml(next) +
         window.ExecutionBudgetUI.renderCallAttemptsHtml(next.callLedger?.calls);

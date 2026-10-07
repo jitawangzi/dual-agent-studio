@@ -94,43 +94,9 @@ function applyReview(run, report, snapshot) {
 async function git(workspace, args, signal) {
     return execute('git', args, { cwd: workspace, signal, timeoutMs: 60000 });
 }
+const { computeLegacySnapshot } = require('./source-manifest');
 async function sourceSnapshot(workspace, signal) {
-    const repo = await git(workspace, ['rev-parse', '--show-toplevel'], signal);
-    const digest = crypto.createHash('sha256');
-    let files = [];
-    if (repo.code === 0) {
-        const head = await git(workspace, ['rev-parse', '--verify', 'HEAD'], signal);
-        digest.update(head.code === 0 ? head.stdout.trim() : 'UNBORN');
-        const listing = await git(workspace, ['ls-files', '-c', '-o', '--exclude-standard', '-z', '--', '.'], signal);
-        if (listing.code !== 0) throw new Error('SNAPSHOT_FAILED');
-        files = [...new Set(listing.stdout.split('\0').filter(Boolean))].sort();
-    }
-    if (repo.code !== 0 || files.length === 0) {
-        const walk = dir => {
-            for (const entry of fs.readdirSync(path.join(workspace, dir), { withFileTypes: true })) {
-                if (['.git', '.studio', 'node_modules', '.ai-workspace', 'target', 'build', 'dist', '.venv', '__pycache__'].includes(entry.name)) continue;
-                const relative = path.join(dir, entry.name);
-                if (entry.isDirectory()) walk(relative); else files.push(relative);
-                if (files.length > 50000) throw new Error('SNAPSHOT_TOO_MANY_FILES');
-            }
-        };
-        walk(''); files.sort();
-    }
-    for (const file of files) {
-        if (signal?.aborted) throw new Error('RUN_CANCELLED');
-        // Studio artifacts are never input to the source fingerprint.
-        if (/^(\.studio|\.ai-workspace)[/\\]/.test(file)) continue;
-        digest.update(file); digest.update('\0');
-        const target = path.join(workspace, file);
-        let stat;
-        try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') { digest.update('DELETED'); continue; } throw error; }
-        if (stat.isSymbolicLink()) { digest.update('LINK:' + fs.readlinkSync(target)); continue; }
-        if (stat.isDirectory()) throw new Error(`SUBMODULE_REQUIRES_SEPARATE_RUN: ${file}`);
-        digest.update(String(stat.mode));
-        for await (const chunk of fs.createReadStream(target)) digest.update(chunk);
-        digest.update('\0');
-    }
-    return digest.digest('hex');
+    return computeLegacySnapshot(workspace, signal);
 }
 
 class Workflow {
