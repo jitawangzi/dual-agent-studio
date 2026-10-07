@@ -348,3 +348,52 @@ test('analyzeCase: persists budget tracking on failure and releases guard lease'
     assert.equal(f.store.read('decision-cases', caseRecord.id).status, 'AWAITING_HUMAN');
 });
 
+test('analyzeCase: default adapter forwards options.signal and terminates child process on budget timeout', async (t) => {
+    const runner = require('../engine/process-runner');
+    const originalAgent = runner.invokeAgent;
+    t.after(() => {
+        runner.invokeAgent = originalAgent;
+    });
+
+    let receivedSignal = false;
+    let pid;
+    let invocation;
+
+    runner.invokeAgent = async (request, options) => {
+        receivedSignal = Boolean(options?.signal);
+        invocation = runner.execute(process.execPath, ['-e', 'setTimeout(() => console.log("done"), 2500);'], {
+            ...options,
+            onSpawn: p => { pid = p.pid; }
+        });
+        return (await invocation).stdout;
+    };
+
+    const f = createFixture(t);
+    const { caseRecord } = setupCaseFixture(f);
+    const presented = presentCase(f.store, caseRecord.id);
+
+    await assert.rejects(async () => {
+        // Do NOT pass options.agent to test the default adapter path
+        await analyzeCase(f.store, caseRecord.id, {
+            workspaceRoot: f.workspace,
+            version: presented.version,
+            budget: { maxActiveSeconds: 1 }
+        }, {
+            snapshot: async () => 'snap-1'
+        });
+    }, /BUDGET_EXHAUSTED/);
+
+    assert.equal(receivedSignal, true, 'default adapter must forward options.signal to invokeAgent');
+
+    let alive = true;
+    try {
+        process.kill(pid, 0);
+    } catch {
+        alive = false;
+    }
+    assert.equal(alive, false, 'child process must be terminated when budget expires');
+    assert.equal(f.store.guard.isBusy(), false, 'guard lease must be released after termination');
+
+    if (invocation) await invocation.catch(() => {});
+});
+

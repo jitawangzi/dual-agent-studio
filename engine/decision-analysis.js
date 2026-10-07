@@ -10,7 +10,7 @@ const { now, workspaceKey } = require('./run-store');
 const { normalizeReviewer } = require('./audit-config');
 const { ensureBudget, startActiveTracking, stopActiveTracking } = require('./execution-budget');
 const { trackedCall } = require('./call-ledger');
-const { invokeAgent } = require('./process-runner');
+const runner = require('./process-runner');
 const { sourceSnapshot, parseObject } = require('./workflow');
 const { presentCase } = require('./decision-cases');
 
@@ -202,7 +202,7 @@ async function analyzeCase(store, id, input = {}, options = {}) {
         store.save('decision-cases', caseRecord);
 
         const prompt = buildArbitrationPrompt(caseRecord);
-        const agentFn = options.agent || (p => invokeAgent(p));
+        const agentFn = options.agent || ((req, opt) => runner.invokeAgent(req, opt));
 
         let parsedResult = null;
         let rawAnswer = '';
@@ -229,8 +229,7 @@ async function analyzeCase(store, id, input = {}, options = {}) {
                         model: normalizedReviewer.model,
                         reasoningEffort: normalizedReviewer.reasoningEffort,
                         role: 'arbitration',
-                        prompt,
-                        signal: effectiveSignal
+                        prompt
                     }, { signal: effectiveSignal });
                     return rawAnswer;
                 },

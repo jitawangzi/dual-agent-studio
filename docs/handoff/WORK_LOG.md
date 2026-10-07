@@ -404,3 +404,24 @@
   - 零外部 npm 运行时依赖；
   - 严格保留根目录未跟踪的 `commit.cmd`；
   - 代码与文档默认作者标签 `@author shuyongqiang`。
+
+## 2026-10-07 / 2.14 R3 审核缺陷修复 (R3 Findings Remediation) 闭环完成
+
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：针对 `.studio/review-v2.14-r3-findings.md` 第三轮复审报告指出的 P1 缺陷进行彻底修复并验证：
+  - **Issue 1 (P1，仲裁默认适配器透传取消信号与底层进程杀灭)**：
+    - **根因**：原 `engine/decision-analysis.js` 中默认 `agentFn` 定义为单参数箭头函数 `(p => invokeAgent(p))`，丢弃了包含 `{ signal: effectiveSignal }` 的第二个 `options` 参数；同时 `request` 内部放入的 `signal` 字段在 `JSON.stringify` 时无法生效；导致生产默认路径下底层 `execute` 未收到取消信号，在预算超时时子进程未被杀灭，后台一直存活至自身结束才返回并释放租约；
+    - **修复**：
+      - `engine/decision-analysis.js`：引入 `runner = require('./process-runner')`，将默认适配器定义为 `((req, opt) => runner.invokeAgent(req, opt))`，完整透传执行选项；移除 `request` 对象中多余无效的 `signal` 属性；
+      - `tests/decision-analysis.tests.js`：新增覆盖生产默认适配器（不传入 `options.agent`）的自动化测试，断言 `options.signal` 真实传递给底层 `invokeAgent`，预算超时时子进程被立即杀灭（`alive: false`），租约立即释放（`guardBusy: false`），耗时不超过预算超时周期。
+- **验证结果**：
+  - R3 专项验证：`node .studio/review-v2.14-r3-arbitration.cjs` 全部指标 100% 达成（`receivedSignal: true`, `pidAliveAfterBudget: false`, `guardBusy: false`, `elapsedMs ≈ 1400ms`）；
+  - R3 边界验证：`node .studio/review-v2.14-r3-edge.cjs` 全部通过（退出码 0）；
+  - R2/R1 历史验证：`node .studio/review-v2.14-r2-edge.cjs`、`node .studio/review-v2.14-repro.cjs` 与 `node .studio/review-v2.14-extra.cjs` 均通过且退出码 0；
+  - 端到端验收：`node scripts/browser-acceptance.cjs` 30/30 项浏览器验收检查全量 PASS，退出码 0；
+  - 全量自动化测试：`npm test` 退出码 0（45 个测试套件，227 项测试全量 PASS）。
+- **数据与安全约束**：
+  - 零外部 npm 运行时依赖；
+  - 严格保留根目录未跟踪的 `commit.cmd`；
+  - 代码与文档默认作者标签 `@author shuyongqiang`。
+
