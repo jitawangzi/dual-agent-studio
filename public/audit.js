@@ -171,6 +171,9 @@
     $('btnVerifyFindings').textContent=`独立验证选中发现（${verifyChosen.size}）`;
     $('btnSelectFindingVerification').disabled=busy||starting||!ready;
     $('btnStopFindingVerification').disabled=!verificationRunning;
+    if ($('btnExportAuditEvidence')) $('btnExportAuditEvidence').disabled = busy || starting || !record;
+    if ($('btnArchiveAuditGroup')) $('btnArchiveAuditGroup').disabled = busy || starting || !record;
+    if ($('btnExportClosureEvidence')) $('btnExportClosureEvidence').disabled = busy || starting || !record;
   }
   async function start() {
     if(busy||starting)return;
@@ -355,6 +358,9 @@
   document.addEventListener('DOMContentLoaded',async()=>{
     $('btnStartAudit').onclick=start;$('btnRefreshAudits').onclick=()=>Promise.all([refresh(),refreshTemplates()]).catch(error=>showToast(error.message,'error'));$('btnRetryAudit').onclick=retry;$('btnRepairAudit').onclick=repair;
     $('btnSupplementAudit').onclick=supplement;
+    if ($('btnExportAuditEvidence')) $('btnExportAuditEvidence').onclick = () => { if (record) window.maintenanceApp?.openExportModal(record.id); };
+    if ($('btnArchiveAuditGroup')) $('btnArchiveAuditGroup').onclick = () => { if (record) window.maintenanceApp?.openArchiveModal(record.id); };
+    if ($('btnExportClosureEvidence')) $('btnExportClosureEvidence').onclick = () => { if (record) window.maintenanceApp?.openExportModal(record.id); };
     $('auditGaps').onchange=event=>{if(busy||starting||event.target.dataset.gap===undefined)return;const index=Number(event.target.dataset.gap);if(!record?.gaps?.[index])return;
       if(event.target.checked&&supplementChosen.size>=20){event.target.checked=false;showToast('每次最多补审 20 项。','error');return;}
       if(event.target.checked)supplementChosen.add(index);else supplementChosen.delete(index);updateButtons();};

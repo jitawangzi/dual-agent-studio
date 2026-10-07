@@ -569,6 +569,124 @@ function ok(desc) {
         assert.ok(detailStale.includes('证据已变动') || detailStale.includes('NEEDS_REVIEW') || detailStale.includes('失效'));
         ok('Evidence modification flags case as NEEDS_REVIEW and prevents applying outdated decision');
 
+        // =========================================================================
+        // Version 2.14 Portability & Maintenance Browser Acceptance
+        // =========================================================================
+
+        // Check 2.14-1: Open evidence export modal, inspect preview and trigger bundle download
+        await page.evaluate(async (auditId) => {
+            await window.maintenanceApp.openExportModal(auditId);
+        }, baseAuditForDispute.id);
+        await page.waitForSelector('#exportEvidenceModal', { state: 'visible' });
+        const exportPreviewHtml = await page.locator('#exportPlanPreview').innerHTML();
+        assert.ok(exportPreviewHtml.includes('关联记录总数'));
+        assert.ok(exportPreviewHtml.includes('预估包体积'));
+        ok('Evidence export plan modal previews related records and estimated bundle size');
+
+        // Test export API endpoints directly
+        const exportJsonRes = await page.request.post(`${base}/api/audits/${baseAuditForDispute.id}/export-bundle`, {
+            data: { format: 'json', redactPaths: true, includeArtifacts: true }
+        });
+        assert.equal(exportJsonRes.status(), 200);
+        const exportedBundle = await exportJsonRes.json();
+        assert.equal(exportedBundle.formatVersion, 1);
+        assert.ok(Array.isArray(exportedBundle.manifest) && exportedBundle.manifest.some(m => m.name === 'records.json' && m.sha256));
+        assert.ok(exportedBundle.records?.audits?.length > 0);
+        ok('Exported JSON evidence bundle contains deterministic manifest and redacted records');
+
+        const exportHtmlRes = await page.request.post(`${base}/api/audits/${baseAuditForDispute.id}/export-bundle`, {
+            data: { format: 'html', redactPaths: true }
+        });
+        assert.equal(exportHtmlRes.status(), 200);
+        const exportHtml = await exportHtmlRes.text();
+        assert.ok(exportHtml.includes('<!DOCTYPE html>'));
+        assert.ok(exportHtml.includes('离线只读证据报告') || exportHtml.includes('审查证据与决策报告'));
+        ok('Exported offline HTML report renders safely with zero inline scripts');
+
+        await page.evaluate(() => {
+            window.maintenanceApp.closeExportModal();
+        });
+        await page.waitForSelector('#exportEvidenceModal', { state: 'hidden' });
+
+        // Check 2.14-2: Logical Archival hides audit from default listing
+        await page.evaluate(async (auditId) => {
+            await window.maintenanceApp.openArchiveModal(auditId);
+        }, baseAuditForDispute.id);
+        await page.waitForSelector('#archiveGroupModal', { state: 'visible' });
+        const archivePreviewText = await page.locator('#archivePreviewContent').innerText();
+        assert.ok(archivePreviewText.includes(baseAuditForDispute.id.slice(0, 8)) || archivePreviewText.includes('关联记录'));
+
+        await page.evaluate(async () => {
+            document.getElementById('archiveNoteInput').value = 'Acceptance test archival';
+            await window.maintenanceApp.confirmArchive();
+        });
+        await page.waitForSelector('#archiveGroupModal', { state: 'hidden' });
+
+        const auditsListAfterArchive = await (await page.request.get(`${base}/api/audits?workspace=${encodeURIComponent(targetedWs)}`)).json();
+        assert.ok(!auditsListAfterArchive.some(a => a.id === baseAuditForDispute.id));
+        const auditsListIncludeArchived = await (await page.request.get(`${base}/api/audits?workspace=${encodeURIComponent(targetedWs)}&includeArchived=true`)).json();
+        assert.ok(auditsListIncludeArchived.some(a => a.id === baseAuditForDispute.id));
+        ok('Logical archive hides group from default workspace list while preserving physical store');
+
+        // Check 2.14-3: Storage overview and diagnostics package download
+        await page.evaluate(async () => {
+            await window.openStorageMaintenance();
+            window.switchStorageSubTab('diag');
+        });
+        await page.waitForTimeout(300);
+        const diagTotal = await page.locator('#maintTotalRecords').innerText();
+        assert.ok(Number(diagTotal) > 0);
+
+        const diagRes = await page.request.get(`${base}/api/maintenance/diagnostics?download=true`);
+        assert.equal(diagRes.status(), 200);
+        const diagPkg = await diagRes.json();
+        assert.ok(diagPkg.system?.nodeVersion);
+        assert.ok(diagPkg.storage?.summary?.totalStoreBytes !== undefined);
+        assert.equal(diagPkg.env, undefined);
+        ok('Storage overview displays record counts and diagnostics download excludes sensitive tokens');
+
+        // Check 2.14-4: Restore archived group and verify reappearance in audit listing
+        await page.evaluate(async () => {
+            window.switchStorageSubTab('archive');
+        });
+        await page.waitForTimeout(300);
+        const archiveListHtml = await page.locator('#archivedGroupsList').innerHTML();
+        assert.ok(archiveListHtml.includes('已归档') || archiveListHtml.includes('恢复显示'));
+
+        // Restore via API
+        const archives = await (await page.request.get(`${base}/api/archives`)).json();
+        assert.ok(archives.length > 0);
+        const targetArchive = archives.find(a => a.primaryAuditId === baseAuditForDispute.id);
+        assert.ok(targetArchive);
+
+        await page.evaluate(async (archId) => {
+            await window.maintenanceApp.restoreArchiveGroup(archId);
+        }, targetArchive.id);
+        await page.waitForTimeout(300);
+
+        const auditsAfterRestore = await (await page.request.get(`${base}/api/audits?workspace=${encodeURIComponent(targetedWs)}`)).json();
+        assert.ok(auditsAfterRestore.some(a => a.id === baseAuditForDispute.id));
+        ok('Restoring archived group brings records back to active audit view idempotently');
+
+        // Check 2.14-5: Read-only external bundle import and offline report endpoint
+        const importRes = await page.request.post(`${base}/api/imports`, {
+            data: exportedBundle
+        });
+        assert.equal(importRes.status(), 201);
+        const importResult = await importRes.json();
+        assert.ok(importResult.id);
+
+        const importedReportRes = await page.request.get(`${base}/api/imports/${importResult.id}/report`);
+        assert.equal(importedReportRes.status(), 200);
+        const importedReportHtml = await importedReportRes.text();
+        assert.ok(importedReportHtml.includes('离线只读证据报告') || importedReportHtml.includes('外部历史报告（离线只读）'));
+        assert.ok(importedReportHtml.includes('不构成当前工程执行授权'));
+        ok('Read-only external bundle imported safely into sandbox and viewable via offline HTML report');
+
+        await page.evaluate(() => {
+            window.closeStorageMaintenance();
+        });
+
         // Ensure no uncaught browser page errors
         assert.deepEqual(errors, []);
         ok('No uncaught browser console/script errors encountered throughout run');

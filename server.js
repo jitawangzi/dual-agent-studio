@@ -20,6 +20,10 @@ const { PlanningWorkflow } = require('./engine/planning-workflow');
 const { planMigration, applyMigration } = require('./engine/storage-migration');
 const { createCase, presentCase, decideCase, applyDecision } = require('./engine/decision-cases');
 const { analyzeCase } = require('./engine/decision-analysis');
+const { planExport, buildExport } = require('./engine/evidence-export');
+const { validateImportedBundle, renderReport } = require('./engine/evidence-report');
+const { previewArchive, applyArchive, restoreArchive, listArchives, getArchivedRecordSet } = require('./engine/record-archive');
+const { getStorageOverview, buildDiagnosticPackage } = require('./engine/diagnostics');
 const runStore = new RunStore(process.env.STUDIO_DATA_DIR || path.join(__dirname, '.studio'));
 const agentHealth = new AgentHealth({store: runStore, catalog:getModelsConfig});
 const auditTemplates = new AuditTemplates(runStore.root,getModelsConfig);
@@ -901,7 +905,19 @@ const server = http.createServer(async (req, res) => {
                 sendJson(res,200,closureView(runStore,id,snapshot));return;
             }
             if (req.method === 'GET' && parts.length <= 3) {
-                sendJson(res, 200, id ? presentAudit(runStore.read('audits', id)) : runStore.list('audits', url.searchParams.get('workspace')).map(presentAudit)); return;
+                if (id) {
+                    sendJson(res, 200, presentAudit(runStore.read('audits', id)));
+                } else {
+                    const ws = url.searchParams.get('workspace');
+                    const includeArchived = url.searchParams.get('includeArchived') === 'true';
+                    const archivedSet = getArchivedRecordSet(runStore);
+                    let list = runStore.list('audits', ws);
+                    if (!includeArchived) {
+                        list = list.filter(a => !archivedSet.has(`audits:${a.id}`));
+                    }
+                    sendJson(res, 200, list.map(presentAudit));
+                }
+                return;
             }
             if (req.method === 'GET' && id && action === 'artifacts' && parts.length === 4) {
                 runStore.read('audits', id);
@@ -914,6 +930,43 @@ const server = http.createServer(async (req, res) => {
             }
             if (req.method === 'POST') {
                 const body = await readRequestJson(req);
+                if (id && action === 'export-plan' && parts.length === 4) {
+                    const plan = planExport(runStore, { auditId: id, ...body });
+                    sendJson(res, 200, plan);
+                    return;
+                }
+                if (id && action === 'export-bundle' && parts.length === 4) {
+                    const bundle = buildExport(runStore, { auditId: id, ...body });
+                    const format = (body.format || url.searchParams.get('format') || 'json').toLowerCase();
+                    if (format === 'html') {
+                        const html = renderReport(bundle);
+                        res.writeHead(200, {
+                            'Content-Type': 'text/html; charset=utf-8',
+                            'Content-Disposition': `attachment; filename="audit-${id.slice(0, 8)}-evidence.html"`,
+                            'X-Content-Type-Options': 'nosniff'
+                        });
+                        res.end(html);
+                        return;
+                    }
+                    const jsonStr = JSON.stringify(bundle, null, 2);
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Content-Disposition': `attachment; filename="audit-${id.slice(0, 8)}-evidence.json"`,
+                        'X-Content-Type-Options': 'nosniff'
+                    });
+                    res.end(jsonStr);
+                    return;
+                }
+                if (id && action === 'archive-preview' && parts.length === 4) {
+                    const preview = previewArchive(runStore, { auditId: id });
+                    sendJson(res, 200, preview);
+                    return;
+                }
+                if (id && action === 'archive-apply' && parts.length === 4) {
+                    const group = applyArchive(runStore, { auditId: id, ...body });
+                    sendJson(res, 200, group);
+                    return;
+                }
                 if (id && action === 'targeted-preview' && parts.length === 4) {
                     const plan = await auditWorkflow.targetedPreview(id, body);
                     sendJson(res, 200, plan);
@@ -1168,7 +1221,128 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    if (pathname === '/api/maintenance/storage' || pathname === '/api/maintenance/migrate') {
+    if (pathname === '/api/archives' || pathname.startsWith('/api/archives/')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean);
+            const id = parts[2];
+            const action = parts[3];
+
+            if (req.method === 'GET' && parts.length <= 2) {
+                sendJson(res, 200, listArchives(runStore));
+                return;
+            }
+            if (req.method === 'POST') {
+                const body = await readRequestJson(req);
+                if (id && action === 'restore' && parts.length === 4) {
+                    const restored = restoreArchive(runStore, { archiveId: id, ...body });
+                    sendJson(res, 200, restored);
+                    return;
+                }
+            }
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) {
+            const status = /CONFLICT|BUSY|CHANGED/.test(error.message) ? 409 :
+                           /NOT_FOUND/.test(error.message) ? 404 : 400;
+            sendJson(res, status, { error: error.message });
+        }
+        return;
+    }
+
+    if (pathname === '/api/imports' || pathname.startsWith('/api/imports/')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean);
+            const id = parts[2];
+            const action = parts[3];
+            const importsDir = path.join(runStore.root, 'imports');
+
+            if (req.method === 'GET') {
+                if (parts.length === 2) {
+                    if (!fs.existsSync(importsDir)) {
+                        sendJson(res, 200, []);
+                        return;
+                    }
+                    const list = [];
+                    for (const impId of fs.readdirSync(importsDir)) {
+                        const file = path.join(importsDir, impId, 'bundle.json');
+                        if (fs.existsSync(file)) {
+                            try {
+                                const b = JSON.parse(fs.readFileSync(file, 'utf8'));
+                                list.push({
+                                    id: impId,
+                                    auditId: b.auditId,
+                                    formatVersion: b.formatVersion,
+                                    generatedAt: b.generatedAt,
+                                    recordsCount: Object.values(b.records || {}).reduce((sum, arr) => sum + (arr?.length || 0), 0),
+                                    artifactsCount: Object.keys(b.artifacts || {}).length,
+                                    redacted: b.redacted,
+                                    limitations: b.limitations
+                                });
+                            } catch {}
+                        }
+                    }
+                    list.sort((a, b) => String(b.generatedAt || '').localeCompare(String(a.generatedAt || '')));
+                    sendJson(res, 200, list);
+                    return;
+                }
+                if (id && parts.length === 3) {
+                    const file = path.join(importsDir, id, 'bundle.json');
+                    if (!fs.existsSync(file)) {
+                        sendJson(res, 404, { error: 'IMPORT_NOT_FOUND' });
+                        return;
+                    }
+                    const b = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    sendJson(res, 200, b);
+                    return;
+                }
+                if (id && action === 'report' && parts.length === 4) {
+                    const file = path.join(importsDir, id, 'bundle.json');
+                    if (!fs.existsSync(file)) {
+                        sendJson(res, 404, { error: 'IMPORT_NOT_FOUND' });
+                        return;
+                    }
+                    const b = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    const html = renderReport(b);
+                    res.writeHead(200, {
+                        'Content-Type': 'text/html; charset=utf-8',
+                        'X-Content-Type-Options': 'nosniff'
+                    });
+                    res.end(html);
+                    return;
+                }
+            }
+
+            if (req.method === 'POST' && parts.length === 2) {
+                const body = await readRequestJson(req);
+                const validation = validateImportedBundle(body);
+                if (!validation.ok) {
+                    sendJson(res, 400, { error: 'INVALID_IMPORT_BUNDLE', details: validation.errors });
+                    return;
+                }
+                const importId = crypto.randomUUID();
+                const dir = path.join(importsDir, importId);
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(body, null, 2), 'utf8');
+                sendJson(res, 201, {
+                    success: true,
+                    id: importId,
+                    importId,
+                    auditId: body.auditId,
+                    formatVersion: body.formatVersion,
+                    generatedAt: body.generatedAt,
+                    manifestValid: validation.manifestValid,
+                    limitations: body.limitations
+                });
+                return;
+            }
+
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) {
+            sendJson(res, 400, { error: error.message });
+        }
+        return;
+    }
+
+    if (pathname.startsWith('/api/maintenance/')) {
         try {
             if (pathname === '/api/maintenance/storage') {
                 if (req.method !== 'GET') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
@@ -1228,6 +1402,26 @@ const server = http.createServer(async (req, res) => {
                 } finally {
                     lease?.release?.();
                 }
+                return;
+            }
+            if (pathname === '/api/maintenance/overview') {
+                if (req.method !== 'GET') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+                sendJson(res, 200, getStorageOverview(runStore));
+                return;
+            }
+            if (pathname === '/api/maintenance/diagnostics') {
+                if (req.method !== 'GET') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+                const pkg = buildDiagnosticPackage(runStore);
+                if (url.searchParams.get('download') === 'true') {
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Content-Disposition': `attachment; filename="diagnostics-${Date.now()}.json"`,
+                        'X-Content-Type-Options': 'nosniff'
+                    });
+                    res.end(JSON.stringify(pkg, null, 2));
+                    return;
+                }
+                sendJson(res, 200, pkg);
                 return;
             }
         } catch (error) {

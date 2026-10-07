@@ -431,6 +431,8 @@
                 <select id="auditHistory"><option value="">暂无审核</option></select>
                 <button id="btnRefreshAudits" class="btn btn-sm btn-secondary" type="button">刷新</button>
                 <button id="btnRetryAudit" class="btn btn-sm btn-secondary" type="button" disabled>重试未完成审核员</button>
+                <button id="btnExportAuditEvidence" class="btn btn-sm btn-secondary" type="button" disabled>📦 导出证据包</button>
+                <button id="btnArchiveAuditGroup" class="btn btn-sm btn-secondary" type="button" disabled>📦 逻辑归档</button>
               </div>
               <div id="auditSummary" class="audit-summary" aria-live="polite">尚无报告。审核完成表示检查结束，不代表工程绝对没有 Bug。</div>
               <div id="auditBudgetBox"></div>
@@ -440,6 +442,7 @@
                 <button id="btnRefreshClosure" class="btn btn-secondary btn-sm">刷新闭环与源码状态</button>
                 <button id="btnTargetedReview" class="btn btn-primary btn-sm">🎯 定向复查变更</button>
                 <button id="btnRecheckClosure" class="btn btn-secondary btn-sm">按原团队重新审核当前源码</button>
+                <button id="btnExportClosureEvidence" class="btn btn-secondary btn-sm">📦 导出闭环证据包</button>
                 <p id="auditClosureSummary" role="status"></p>
                 <div id="auditClosureCoverage"></div>
                 <div id="auditClosureTodos"></div>
@@ -659,34 +662,84 @@
     </div>
     <!-- STORAGE MAINTENANCE MODAL -->
     <div id="storageModal" class="modal-backdrop" style="display: none;">
-      <div class="modal-card" style="width: 720px; max-width: 90vw;">
+      <div class="modal-card" style="width: 760px; max-width: 92vw;">
         <div class="modal-header">
-          <h3>🗄️ 存储维护与数据迁移</h3>
+          <h3>🗄️ 存储维护与便携性管理</h3>
           <button class="modal-close" onclick="closeStorageMaintenance()">✕</button>
         </div>
         <div class="modal-body">
-          <p class="modal-tip">检查并维护本地 <code>.studio</code> 记录，诊断损坏数据，并在升级前自动备份原记录到独立的 <code>backups/&lt;uuid&gt;</code> 目录。</p>
-          <div class="diag-summary-cards" style="display: flex; gap: 12px; margin-bottom: 16px;">
-            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
-              <div style="font-size: 12px; color: var(--text-muted);">待迁移记录</div>
-              <div id="storagePendingCount" style="font-size: 20px; font-weight: bold; color: var(--accent);">0</div>
+          <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+            <button id="tabBtnStorageDiag" class="btn btn-sm btn-secondary active" onclick="switchStorageSubTab('diag')">📊 存储概览与迁移</button>
+            <button id="tabBtnStorageArchive" class="btn btn-sm btn-secondary" onclick="switchStorageSubTab('archive')">📦 逻辑归档管理</button>
+            <button id="tabBtnStorageImport" class="btn btn-sm btn-secondary" onclick="switchStorageSubTab('import')">📥 外部只读导入包</button>
+          </div>
+
+          <!-- Section 1: Overview & Migration -->
+          <div id="storageSectionDiag">
+            <p class="modal-tip">检查并维护本地 <code>.studio</code> 记录，诊断损坏数据，并在升级前自动备份原记录到独立的 <code>backups/&lt;uuid&gt;</code> 目录。</p>
+            <div class="diag-summary-cards" style="display: flex; gap: 12px; margin-bottom: 12px;">
+              <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+                <div style="font-size: 12px; color: var(--text-muted);">业务记录数</div>
+                <div id="maintTotalRecords" style="font-size: 20px; font-weight: bold;">0</div>
+              </div>
+              <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+                <div style="font-size: 12px; color: var(--text-muted);">附件文件与体积</div>
+                <div id="maintTotalAttachments" style="font-size: 15px; font-weight: bold;">0</div>
+              </div>
+              <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+                <div style="font-size: 12px; color: var(--text-muted);">已归档记录数</div>
+                <div id="maintArchivedCount" style="font-size: 20px; font-weight: bold; color: var(--accent);">0</div>
+              </div>
+              <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+                <div style="font-size: 12px; color: var(--text-muted);">存储总占用</div>
+                <div id="maintTotalDisk" style="font-size: 15px; font-weight: bold;">0 MB</div>
+              </div>
             </div>
-            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
-              <div style="font-size: 12px; color: var(--text-muted);">损坏/异常记录</div>
-              <div id="storageCorruptedCount" style="font-size: 20px; font-weight: bold; color: #ff4d4f;">0</div>
+
+            <!-- Migration & Corruption details -->
+            <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 12px;">
+              <div style="display: flex; gap: 12px; font-size: 12px; margin-bottom: 8px;">
+                <span>待迁移: <strong id="storagePendingCount" style="color: var(--accent);">0</strong></span> ·
+                <span>损坏/异常: <strong id="storageCorruptedCount" style="color: #ff4d4f;">0</strong></span> ·
+                <span>健康总量: <strong id="storageTotalCount">0</strong></span>
+              </div>
+              <div id="storagePlanDetails" style="margin-bottom: 8px; font-size: 12px; max-height: 120px; overflow-y: auto;"></div>
+              <div id="storageErrorsList" style="margin-bottom: 8px; font-size: 12px; color: #ff7875; max-height: 120px; overflow-y: auto;"></div>
+              <div id="storageActionResult" style="font-size: 12px;"></div>
             </div>
-            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
-              <div style="font-size: 12px; color: var(--text-muted);">健康记录总量</div>
-              <div id="storageTotalCount" style="font-size: 20px; font-weight: bold;">0</div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <button class="btn btn-sm btn-secondary" onclick="refreshStorageMaintenance()">🔄 刷新诊断</button>
+                <button id="btnApplyMigration" class="btn btn-sm btn-primary" onclick="applyStorageMigration()" disabled>⚡ 执行显式迁移</button>
+              </div>
+              <button class="btn btn-sm btn-secondary" onclick="window.maintenanceApp.downloadDiagnostics()">💾 下载环境诊断包</button>
             </div>
           </div>
-          <div id="storagePlanDetails" style="margin-bottom: 12px; font-size: 13px; max-height: 180px; overflow-y: auto;"></div>
-          <div id="storageErrorsList" style="margin-bottom: 12px; font-size: 13px; color: #ff7875; max-height: 180px; overflow-y: auto;"></div>
-          <div id="storageActionResult" style="font-size: 13px; margin-top: 10px;"></div>
+
+          <!-- Section 2: Archive Management -->
+          <div id="storageSectionArchive" style="display: none;">
+            <p class="modal-tip">被逻辑归档的审查组及其补审、修复记录在此列表中展示。逻辑归档保留物理证据，可随时恢复主列表呈现。</p>
+            <div id="archivedGroupsList" style="max-height: 280px; overflow-y: auto; margin-top: 10px;">
+              <p class="audit-help">加载归档列表中...</p>
+            </div>
+          </div>
+
+          <!-- Section 3: Read-only Imports -->
+          <div id="storageSectionImport" style="display: none;">
+            <p class="modal-tip">导入外部团队导出的标准化证据包（JSON）。导入包仅存储在 <code>imports/</code> 沙箱目录下供只读查阅，不赋予代码执行权限。</p>
+            <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px;">
+              <label class="btn btn-sm btn-secondary" style="margin: 0; cursor: pointer;">
+                📂 选择证据包 (bundle.json) 上传
+                <input type="file" id="importBundleFileInput" accept=".json" style="display: none;" onchange="window.maintenanceApp.handleImportJsonFile(this.files[0])">
+              </label>
+            </div>
+            <div id="importedBundlesList" style="max-height: 240px; overflow-y: auto;">
+              <p class="audit-help">暂无外部导入报告。</p>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-sm btn-secondary" onclick="refreshStorageMaintenance()">🔄 刷新诊断</button>
-          <button id="btnApplyMigration" class="btn btn-sm btn-primary" onclick="applyStorageMigration()" disabled>⚡ 执行显式迁移</button>
           <button class="btn btn-sm btn-secondary" onclick="closeStorageMaintenance()">关闭</button>
         </div>
       </div>
@@ -739,6 +792,63 @@
         </div>
       </div>
     </div>
+    <!-- EVIDENCE EXPORT MODAL -->
+    <div id="exportEvidenceModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="width: 680px; max-width: 90vw;">
+        <div class="modal-header">
+          <h3>📦 导出完整证据包</h3>
+          <button class="modal-close" onclick="window.maintenanceApp.closeExportModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-tip">将当前审查、补审与关联修复的全部事实、日志和附件打包为确定性、可验证的便携包。导出的包使用 SHA-256 校验和确保防篡改。</p>
+          <div style="margin-bottom: 12px; font-size: 13px;">
+            <span>当前审查 ID: </span><code id="exportAuditIdDisplay">-</code>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; gap: 16px;">
+            <label style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
+              <input type="checkbox" id="exportIncludeArtifacts" onchange="window.maintenanceApp.refreshExportPlan()"> 包含原始附件/日志文件
+            </label>
+            <label style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
+              <input type="checkbox" id="exportRedactPaths" checked onchange="window.maintenanceApp.refreshExportPlan()"> 脱敏本地绝对文件路径
+            </label>
+          </div>
+          <div id="exportPlanPreview" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 12px; min-height: 80px;">
+            <p class="audit-help">正在分析证据闭包与计算体积...</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" onclick="window.maintenanceApp.closeExportModal()">取消</button>
+          <button class="btn btn-sm btn-secondary" onclick="window.maintenanceApp.downloadExport('json')">📄 导出标准化 JSON 包</button>
+          <button class="btn btn-sm btn-primary" onclick="window.maintenanceApp.downloadExport('html')">🌐 导出独立只读 HTML 报告</button>
+        </div>
+      </div>
+    </div>
+    <!-- LOGICAL ARCHIVE MODAL -->
+    <div id="archiveGroupModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="width: 640px; max-width: 90vw;">
+        <div class="modal-header">
+          <h3>📦 逻辑归档审查及关联记录</h3>
+          <button class="modal-close" onclick="window.maintenanceApp.closeArchiveModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-tip">逻辑归档将隐藏主审查列表中的该组记录，绝不物理删除任何磁盘数据和附件。你可随时在“存储维护”窗口中一键恢复显示。</p>
+          <div style="margin-bottom: 12px; font-size: 13px;">
+            <span>主审查 ID: </span><code id="archiveAuditIdDisplay">-</code>
+          </div>
+          <div id="archivePreviewContent" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 12px; min-height: 80px; margin-bottom: 12px;">
+            <p class="audit-help">正在分析将隐藏的关联组记录...</p>
+          </div>
+          <div class="form-group">
+            <label for="archiveNoteInput">归档说明 / 原因 (可选)</label>
+            <input type="text" id="archiveNoteInput" class="form-control" placeholder="例如: 已完成全量发布，归档历史发现">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" onclick="window.maintenanceApp.closeArchiveModal()">取消</button>
+          <button id="btnConfirmArchive" class="btn btn-sm btn-primary" onclick="window.maintenanceApp.confirmArchive()" disabled>确认归档</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="review-evidence.js"></script>
@@ -750,5 +860,6 @@
   <script src="audit-closure.js"></script>
   <script src="issues.js"></script>
   <script src="planning.js"></script>
+  <script src="maintenance.js"></script>
 </body>
 </html>

@@ -308,6 +308,38 @@
 - **版本更新**：`package.json` 版本升级至 `2.13.0`。
 - **数据与安全约束**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
 
+## 2026-10-07 / 2.14 / 证据导出与存储维护 (Portability & Maintenance) 全量完成
+
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **核心目标**：实现证据离线可带走、确定性防篡改、安全路径脱敏与附件白名单校验；支持单文件只读离线 HTML 报告与 CSP 沙箱；提供整组逻辑归档与幂等恢复显示；提供系统诊断包下载与存储概览维护；支持外部包只读导入并不赋予执行权限。
+- **已完成任务**：
+  1. **Task 1（可预览的证据包与安全附件解析）**：
+     - 新建 `engine/evidence-export.js`：实现 `planExport`、`buildExport`、`resolveExportArtifact`（防御 `../` 越界、符号链接越界、`state.json` 保护、合法字符集校验）；实现递归路径脱敏占位符替换规则；实现 JSON 5MiB / 附件总包 20MiB 大小边界校验与确定性排序规范化 JSON Manifest（`records.json` 规范化哈希与附件真实 SHA-256）；
+     - 新建 `tests/evidence-export.tests.js`（7/7 PASS）。
+  2. **Task 2（离线 HTML 报告与只读导入验证）**：
+     - 新建 `engine/evidence-report.js`：实现 `renderReport`（CSP 头 `default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src data:; base-uri 'none';`、100% 实体转义、离线历史证据免责声明提示）、`validateImportedBundle`（验证版本、架构、`records.json` 与各附件的真实 SHA-256 校验和）；
+     - 新建 `tests/evidence-report.tests.js`（4/4 PASS，包含 XSS 实体转义与篡改检测）。
+  3. **Task 3（整组逻辑归档与幂等恢复）**：
+     - 新建 `engine/record-archive.js`：实现 `previewArchive`、`applyArchive`、`restoreArchive`、`getArchivedRecordSet`、`listArchives`；在数据根目录 `archives/index.json` 中维护逻辑隐藏索引，不破坏业务物理存储；活动任务阻断保护；
+     - 新建 `tests/record-archive.tests.js`（4/4 PASS）。
+  4. **Task 4（诊断包、存储概览与界面集成）**：
+     - 新建 `engine/diagnostics.js`：实现 `getStorageOverview` 与 `buildDiagnosticPackage`（排除环境变量全集、Token、Cookie 和源码）；
+     - 新建 `tests/diagnostics.tests.js`（2/2 PASS）；
+     - 新建 `public/maintenance.js`：实现 `window.maintenanceApp`（导出弹窗控制器、归档弹窗控制器、归档恢复操作、导入包上传校验与只读报告跳转、诊断包下载、存储子 Tab 切换器）；
+     - 修改 `server.js`：新增 `POST /api/audits/:id/export-plan`、`POST /api/audits/:id/export-bundle`（支持 JSON 及 HTML 下载响应）、`POST /api/audits/:id/archive-preview`、`POST /api/audits/:id/archive-apply`、`GET /api/archives`、`POST /api/archives/:id/restore`、`GET /api/imports`、`GET /api/imports/:id`、`GET /api/imports/:id/report`、`POST /api/imports`、`GET /api/maintenance/overview`、`GET /api/maintenance/diagnostics` 端点；并在 `/api/audits` 查询中默认排除逻辑归档记录（支持 `includeArchived=true`）；
+     - 修改 `public/index.html`：注入 `#exportEvidenceModal` 与 `#archiveGroupModal` 模态框，在审查工具栏增加 `[📦 导出证据包]` 与 `[📦 逻辑归档]` 按钮，在闭环卡片增加 `[📦 导出闭环证据包]` 按钮；更新 `#storageModal` 容纳存储概览、逻辑归档管理与外部只读导入包三个 Tab；引入 `<script src="maintenance.js"></script>`；
+     - 修改 `public/audit.js`：更新按钮状态绑定与点击打开对应导出/归档弹窗；
+     - 新建 `tests/maintenance-ui.tests.js`（5/5 PASS）；
+     - 扩展 `scripts/browser-acceptance.cjs`：新增 7 项 v2.14 端到端浏览器验收检查（导出计划预览、JSON 便携包结构验证、HTML 离线报告下载无脚本渲染、逻辑归档隐藏、存储概览与诊断包脱敏下载、归档恢复显示、只读外部包导入与沙箱报告查看），总验收项数升至 30 项。
+- **验证结果**：
+  - `npm test`：45 个测试套件，224 项测试全量 PASS，退出码 0；
+  - `node scripts/browser-acceptance.cjs`：30/30 项端到端浏览器验收检查全量 PASS，退出码 0。
+- **版本更新**：`package.json` 版本升级至 `2.14.0`。
+- **数据与安全约束**：
+  - 零外部 npm 运行时依赖；
+  - 严格保留根目录未跟踪的 `commit.cmd`；
+  - 导出与归档绝不物理修改或删除本地原始数据，导入外部包绝不获得执行权限。
+
 
 
 
