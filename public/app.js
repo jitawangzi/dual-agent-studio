@@ -1667,6 +1667,118 @@ async function continueRunWithDecision() {
   } catch (error) { showToast(error.message, 'error'); }
 }
 
+let currentStoragePlan = null;
+
+async function openStorageMaintenance() {
+  const modal = document.getElementById('storageModal');
+  if (modal) modal.style.display = 'flex';
+  await refreshStorageMaintenance();
+}
+
+function closeStorageMaintenance() {
+  const modal = document.getElementById('storageModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function refreshStorageMaintenance() {
+  const wsInput = document.getElementById('workspaceRoot');
+  const ws = wsInput ? wsInput.value.trim() : '';
+  const pendingEl = document.getElementById('storagePendingCount');
+  const corruptEl = document.getElementById('storageCorruptedCount');
+  const totalEl = document.getElementById('storageTotalCount');
+  const planDetailsEl = document.getElementById('storagePlanDetails');
+  const errorsListEl = document.getElementById('storageErrorsList');
+  const btnApply = document.getElementById('btnApplyMigration');
+  const resultEl = document.getElementById('storageActionResult');
+
+  if (resultEl) resultEl.innerHTML = '';
+  if (planDetailsEl) planDetailsEl.textContent = '正在获取诊断信息...';
+
+  try {
+    const res = await fetch(`/api/maintenance/storage?workspace=${encodeURIComponent(ws)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    currentStoragePlan = data.plan;
+
+    const pendingCount = data.diagnostics?.summary?.pending ?? 0;
+    const corruptedCount = data.diagnostics?.summary?.corrupted ?? 0;
+    const totalCount = data.diagnostics?.summary?.totalRecords ?? 0;
+    const activeOpId = data.plan?.activeOperationId;
+
+    if (pendingEl) pendingEl.textContent = pendingCount;
+    if (corruptEl) corruptEl.textContent = corruptedCount;
+    if (totalEl) totalEl.textContent = totalCount;
+
+    if (planDetailsEl) {
+      if (data.plan?.entries?.length > 0) {
+        let text = `<b>发现 ${data.plan.entries.length} 条待升级记录 (v0 ➔ v${data.plan.targetVersion})：</b><br>` +
+          data.plan.entries.map(e => `• <code>[${escapeHtml(e.kind)}] ${escapeHtml(e.id.slice(0, 8))}...</code> (当前版本: v${e.from})`).join('<br>');
+        if (activeOpId) {
+          text += `<br><span style="color: var(--accent);">🔄 关联中断或未完成操作: <code>${escapeHtml(activeOpId)}</code></span>`;
+        }
+        planDetailsEl.innerHTML = text;
+      } else if (corruptedCount > 0) {
+        planDetailsEl.innerHTML = `<span style="color: #ff4d4f;">⚠️ 检测到 ${corruptedCount} 处存储异常或中断日志损坏${activeOpId ? ` (操作 ID: <code>${escapeHtml(activeOpId)}</code>)` : ''}，请先排查修复后再进行数据迁移。</span>`;
+      } else if (activeOpId) {
+        planDetailsEl.innerHTML = `<span style="color: var(--accent);">🔄 检测到未完成的迁移操作 (操作 ID: <code>${escapeHtml(activeOpId)}</code>)。所有业务记录已处于最新版本，可点击下方按钮完成最终状态确认。</span>`;
+      } else {
+        planDetailsEl.innerHTML = `<span style="color: var(--success, #52c41a);">✔ 所有记录均处于当前存储版本 (v${data.plan?.targetVersion || 1})，无需迁移。</span>`;
+      }
+    }
+
+    if (errorsListEl) {
+      if (data.diagnostics?.errors?.length > 0) {
+        errorsListEl.innerHTML = `<b>⚠️ 发现 ${data.diagnostics.errors.length} 项损坏或异常记录：</b><br>` +
+          data.diagnostics.errors.map(err => {
+            const pathInfo = err.path ? ` <span style="font-size:11px; color:var(--text-muted);">(${escapeHtml(err.path)})</span>` : '';
+            return `• <code>[${escapeHtml(err.kind || 'maintenance')}] ${escapeHtml(err.id || '未知')}</code> [${escapeHtml(err.code || 'ERROR')}]: ${escapeHtml(err.message || '')}${pathInfo}`;
+          }).join('<br>');
+      } else {
+        errorsListEl.innerHTML = '';
+      }
+    }
+
+    const canApply = (data.plan?.entries?.length > 0 || Boolean(activeOpId)) && corruptedCount === 0;
+    if (btnApply) {
+      btnApply.disabled = !canApply;
+      btnApply.textContent = (activeOpId && !(data.plan?.entries?.length > 0)) ? '⚡ 完成挂起迁移' : '⚡ 执行显式迁移';
+    }
+  } catch (err) {
+    if (planDetailsEl) planDetailsEl.textContent = `加载诊断失败: ${err.message}`;
+    if (btnApply) btnApply.disabled = true;
+  }
+}
+
+async function applyStorageMigration() {
+  if (!currentStoragePlan || !currentStoragePlan.version) return;
+  const btnApply = document.getElementById('btnApplyMigration');
+  const resultEl = document.getElementById('storageActionResult');
+  if (btnApply) btnApply.disabled = true;
+  if (resultEl) resultEl.innerHTML = '<span style="color: var(--accent);">正在备份与执行迁移...</span>';
+
+  try {
+    const res = await fetch('/api/maintenance/migrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: currentStoragePlan.version })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (resultEl) {
+      resultEl.innerHTML = `<span style="color: var(--success, #52c41a);">✔ 成功迁移 ${data.result?.migrated || 0} 条记录！备份已安全保存至 <code>${escapeHtml(data.result?.backupDir)}</code></span>`;
+    }
+    showToast('存储迁移执行成功', 'success');
+    await refreshStorageMaintenance();
+  } catch (err) {
+    if (resultEl) {
+      resultEl.innerHTML = `<span style="color: #ff4d4f;">❌ 迁移失败: ${escapeHtml(err.message)}</span>`;
+    }
+    showToast(`迁移失败: ${err.message}`, 'error');
+    if (btnApply) btnApply.disabled = false;
+  }
+}
+
 // Global Exports
 if (typeof window !== 'undefined') {
   window.openFolderPickerModal = openFolderPickerModal;
@@ -1693,4 +1805,8 @@ if (typeof window !== 'undefined') {
   window.clearLogs = clearLogs;
   window.fetchSessions = fetchSessions;
   window.resetWorkspaceSessions = resetWorkspaceSessions;
+  window.openStorageMaintenance = openStorageMaintenance;
+  window.closeStorageMaintenance = closeStorageMaintenance;
+  window.refreshStorageMaintenance = refreshStorageMaintenance;
+  window.applyStorageMigration = applyStorageMigration;
 }

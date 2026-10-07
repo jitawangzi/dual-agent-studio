@@ -1,0 +1,26 @@
+{
+  "revision": 1,
+  "recordVersion": 1,
+  "updatedAt": "2026-10-01T08:35:00.000Z",
+  "value": {
+    "selections": [
+      {
+        "proposalId": "P-1",
+        "decision": "ADOPT",
+        "reason": "Essential check",
+        "acceptance": [
+          {
+            "criterion": "Rejects invalid input",
+            "verification": "Run tests"
+          }
+        ]
+      }
+    ],
+    "answers": [
+      {
+        "questionId": "Q-1",
+        "answer": "Yes, reject empty string"
+      }
+    ]
+  }
+}

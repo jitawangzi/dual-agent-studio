@@ -93,8 +93,19 @@ class PlanningWorkflow{
         this.save(record);return record;
     }
     launch(record){
-        if(this.active)throw new Error('WORKFLOW_BUSY');const controller=new AbortController();this.active={id:record.id,controller,promise:null};record.status='RUNNING';this.save(record);
-        this.active.promise=this.drive(record,controller.signal).finally(()=>{this.active=null;this.emit('planning_idle',{id:record.id});});return record;
+        if(this.active||this.store?.guard?.isBusy())throw new Error('WORKFLOW_BUSY');
+        const lease=this.store?.guard?this.store.guard.acquire({kind:'planning',id:record.id,workspaceKey:record.workspaceKey}):null;
+        const controller=new AbortController();this.active={id:record.id,controller,promise:null,lease};
+        this.active.promise=(async()=>{
+            try{
+                if(lease)await lease;
+                if(controller.signal.aborted)throw new Error('RUN_CANCELLED');
+                record.status='RUNNING';record.error='';this.save(record);
+                await this.drive(record,controller.signal);
+            }catch(err){
+                record.status=controller.signal.aborted?'STOPPED':'FAILED';record.error=err.message;this.save(record);
+            }
+        })().finally(()=>{this.active?.lease?.release?.();this.active=null;this.emit('planning_idle',{id:record.id});});return record;
     }
     async check(record,signal){if(await this.snapshot(record.workspaceRoot,signal)!==record.snapshot)throw new Error('PLANNING_SOURCE_CHANGED');if(signal?.aborted)throw new Error('RUN_CANCELLED');}
     async call(record,member,role,instructions,signal){
@@ -142,18 +153,20 @@ ${instructions}`;
         if(this.active)throw new Error('WORKFLOW_BUSY');const record=this.store.read('discussions',id);liveCalls(record);
         checkDraft(this.store,record,input);
         const decision=compileDecision(record,input);if(input.previewHash!==decision.previewHash)throw new Error('PLAN_PREVIEW_CONFLICT');
-        const controller=new AbortController();this.active={id,controller,promise:null};
+        const lease=this.store?.guard?this.store.guard.acquire({kind:'planning',id:record.id,workspaceKey:record.workspaceKey}):null;
+        const controller=new AbortController();this.active={id,controller,promise:null,lease};
         this.active.promise=(async()=>{
             try{
+                if(lease)await lease;
                 await this.check(record,controller.signal);
                 let plan=this.store.createPlan(record.workspaceRoot,{planningId:record.id,feature:record.feature,scope:record.scope,sourceSnapshot:record.snapshot,requirements:decision.requirements,
                     selections:decision.selections,answers:decision.answers,finalPlan:decision.finalPlan,investigation:record.investigation});
                 plan=this.store.approvePlan(plan.id,{workspaceRoot:record.workspaceRoot,version:plan.version,text:plan.finalPlan});
                 record.planId=plan.id;record.decision=decision;record.status='APPROVED';record.version++;this.save(record);return plan;
             }catch(error){if(error.message==='PLANNING_SOURCE_CHANGED'){record.status='INVALIDATED';record.error=error.message;this.save(record);}throw error;}
-            finally{this.active=null;}
+            finally{this.active?.lease?.release?.();this.active=null;}
         })();return this.active.promise;
     }
-    async stop(){const active=this.active;if(active){active.controller.abort();await active.promise.catch(()=>{});}}
+    async stop(){const active=this.active;if(active){active.controller.abort();await active.promise.catch(()=>{});active.lease?.release?.();}}
 }
 module.exports={PlanningWorkflow,compileDecision,investigation,proposals,challenge};

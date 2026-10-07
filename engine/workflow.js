@@ -191,12 +191,25 @@ class Workflow {
         return run;
     }
     launch(run) {
-        if (this.active) throw new Error('WORKFLOW_BUSY');
+        if (this.active || this.store?.guard?.isBusy()) throw new Error('WORKFLOW_BUSY');
         const controller = new AbortController();
-        this.active = { id: run.id, controller, promise: null };
-        run.status = 'RUNNING'; run.error = '';
-        this.save(run, 'started');
-        this.active.promise = this.drive(run, controller.signal).finally(() => {
+        const lease = this.store?.guard ? this.store.guard.acquire({ kind: 'run', id: run.id, workspaceKey: run.workspaceKey }) : null;
+        this.active = { id: run.id, controller, promise: null, lease }; run.status = 'RUNNING'; run.error = '';
+
+
+        this.active.promise = (async () => {
+            try {
+                if (lease) await lease;
+                if (controller.signal.aborted) throw new Error('RUN_CANCELLED');
+
+                this.save(run, 'started');
+                await this.drive(run, controller.signal);
+            } catch (err) {
+                run.status = controller.signal.aborted ? 'STOPPED' : 'FAILED'; run.error = err.message;
+                this.save(run, 'failed');
+            }
+        })().finally(() => {
+            this.active?.lease?.release?.();
             this.active = null; this.emit('run_idle', { id: run.id });
         });
         return run;
@@ -218,7 +231,7 @@ class Workflow {
     }
     async stop() {
         const active = this.active;
-        if (active) { active.controller.abort(); await active.promise; }
+        if (active) { active.controller.abort(); await active.promise.catch(() => {}); active.lease?.release?.(); }
     }
     decide(id, { note, extraRounds = 4, planId, approvalId }) {
         if (this.active) throw new Error('WORKFLOW_BUSY');

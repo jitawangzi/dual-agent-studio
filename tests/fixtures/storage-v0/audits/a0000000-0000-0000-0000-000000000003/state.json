@@ -1,0 +1,48 @@
+{
+  "id": "a0000000-0000-0000-0000-000000000003",
+  "parentAudit": {
+    "id": "a0000000-0000-0000-0000-000000000001",
+    "version": "33c792a34bf5a641760867e0bae32d6350ad86c03f137843ada413799d65a939",
+    "mode": "SUPPLEMENT",
+    "selections": [
+      {
+        "reviewerId": "rev-1",
+        "taskId": "SCOPE"
+      }
+    ]
+  },
+  "feature": "SupplementFeature",
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "status": "COMPLETED",
+  "snapshot": "snap-v1",
+  "scope": "app.js",
+  "commonPrompt": "Supplement check",
+  "reviewers": [
+    {
+      "id": "rev-supp",
+      "name": "Reviewer 1",
+      "provider": "mock",
+      "status": "COMPLETED",
+      "scope": "app.js",
+      "report": {
+        "summary": "Completed scope",
+        "scopeComplete": true,
+        "coverage": ["app.js"],
+        "taskChecks": [
+          {
+            "id": "C-1",
+            "task": "SCOPE",
+            "status": "CHECKED",
+            "evidence": "Entire app.js reviewed"
+          }
+        ]
+      },
+      "startedAt": "2026-10-01T12:00:00.000Z",
+      "finishedAt": "2026-10-01T12:05:00.000Z"
+    }
+  ],
+  "findings": [],
+  "createdAt": "2026-10-01T12:00:00.000Z",
+  "updatedAt": "2026-10-01T12:05:00.000Z"
+}

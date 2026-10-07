@@ -2,6 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { CURRENT_STORAGE_VERSION, normalizeRecord, validateRecord } = require('./storage-schema');
+const { RuntimeGuard } = require('./runtime-guard');
 
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
 const now = () => new Date().toISOString();
@@ -16,23 +18,83 @@ function atomicJson(file, value) {
     fs.renameSync(temp, file);
 }
 class RunStore {
-    constructor(root) { this.root = path.resolve(root); }
+    constructor(root) {
+        this.root = path.resolve(root);
+        this.guard = new RuntimeGuard(this.root);
+    }
     file(kind, id, name = 'state.json') {
         if (!['runs', 'plans', 'audits', 'discussions'].includes(kind) || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('INVALID_RECORD_ID');
         if (path.basename(name) !== name) throw new Error('INVALID_ARTIFACT_NAME');
         return path.join(this.root, kind, id, name);
     }
-    read(kind, id) { return JSON.parse(fs.readFileSync(this.file(kind, id), 'utf8')); }
-    save(kind, value) { value.updatedAt = now(); atomicJson(this.file(kind, value.id), value); return value; }
-    list(kind, workspace) {
+    read(kind, id) {
+        const raw = JSON.parse(fs.readFileSync(this.file(kind, id), 'utf8'));
+        const validation = validateRecord(kind, raw, id);
+        if (!validation.ok) {
+            throw new Error(`CORRUPTED_RECORD_STRUCTURE: ${validation.errors.map(e => e.code).join(', ')}`);
+        }
+        return normalizeRecord(kind, raw);
+    }
+    save(kind, value) {
+        if (value.storageVersion > CURRENT_STORAGE_VERSION) throw new Error('UNSUPPORTED_STORAGE_VERSION');
+        value.storageVersion = value.storageVersion ?? CURRENT_STORAGE_VERSION;
+        value.updatedAt = now();
+        atomicJson(this.file(kind, value.id), value);
+        return value;
+    }
+    listWithDiagnostics(kind, workspace) {
         if (!['runs', 'plans', 'audits', 'discussions'].includes(kind)) throw new Error('INVALID_RECORD_KIND');
         const dir = path.join(this.root, kind);
-        if (!fs.existsSync(dir)) return [];
+        if (!fs.existsSync(dir)) return { records: [], errors: [] };
         const key = workspace ? workspaceKey(workspace) : null;
-        return fs.readdirSync(dir).flatMap(id => {
-            try { const r = this.read(kind, id); return !key || r.workspaceKey === key ? [r] : []; }
-            catch { return []; }
-        }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const records = [];
+        const errors = [];
+        for (const id of fs.readdirSync(dir)) {
+            let file;
+            try {
+                file = this.file(kind, id);
+            } catch (err) {
+                errors.push({ kind, id, path: path.join(dir, id), code: 'INVALID_RECORD_ID', message: err.message });
+                continue;
+            }
+            try {
+                if (!fs.existsSync(file)) {
+                    errors.push({ kind, id, path: file, code: 'FILE_NOT_FOUND', message: 'Record file does not exist' });
+                    continue;
+                }
+                const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                    errors.push({ kind, id, path: file, code: 'CORRUPTED_RECORD_STRUCTURE', message: 'Record is not an object' });
+                    continue;
+                }
+                if (raw.storageVersion > CURRENT_STORAGE_VERSION) {
+                    errors.push({ kind, id, path: file, code: 'UNSUPPORTED_STORAGE_VERSION', message: `storageVersion ${raw.storageVersion} exceeds supported version ${CURRENT_STORAGE_VERSION}` });
+                    continue;
+                }
+                const validation = validateRecord(kind, raw, id);
+                if (!validation.ok) {
+                    errors.push({
+                        kind,
+                        id,
+                        path: file,
+                        code: 'CORRUPTED_RECORD_STRUCTURE',
+                        message: `Record structure invalid: ${validation.errors.map(e => e.code).join(', ')}`
+                    });
+                    continue;
+                }
+                const normalized = normalizeRecord(kind, raw);
+                if (!key || normalized.workspaceKey === key) {
+                    records.push(normalized);
+                }
+            } catch (err) {
+                errors.push({ kind, id, path: file, code: 'CORRUPTED_RECORD', message: err.message });
+            }
+        }
+        records.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+        return { records, errors };
+    }
+    list(kind, workspace) {
+        return this.listWithDiagnostics(kind, workspace).records;
     }
     event(run, type, detail = {}) {
         fs.appendFileSync(this.file('runs', run.id, 'events.jsonl'), JSON.stringify({ time: now(), type, ...detail }) + '\n');

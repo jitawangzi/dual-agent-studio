@@ -1,0 +1,17 @@
+{
+  "id": "c0000000-0000-0000-0000-000000000001",
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "version": 2,
+  "status": "APPROVED",
+  "finalPlan": "Implement safe input validation",
+  "draftPlan": "Implement safe input validation draft",
+  "approval": {
+    "id": "c0000000-0000-0000-0000-000000000002",
+    "version": 2,
+    "hash": "2ca62e2588becb738c420c2e2d5189d61ee2089d7f8ebd4cc53831babf65f8f6",
+    "approvedAt": "2026-10-01T09:30:00.000Z"
+  },
+  "createdAt": "2026-10-01T09:00:00.000Z",
+  "updatedAt": "2026-10-01T09:30:00.000Z"
+}

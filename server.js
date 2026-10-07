@@ -15,6 +15,7 @@ const { AuditTemplates } = require('./engine/audit-templates');
 const { presentAudit } = require('./engine/audit-triage');
 const { issueLedger } = require('./engine/issue-ledger');
 const { PlanningWorkflow } = require('./engine/planning-workflow');
+const { planMigration, applyMigration } = require('./engine/storage-migration');
 const runStore = new RunStore(process.env.STUDIO_DATA_DIR || path.join(__dirname, '.studio'));
 const agentHealth = new AgentHealth({catalog:getModelsConfig});
 const auditTemplates = new AuditTemplates(runStore.root,getModelsConfig);
@@ -54,7 +55,35 @@ let isDiscussing = false;
 let discussionGeneration = 0;         // Incremented per discussion or on abort to invalidate stale discussions
 let logs = [];
 const sseClients = new Set();
-if (require.main === module) { workflow.recover(); auditWorkflow.recover(); planningWorkflow.recover(); }
+if (require.main === module) {
+    (async () => {
+        try {
+            if (runStore?.guard) {
+                const rec = await runStore.guard.recover();
+                if (rec.state === 'BUSY' || rec.reason === 'ANOTHER_INSTANCE_ALIVE' || rec.reason === 'UNKNOWN_PROCESS_STATUS') {
+                    return;
+                }
+            }
+            let lease = null;
+            try {
+                if (runStore?.guard) {
+                    lease = await runStore.guard.acquire({ kind: 'maintenance', id: 'server-recovery' });
+                }
+            } catch {
+                return;
+            }
+            try {
+                workflow.recover();
+                auditWorkflow.recover();
+                planningWorkflow.recover();
+            } finally {
+                lease?.release?.();
+            }
+        } catch (err) {
+            console.error('Server startup recovery failed:', err);
+        }
+    })();
+}
 
 function readRequestJson(req) {
     return new Promise((resolve, reject) => {
@@ -719,6 +748,18 @@ Conclude with your verdict:
         }
     }
 }
+function isWorkflowBusy() {
+    return !!(
+        activeProcess !== null ||
+        workflow.active !== null ||
+        auditWorkflow.active !== null ||
+        agentHealth.active !== null ||
+        planningWorkflow.active !== null ||
+        isDiscussing ||
+        (!auditWorkflow.active && auditWorkflow.hasLiveClosureTest()) ||
+        (runStore?.guard && runStore.guard.isBusy())
+    );
+}
 
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -744,9 +785,20 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/api/agent-health' && req.method === 'POST') {
         try {
+            if (isWorkflowBusy()) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
             const body=await readRequestJson(req);
-            if(activeProcess || workflow.active || auditWorkflow.active || agentHealth.active || planningWorkflow.active || isDiscussing){sendJson(res,409,{error:'WORKFLOW_BUSY'});return;}
-            sendJson(res,200,await agentHealth.run(body));
+            if (isWorkflowBusy()) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
+            let lease = null;
+            if (body.mode === 'probe' && runStore?.guard) {
+                lease = await runStore.guard.acquire({ kind: 'health-probe', id: crypto.randomUUID() });
+            }
+            try {
+                sendJson(res, 200, await agentHealth.run(body));
+            } finally {
+                lease?.release?.();
+            }
+            return;
+
         }catch(error){sendJson(res,/BUSY/.test(error.message)?409:400,{error:error.message});}
         return;
     }
@@ -885,6 +937,74 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/maintenance/storage' || pathname === '/api/maintenance/migrate') {
+        try {
+            if (pathname === '/api/maintenance/storage') {
+                if (req.method !== 'GET') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+                const plan = planMigration(runStore);
+                const kinds = ['runs', 'plans', 'audits', 'discussions'];
+                const diagnostics = {};
+                for (const k of kinds) {
+                    diagnostics[k] = runStore.listWithDiagnostics(k, url.searchParams.get('workspace'));
+                }
+                const businessErrors = kinds.flatMap(k => diagnostics[k].errors);
+                const allErrors = [...businessErrors, ...(plan.errors || [])];
+                const seen = new Set();
+                const dedupedErrors = [];
+                for (const err of allErrors) {
+                    const key = `${err.kind}:${err.id}:${err.code}:${err.path || ''}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        dedupedErrors.push(err);
+                    }
+                }
+                sendJson(res, 200, {
+                    plan,
+                    diagnostics: {
+                        errors: dedupedErrors,
+                        summary: {
+                            pending: plan.entries.length,
+                            corrupted: dedupedErrors.length,
+                            totalRecords: kinds.reduce((acc, k) => acc + diagnostics[k].records.length, 0)
+                        }
+                    }
+                });
+                return;
+            }
+            if (pathname === '/api/maintenance/migrate') {
+                if (req.method !== 'POST') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+                if (isWorkflowBusy()) {
+                    sendJson(res, 409, { error: 'WORKFLOW_BUSY' });
+                    return;
+                }
+                const body = await readRequestJson(req);
+                if (isWorkflowBusy()) {
+                    sendJson(res, 409, { error: 'WORKFLOW_BUSY' });
+                    return;
+                }
+                let lease = null;
+                if (runStore?.guard) {
+                    try {
+                        lease = await runStore.guard.acquire({ kind: 'migration', id: crypto.randomUUID() });
+                    } catch (err) {
+                        sendJson(res, 409, { error: 'WORKFLOW_BUSY' });
+                        return;
+                    }
+                }
+                try {
+                    const result = applyMigration(runStore, body);
+                    sendJson(res, 200, { ok: true, result });
+                } finally {
+                    lease?.release?.();
+                }
+                return;
+            }
+        } catch (error) {
+            sendJson(res, /CONFLICT|BUSY|CORRUPTED/.test(error.message) ? 409 : 400, { error: error.message });
+            return;
+        }
+    }
+
     // 1. SSE Events Stream
     if (pathname === '/api/events') {
         res.writeHead(200, {
@@ -913,7 +1033,7 @@ const server = http.createServer(async (req, res) => {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-            isRunning: activeProcess !== null || workflow.active !== null || auditWorkflow.active !== null || agentHealth.active !== null || planningWorkflow.active !== null,
+            isRunning: isWorkflowBusy(),
             isCheckingAgents: agentHealth.active !== null,
             activeAuditId: auditWorkflow.active?.id || null,
             activeVerificationId: auditWorkflow.active?.verificationId || null,

@@ -287,6 +287,17 @@ async function runServerTests() {
             if (fs.existsSync(emptyPlanPath)) fs.unlinkSync(emptyPlanPath);
             assert(!fs.existsSync(emptyPlanPath), 'IMPLEMENTATION_PLAN.md should not exist before discussion failure test');
             console.log('✅ Discussion safety verified: no synthetic plans generated on empty output.');
+
+            // 14. Test /api/maintenance/storage and /api/maintenance/migrate
+            const storageRes = await httpRequest('GET', `/api/maintenance/storage?workspace=${encodeURIComponent(tempTestWs)}`);
+            assert.strictEqual(storageRes.status, 200, 'GET /api/maintenance/storage should return 200');
+            assert(storageRes.body.plan, 'Should return migration plan');
+            assert(storageRes.body.diagnostics, 'Should return diagnostics');
+            console.log('✅ Storage maintenance preview API verified.');
+
+            const badMigrateRes = await httpRequest('POST', '/api/maintenance/migrate', { version: 'invalid-hash' });
+            assert.strictEqual(badMigrateRes.status, 409, 'POST /api/maintenance/migrate with mismatched version should return 409');
+            console.log('✅ Storage migration conflict protection verified.');
         } finally {
             try {
                 fs.rmSync(tempTestWs, { recursive: true, force: true });

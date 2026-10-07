@@ -1,0 +1,41 @@
+{
+  "id": "b0000000-0000-0000-0000-000000000001",
+  "feature": "RepairFeature",
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "sourceAudit": {
+    "id": "a0000000-0000-0000-0000-000000000001"
+  },
+  "status": "APPROVED",
+  "round": 1,
+  "lastReview": {
+    "snapshot": "snap-v1",
+    "at": "2026-10-01T13:30:00.000Z"
+  },
+  "testGate": {
+    "status": "PASS",
+    "exitCode": 0,
+    "snapshot": "snap-v1",
+    "at": "2026-10-01T13:25:00.000Z"
+  },
+  "bugs": [
+    {
+      "id": "BUG-1",
+      "sourceFindingId": "F-1",
+      "problem": "Missing null check",
+      "category": "BUG",
+      "severity": "HIGH",
+      "status": "VERIFIED_CLOSED",
+      "history": [
+        {
+          "status": "VERIFIED_CLOSED",
+          "snapshot": "snap-v1",
+          "evidence": "Null check added and verified",
+          "at": "2026-10-01T13:30:00.000Z"
+        }
+      ]
+    }
+  ],
+  "createdAt": "2026-10-01T13:00:00.000Z",
+  "updatedAt": "2026-10-01T13:30:00.000Z"
+}

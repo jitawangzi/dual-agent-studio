@@ -1,0 +1,44 @@
+{
+  "id": "d0000000-0000-0000-0000-000000000001",
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "idea": "Improve input validation",
+  "scope": "app.js",
+  "status": "READY",
+  "version": 1,
+  "snapshot": "snap-v1",
+  "members": [
+    {
+      "id": "m-1",
+      "name": "Architecture",
+      "provider": "mock",
+      "proposal": {
+        "proposals": [
+          {
+            "id": "P-1",
+            "author": "Architecture",
+            "title": "Add validation gate",
+            "approach": "Check inputs early",
+            "risks": "None",
+            "benefits": "Reliability",
+            "outOfScope": [],
+            "acceptance": [
+              {
+                "criterion": "Rejects invalid input",
+                "verification": "Run tests"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q-1",
+      "question": "Should empty string be rejected?"
+    }
+  ],
+  "createdAt": "2026-10-01T08:00:00.000Z",
+  "updatedAt": "2026-10-01T08:30:00.000Z"
+}

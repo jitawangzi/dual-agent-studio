@@ -3,7 +3,7 @@ const fs=require('fs'),crypto=require('crypto');
 const {now,workspaceKey}=require('./run-store');
 const {closureFamily,closureView}=require('./audit-closure');
 function guard(engine,id,input){
-    if(engine.active)throw new Error('WORKFLOW_BUSY');
+    if(engine.active || engine.store?.guard?.isBusy())throw new Error('WORKFLOW_BUSY');
     const group=closureFamily(engine.store,id);
     if(workspaceKey(input.workspaceRoot)!==group.root.workspaceKey)throw new Error('AUDIT_WORKSPACE_MISMATCH');
     for(const record of [...group.family,...group.runs])for(const p of [record,...(record.reviewers||[]),...(record.closureTests||[]),...(record.verificationRuns||[]).flatMap(v=>[v,...v.items])])if(p.activePid){
@@ -34,9 +34,11 @@ function testClosure(engine,id,input){
     if(typeof input.command!=='string'||!input.command.trim()||input.command.length>10000)throw new Error('INVALID_TEST_COMMAND');
     const gate={id:crypto.randomUUID(),status:'RUNNING',command:input.command.trim(),at:now(),activePid:null};
     root.closureTests||=[];root.closureTests.push(gate);engine.save(root);
-    const controller=new AbortController(),active={id:root.id,kind:'closureTest',controller,promise:null};engine.active=active;
+    const controller=new AbortController(),lease=engine.store?.guard?engine.store.guard.acquire({kind:'closure-test',id:gate.id,workspaceKey:root.workspaceKey}):null;
+    const active={id:root.id,kind:'closureTest',controller,promise:null,lease};engine.active=active;
     active.promise=(async()=>{
         try{
+            if (lease) await lease;
             const before=await engine.snapshot(root.workspaceRoot,controller.signal);
             const result=await engine.command('pwsh',['-NoProfile','-Command',gate.command],{cwd:root.workspaceRoot,signal:controller.signal,timeoutMs:root.timeoutSeconds*1000,
                 onSpawn:p=>{gate.activePid=p.pid;engine.save(root);},onOutput:(message,type)=>engine.emit('log',{time:now(),type,message,auditId:root.id})});
@@ -44,7 +46,7 @@ function testClosure(engine,id,input){
             gate.artifact=`closure-test-${gate.id}.txt`;fs.writeFileSync(engine.store.file('audits',root.id,gate.artifact),`${result.stdout}\n${result.stderr}`);
             Object.assign(gate,{exitCode:result.code,snapshot:after,beforeSnapshot:before,sourceChanged:before!==after,status:!controller.signal.aborted&&result.code===0&&before===after?'PASS':'FAIL'});
         }catch(error){gate.status=controller.signal.aborted?'STOPPED':'FAILED';gate.error=error.message;}
-        finally{gate.activePid=null;gate.at=now();engine.save(root);if(engine.active===active)engine.active=null;engine.emit('audit_idle',{id:root.id});}
+        finally{gate.activePid=null;gate.at=now();engine.save(root);active.lease?.release?.();if(engine.active===active)engine.active=null;engine.emit('audit_idle',{id:root.id});}
     })();
     return gate;
 }

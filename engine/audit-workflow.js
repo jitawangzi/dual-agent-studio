@@ -101,13 +101,21 @@ class AuditWorkflow {
         }
     }
     verify(id,config){
-        if(this.active)throw new Error('WORKFLOW_BUSY');
+        if(this.active||this.store?.guard?.isBusy())throw new Error('WORKFLOW_BUSY');
         const record=this.store.read('audits',id);ensureReviewersStopped(record);
         if(workspaceKey(config.workspaceRoot)!==record.workspaceKey)throw new Error('AUDIT_WORKSPACE_MISMATCH');
         const run=createVerification(record,config,typeof this.catalog==='function'?this.catalog():this.catalog);
         record.verificationRuns||=[];record.verificationRuns.push(run);this.save(record);
-        const controller=new AbortController();this.active={id,kind:'verification',verificationId:run.id,controller,promise:null};
-        this.active.promise=driveVerification(this,record,run,controller.signal).finally(()=>{this.active=null;this.emit('audit_idle',{id});});return run;
+        const lease=this.store?.guard?this.store.guard.acquire({kind:'verification',id,workspaceKey:record.workspaceKey}):null;
+        const controller=new AbortController();this.active={id,kind:'verification',verificationId:run.id,controller,promise:null,lease};
+        this.active.promise=(async()=>{
+            try {
+                if (lease) await lease;
+                await driveVerification(this,record,run,controller.signal);
+            } catch (err) {
+                run.status='FAILED';run.error=err.message;this.save(record);
+            }
+        })().finally(()=>{this.active?.lease?.release?.();this.active=null;this.emit('audit_idle',{id});});return run;
     }
     create(config) {
         if (this.active) throw new Error('WORKFLOW_BUSY');
@@ -125,10 +133,20 @@ class AuditWorkflow {
         this.save(record); return record;
     }
     launch(record) {
-        if(this.active)throw new Error('WORKFLOW_BUSY');
+        if(this.active||this.store?.guard?.isBusy())throw new Error('WORKFLOW_BUSY');
         const controller=new AbortController();
-        this.active={id:record.id,controller,promise:null}; record.status='RUNNING';record.error='';this.save(record);
-        this.active.promise=this.drive(record,controller.signal).finally(()=>{this.active=null;this.emit('audit_idle',{id:record.id});});
+        const lease=this.store?.guard?this.store.guard.acquire({kind:'audit',id:record.id,workspaceKey:record.workspaceKey}):null;
+        this.active={id:record.id,controller,promise:null,lease};
+        this.active.promise=(async()=>{
+            try {
+                if (lease) await lease;
+                if (controller.signal.aborted) throw new Error('RUN_CANCELLED');
+                record.status='RUNNING';record.error='';this.save(record);
+                await this.drive(record,controller.signal);
+            } catch (err) {
+                record.status=controller.signal.aborted?'STOPPED':'FAILED';record.error=err.message;this.save(record);
+            }
+        })().finally(()=>{this.active?.lease?.release?.();this.active=null;this.emit('audit_idle',{id:record.id});});
         return record;
     }
     retry(id) {
@@ -152,8 +170,10 @@ class AuditWorkflow {
             if(!gap||seen.has(key))throw new Error('INVALID_SUPPLEMENT_SELECTION');seen.add(key);return gap;
         });
         const controller=new AbortController();
-        const active={id,controller,promise:null};this.active=active;
+        const lease=this.store?.guard?this.store.guard.acquire({kind:'audit',id,workspaceKey:parent.workspaceKey}):null;
+        const active={id,controller,promise:null,lease};this.active=active;
         active.promise=(async()=>{
+            if (lease) await lease;
             const snapshot=await this.snapshot(parent.workspaceRoot,controller.signal);
             if(controller.signal.aborted)throw new Error('RUN_CANCELLED');
             if(parent.snapshot&&snapshot!==parent.snapshot)throw new Error('AUDIT_SOURCE_CHANGED');
@@ -164,7 +184,7 @@ class AuditWorkflow {
             const child=this.createUnlockedSupplement(parent,reviewers,selected,snapshot);
             return child;
         })();
-        let child;try{child=await active.promise;}finally{if(this.active===active)this.active=null;}
+        let child;try{child=await active.promise;}finally{if(this.active===active){active.lease?.release?.();this.active=null;}}
         if(controller.signal.aborted)throw new Error('RUN_CANCELLED');
         return this.launch(child);
     }
@@ -181,7 +201,7 @@ class AuditWorkflow {
         parent.supplementRuns||=[];parent.supplementRuns.push({auditId:child.id,selections:selected,at:now()});this.save(parent);
         return child;
     }
-    async stop(){const active=this.active;if(active){active.controller.abort();await active.promise.catch(()=>{});}}
+    async stop(){const active=this.active;if(active){active.controller.abort();await active.promise.catch(()=>{});active.lease?.release?.();}}
     prompt(record, reviewer) {
         return `You are an independent READ-ONLY code auditor. Never edit files, commit, fix code, or delegate edits.
 Workspace: ${record.workspaceRoot}

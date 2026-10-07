@@ -57,6 +57,7 @@ async function driveVerification(engine,record,run,signal){
     const save=()=>engine.save(record),file=name=>engine.store.file('audits',record.id,`verification-${run.id}-${name}`);
     const snapshotCheck=async()=>{if(await engine.snapshot(record.workspaceRoot,signal)!==run.snapshot)throw new Error('AUDIT_SOURCE_CHANGED');if(signal.aborted)throw new Error('RUN_CANCELLED');};
     try{
+        if(engine.active?.lease)await engine.active.lease;
         run.status='RUNNING';save();await snapshotCheck();
         run.preflight=await engine.preflight([run.verifier],{signal});save();
         if(!run.preflight.ok)throw new Error('AGENT_PREFLIGHT_FAILED');

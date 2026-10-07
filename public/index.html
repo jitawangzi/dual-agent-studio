@@ -23,6 +23,7 @@
         </div>
       </div>
       <div class="header-status">
+        <button class="btn btn-sm btn-secondary" onclick="openStorageMaintenance()">🗄️ 存储维护</button>
         <button class="btn btn-sm btn-secondary" onclick="openModelManager()">⚙️ 模型字典管理</button>
         <div id="statusBadge" class="status-badge idle">
           <span class="status-dot"></span>
@@ -592,6 +593,40 @@
         <div class="modal-footer">
           <button class="btn btn-sm btn-secondary" onclick="closeModelManager()">取消</button>
           <button class="btn btn-sm btn-primary" onclick="saveModelsManager()">💾 保存模型配置</button>
+        </div>
+      </div>
+    </div>
+    <!-- STORAGE MAINTENANCE MODAL -->
+    <div id="storageModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card" style="width: 720px; max-width: 90vw;">
+        <div class="modal-header">
+          <h3>🗄️ 存储维护与数据迁移</h3>
+          <button class="modal-close" onclick="closeStorageMaintenance()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-tip">检查并维护本地 <code>.studio</code> 记录，诊断损坏数据，并在升级前自动备份原记录到独立的 <code>backups/&lt;uuid&gt;</code> 目录。</p>
+          <div class="diag-summary-cards" style="display: flex; gap: 12px; margin-bottom: 16px;">
+            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+              <div style="font-size: 12px; color: var(--text-muted);">待迁移记录</div>
+              <div id="storagePendingCount" style="font-size: 20px; font-weight: bold; color: var(--accent);">0</div>
+            </div>
+            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+              <div style="font-size: 12px; color: var(--text-muted);">损坏/异常记录</div>
+              <div id="storageCorruptedCount" style="font-size: 20px; font-weight: bold; color: #ff4d4f;">0</div>
+            </div>
+            <div class="card flex-1" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+              <div style="font-size: 12px; color: var(--text-muted);">健康记录总量</div>
+              <div id="storageTotalCount" style="font-size: 20px; font-weight: bold;">0</div>
+            </div>
+          </div>
+          <div id="storagePlanDetails" style="margin-bottom: 12px; font-size: 13px; max-height: 180px; overflow-y: auto;"></div>
+          <div id="storageErrorsList" style="margin-bottom: 12px; font-size: 13px; color: #ff7875; max-height: 180px; overflow-y: auto;"></div>
+          <div id="storageActionResult" style="font-size: 13px; margin-top: 10px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-sm btn-secondary" onclick="refreshStorageMaintenance()">🔄 刷新诊断</button>
+          <button id="btnApplyMigration" class="btn btn-sm btn-primary" onclick="applyStorageMigration()" disabled>⚡ 执行显式迁移</button>
+          <button class="btn btn-sm btn-secondary" onclick="closeStorageMaintenance()">关闭</button>
         </div>
       </div>
     </div>

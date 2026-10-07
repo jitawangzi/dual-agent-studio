@@ -1,0 +1,46 @@
+{
+  "id": "a0000000-0000-0000-0000-000000000001",
+  "feature": "LegacyAuditFeature",
+  "workspaceRoot": "__WORKSPACE_ROOT__",
+  "workspaceKey": "__WORKSPACE_KEY__",
+  "status": "COMPLETED",
+  "snapshot": "snap-v1",
+  "commonPrompt": "Audit the source code",
+  "scope": "app.js",
+  "reviewers": [
+    {
+      "id": "rev-1",
+      "name": "Reviewer 1",
+      "provider": "mock",
+      "status": "COMPLETED",
+      "scope": "app.js",
+      "report": {
+        "summary": "Found basic bug",
+        "scopeComplete": true,
+        "coverage": ["app.js"]
+      },
+      "startedAt": "2026-10-01T10:00:00.000Z",
+      "finishedAt": "2026-10-01T10:05:00.000Z"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-1",
+      "category": "BUG",
+      "severity": "HIGH",
+      "file": "app.js",
+      "lineRange": "1-5",
+      "problem": "Missing null check",
+      "evidence": "value is used directly",
+      "acceptance": "Add null check",
+      "sources": [
+        {
+          "reviewerId": "rev-1",
+          "reason": "Direct inspection"
+        }
+      ]
+    }
+  ],
+  "createdAt": "2026-10-01T10:00:00.000Z",
+  "updatedAt": "2026-10-01T10:05:00.000Z"
+}
