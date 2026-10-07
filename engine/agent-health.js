@@ -2,14 +2,13 @@
 const fs=require('fs'),path=require('path'),os=require('os'),crypto=require('crypto');
 const {execute,invokeAgent}=require('./process-runner');
 const {normalizeReviewer}=require('./audit-config');
+const {trackedCall,interruptOpenAttempts,summarizeCalls}=require('./call-ledger');
+const {classifyProviderError,ERROR_CODES}=require('./provider-errors');
 function probeFailure(error){
-    const message=String(error.message||'');
-    if(/requires a newer version|upgrade to the latest (app|CLI)/i.test(message))return 'CLI_UPGRADE_REQUIRED';
-    if(/quota|usage limit|insufficient credits|rate.limit|too many requests/i.test(message))return 'QUOTA_OR_RATE_LIMIT';
-    if(/not logged in|unauthorized|authentication|invalid.api.key|sign in/i.test(message))return 'AUTH_REQUIRED';
-    if(/model.*(not found|not supported|not available|does not exist)|unsupported.*(model|effort|thinking)/i.test(message))return 'MODEL_UNAVAILABLE';
-    if(/EXECUTION_TIMEOUT/.test(message))return 'TIMEOUT';
-    return 'FAILED';
+    const classified = classifyProviderError(error);
+    if (classified.code === ERROR_CODES.QUOTA_EXHAUSTED || classified.code === ERROR_CODES.RATE_LIMIT) return 'QUOTA_OR_RATE_LIMIT';
+    if (classified.code === ERROR_CODES.UNKNOWN) return 'FAILED';
+    return classified.code;
 }
 
 async function inspectProvider(provider,{signal,command=execute}={}) {
@@ -32,7 +31,20 @@ async function checkReviewers(reviewers,{signal,inspect=inspectProvider}={}) {
     return {ok:results.every(r=>r.ok),checkedAt:new Date().toISOString(),results};
 }
 class AgentHealth {
-    constructor({catalog={},inspect=inspectProvider,agent=invokeAgent}={}){this.catalog=catalog;this.inspect=inspect;this.agent=agent;this.active=null;}
+    constructor({store=null,catalog={},inspect=inspectProvider,agent=invokeAgent}={}){this.store=store;this.catalog=catalog;this.inspect=inspect;this.agent=agent;this.active=null;}
+    recover(){
+        if(!this.store)return;
+        for(const record of this.store.list('health')){
+            let changed=false;
+            if(['CREATED','RUNNING'].includes(record.status)){
+                record.status='INTERRUPTED';
+                record.error='服务重启，健康探针中断';
+                changed=true;
+            }
+            if(interruptOpenAttempts(record)>0)changed=true;
+            if(changed)this.store.save('health',record);
+        }
+    }
     run(config){
         if(this.active)throw new Error('WORKFLOW_BUSY');
         if(!Array.isArray(config.reviewers)||!config.reviewers.length||config.reviewers.length>8)throw new Error('INVALID_REVIEWER_COUNT');
@@ -46,6 +58,18 @@ class AgentHealth {
     async perform(reviewers,mode,signal){
         const result=await checkReviewers(reviewers,{signal,inspect:this.inspect});result.mode=mode;
         if(mode==='check')return result;
+        let record=null;
+        if(this.store){
+            record={
+                id:crypto.randomUUID(),
+                schemaVersion:'1.0',
+                status:'RUNNING',
+                mode:'probe',
+                createdAt:new Date().toISOString(),
+                reviewers:reviewers.map(r=>({provider:r.provider,model:r.model,reasoningEffort:r.reasoningEffort}))
+            };
+            this.store.save('health',record);
+        }
         // Each distinct model/effort is probed once; no project path or prompt is sent.
         const probes=new Map();
         for(const item of result.results){
@@ -56,19 +80,56 @@ class AgentHealth {
             if(!probes.has(key)){
                 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'studio-probe-'));
                 const marker='STUDIO_OK_'+crypto.randomBytes(12).toString('hex');
+                const meta={
+                    stepId:`probe:${item.provider}:${item.model||'default'}`,
+                    role:'health-probe',
+                    phase:'probe',
+                    provider:item.provider,
+                    model:item.model,
+                    reasoningEffort:item.reasoningEffort
+                };
                 try{
-                    const answer=await this.agent({provider:item.provider,model:item.model,reasoningEffort:item.reasoningEffort,
-                        workspaceRoot:scratch,sessionDirectory:path.join(scratch,'sessions'),sessionId:crypto.randomUUID(),role:'audit',
-                        prompt:`Connectivity test only. Do not read files, invoke tools, or change anything. Reply with exactly ${marker}`},
-                    {signal,timeoutMs:90000});
-                    probes.set(key,answer.trim()===marker?'PASSED':'UNEXPECTED_RESPONSE');
-                }catch(error){if(signal.aborted)throw new Error('RUN_CANCELLED');probes.set(key,probeFailure(error));}
+                    if(record){
+                        await trackedCall(record,meta,{
+                            signal,
+                            persist:()=>this.store.save('health',record),
+                            invoke:async()=>{
+                                return this.agent({provider:item.provider,model:item.model,reasoningEffort:item.reasoningEffort,
+                                    workspaceRoot:scratch,sessionDirectory:path.join(scratch,'sessions'),sessionId:crypto.randomUUID(),role:'audit',
+                                    prompt:`Connectivity test only. Do not read files, invoke tools, or change anything. Reply with exactly ${marker}`},
+                                {signal,timeoutMs:90000});
+                            },
+                            accept:answer=>{
+                                if(answer.trim()!==marker)throw new Error('UNEXPECTED_RESPONSE');
+                                return answer;
+                            }
+                        });
+                        probes.set(key,'PASSED');
+                    }else{
+                        const answer=await this.agent({provider:item.provider,model:item.model,reasoningEffort:item.reasoningEffort,
+                            workspaceRoot:scratch,sessionDirectory:path.join(scratch,'sessions'),sessionId:crypto.randomUUID(),role:'audit',
+                            prompt:`Connectivity test only. Do not read files, invoke tools, or change anything. Reply with exactly ${marker}`},
+                        {signal,timeoutMs:90000});
+                        probes.set(key,answer.trim()===marker?'PASSED':'UNEXPECTED_RESPONSE');
+                    }
+                }catch(error){
+                    if(signal.aborted)throw new Error('RUN_CANCELLED');
+                    if(error.message==='UNEXPECTED_RESPONSE')probes.set(key,'UNEXPECTED_RESPONSE');
+                    else probes.set(key,probeFailure(error));
+                }
                 finally{
                     const resolved=path.resolve(scratch),parent=path.resolve(os.tmpdir());
                     if(path.dirname(resolved)===parent&&path.basename(resolved).startsWith('studio-probe-'))fs.rmSync(resolved,{recursive:true,force:true});
                 }
             }
             item.probe=probes.get(key);item.ok=item.probe==='PASSED';
+        }
+        if(record){
+            record.status=signal.aborted?'STOPPED':'COMPLETED';
+            record.finishedAt=new Date().toISOString();
+            this.store.save('health',record);
+            result.recordId=record.id;
+            result.calls=summarizeCalls(record);
         }
         result.ok=result.results.every(r=>r.ok);return result;
     }

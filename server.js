@@ -4,7 +4,9 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { RunStore } = require('./engine/run-store');
+const { RunStore, workspaceKey } = require('./engine/run-store');
+const { adjustBudget, remainingBudget } = require('./engine/execution-budget');
+const { estimateExecution } = require('./engine/execution-estimate');
 const { Workflow, sourceSnapshot } = require('./engine/workflow');
 const {closureView}=require('./engine/audit-closure');
 const { invokeAgent } = require('./engine/process-runner');
@@ -17,7 +19,7 @@ const { issueLedger } = require('./engine/issue-ledger');
 const { PlanningWorkflow } = require('./engine/planning-workflow');
 const { planMigration, applyMigration } = require('./engine/storage-migration');
 const runStore = new RunStore(process.env.STUDIO_DATA_DIR || path.join(__dirname, '.studio'));
-const agentHealth = new AgentHealth({catalog:getModelsConfig});
+const agentHealth = new AgentHealth({store: runStore, catalog:getModelsConfig});
 const auditTemplates = new AuditTemplates(runStore.root,getModelsConfig);
 const workflow = new Workflow(runStore, { emit: (type, data) => {
     if (type === 'log') appendLog(data.message, data.type);
@@ -76,6 +78,7 @@ if (require.main === module) {
                 workflow.recover();
                 auditWorkflow.recover();
                 planningWorkflow.recover();
+                agentHealth.recover();
             } finally {
                 lease?.release?.();
             }
@@ -933,6 +936,173 @@ const server = http.createServer(async (req, res) => {
             sendJson(res, 404, { error: 'NOT_FOUND' });
         } catch (error) {
             sendJson(res, /CONFLICT|NOT_APPROVED|CHANGED|BUSY|RESUMABLE/.test(error.message) ? 409 : 400, { error: error.message });
+        }
+        return;
+    }
+
+    if (pathname === '/api/estimate' || pathname === '/api/executions/estimate') {
+        if (req.method !== 'POST') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+        try {
+            const body = await readRequestJson(req);
+            const { kind, config } = body || {};
+            if (!kind || !['run', 'audit', 'planning', 'health'].includes(kind)) {
+                sendJson(res, 400, { error: 'INVALID_EXECUTION_KIND' }); return;
+            }
+            const estimate = estimateExecution(kind, config || {});
+            sendJson(res, 200, { ok: true, estimate });
+        } catch (error) {
+            sendJson(res, 400, { error: error.message });
+        }
+        return;
+    }
+
+    if (pathname.startsWith('/api/executions/')) {
+        try {
+            const parts = pathname.split('/').filter(Boolean);
+            if (parts.length !== 5) { sendJson(res, 404, { error: 'NOT_FOUND' }); return; }
+            const [ , , kind, id, action ] = parts;
+            const KIND_MAP = {
+                run: 'runs',
+                audit: 'audits',
+                planning: 'discussions',
+                health: 'health'
+            };
+            const storageKind = KIND_MAP[kind];
+            if (!storageKind) { sendJson(res, 400, { error: 'INVALID_EXECUTION_KIND' }); return; }
+            if (!id) { sendJson(res, 400, { error: 'INVALID_EXECUTION_ID' }); return; }
+
+            if (req.method !== 'POST') { sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+
+            if (isWorkflowBusy()) { sendJson(res, 409, { error: 'WORKFLOW_BUSY' }); return; }
+
+            let record;
+            try {
+                record = runStore.read(storageKind, id);
+            } catch {
+                sendJson(res, 404, { error: 'RECORD_NOT_FOUND' }); return;
+            }
+
+            const body = await readRequestJson(req);
+
+            if (action === 'budget') {
+                const { workspaceRoot, version, budget, reason } = body;
+                if (['RUNNING', 'STARTED'].includes(record.status)) {
+                    sendJson(res, 409, { error: 'RECORD_ACTIVE' }); return;
+                }
+                if (kind !== 'health') {
+                    let key = null;
+                    try { if (workspaceRoot) key = workspaceKey(workspaceRoot); } catch {}
+                    if (!workspaceRoot || key !== record.workspaceKey) {
+                        sendJson(res, 403, { error: 'WORKSPACE_MISMATCH' }); return;
+                    }
+                }
+                if (version !== undefined && version !== null) {
+                    if (record.version !== undefined && record.version !== version) {
+                        sendJson(res, 409, { error: 'VERSION_CONFLICT' }); return;
+                    }
+                }
+                adjustBudget(record, budget, { reason });
+                record.version = (record.version || 1) + 1;
+                runStore.save(storageKind, record);
+                sendJson(res, 200, { ok: true, budget: record.budget, version: record.version });
+                return;
+            }
+
+            if (action === 'resume-budget') {
+                const { workspaceRoot, version } = body;
+                if (kind !== 'health') {
+                    let key = null;
+                    try { if (workspaceRoot) key = workspaceKey(workspaceRoot); } catch {}
+                    if (!workspaceRoot || key !== record.workspaceKey) {
+                        sendJson(res, 403, { error: 'WORKSPACE_MISMATCH' }); return;
+                    }
+                }
+                if (version !== undefined && version !== null) {
+                    if (record.version !== undefined && record.version !== version) {
+                        sendJson(res, 409, { error: 'VERSION_CONFLICT' }); return;
+                    }
+                }
+                const pausedByBudget = record.pauseReason === 'BUDGET_EXHAUSTED' || record.reviewers?.some?.(r => r.pauseReason === 'BUDGET_EXHAUSTED');
+                if (!pausedByBudget && record.status !== 'STOPPED' && record.status !== 'INTERRUPTED') {
+                    sendJson(res, 400, { error: 'EXECUTION_NOT_PAUSED_BY_BUDGET' }); return;
+                }
+
+                if (kind === 'audit') {
+                    if (record.snapshot && await sourceSnapshot(record.workspaceRoot) !== record.snapshot) {
+                        record.status = 'INVALIDATED';
+                        record.error = '源码已改变，请重新发起审核。';
+                        runStore.save('audits', record);
+                        sendJson(res, 409, { error: 'AUDIT_SOURCE_CHANGED' }); return;
+                    }
+                } else if (kind === 'run') {
+                    if (record.snapshot && await sourceSnapshot(record.workspaceRoot) !== record.snapshot) {
+                        sendJson(res, 409, { error: 'SOURCE_CHANGED' }); return;
+                    }
+                } else if (kind === 'planning') {
+                    if (record.snapshot && await sourceSnapshot(record.workspaceRoot) !== record.snapshot) {
+                        record.status = 'INVALIDATED';
+                        record.error = '源码已改变，请重新发起规划。';
+                        runStore.save('discussions', record);
+                        sendJson(res, 409, { error: 'PLANNING_SOURCE_CHANGED' }); return;
+                    }
+                }
+
+                const rem = remainingBudget(record);
+                if (rem.exhausted) {
+                    sendJson(res, 400, { error: 'BUDGET_STILL_EXHAUSTED: ' + rem.reason }); return;
+                }
+
+                if (kind === 'audit') {
+                    for (const r of record.reviewers || []) {
+                        if (r.status === 'STOPPED' && r.pauseReason === 'BUDGET_EXHAUSTED') {
+                            r.status = 'QUEUED';
+                            delete r.pauseReason;
+                            r.error = '';
+                        }
+                    }
+                    delete record.pauseReason;
+                    delete record.allowedActions;
+                    record.version = (record.version || 1) + 1;
+                    auditWorkflow.launch(record);
+                    sendJson(res, 202, { ok: true, auditId: record.id, status: record.status });
+                    return;
+                } else if (kind === 'run') {
+                    if (record.snapshot && await sourceSnapshot(record.workspaceRoot) !== record.snapshot) {
+                        sendJson(res, 409, { error: 'SOURCE_CHANGED' }); return;
+                    }
+                    delete record.pauseReason;
+                    delete record.allowedActions;
+                    record.version = (record.version || 1) + 1;
+                    runStore.save('runs', record);
+                    workflow.resume(record.id);
+                    sendJson(res, 202, { ok: true, runId: record.id, status: record.status });
+                    return;
+                } else if (kind === 'planning') {
+                    if (record.snapshot && await sourceSnapshot(record.workspaceRoot) !== record.snapshot) {
+                        record.status = 'INVALIDATED';
+                        record.error = '源码已改变，请重新发起规划。';
+                        runStore.save('discussions', record);
+                        sendJson(res, 409, { error: 'PLANNING_SOURCE_CHANGED' }); return;
+                    }
+                    delete record.pauseReason;
+                    delete record.allowedActions;
+                    record.version = (record.version || 1) + 1;
+                    planningWorkflow.launch(record);
+                    sendJson(res, 202, { ok: true, discussionId: record.id, status: record.status });
+                    return;
+                } else {
+                    delete record.pauseReason;
+                    delete record.allowedActions;
+                    record.version = (record.version || 1) + 1;
+                    runStore.save(storageKind, record);
+                    sendJson(res, 200, { ok: true, status: record.status });
+                    return;
+                }
+            }
+
+            sendJson(res, 404, { error: 'NOT_FOUND' });
+        } catch (error) {
+            sendJson(res, /BUSY|CONFLICT|SOURCE_CHANGED|INVALIDATED|MISMATCH/.test(error.message) ? 409 : 400, { error: error.message });
         }
         return;
     }

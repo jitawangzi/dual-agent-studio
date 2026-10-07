@@ -1,5 +1,7 @@
 'use strict';
 const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const {trackedCall,interruptOpenAttempts}=require('./call-ledger');
+const {ensureBudget,startActiveTracking,stopActiveTracking,recoverBudget}=require('./execution-budget');
 const {invokeAgent}=require('./process-runner');
 const {sourceSnapshot,parseObject}=require('./workflow');
 const {normalizeReviewer}=require('./audit-config');
@@ -62,7 +64,19 @@ function compileDecision(record,input){
 class PlanningWorkflow{
     constructor(store,{agent=invokeAgent,snapshot=sourceSnapshot,catalog={},preflight=checkReviewers,emit=()=>{}}={}){Object.assign(this,{store,agent,snapshot,catalog,preflight,emit});this.active=null;}
     save(record){this.store.save('discussions',record);this.emit('planning_update',{id:record.id,workspaceRoot:record.workspaceRoot,status:record.status});}
-    recover(){for(const record of this.store.list('discussions'))if(['CREATED','RUNNING'].includes(record.status)){record.status='INTERRUPTED';record.error='服务重启，讨论中断；源码未变时可重试未完成步骤。';for(const call of record.calls)if(call.status==='RUNNING')call.status='INTERRUPTED';this.save(record);}}
+    recover(){
+        for(const record of this.store.list('discussions')){
+            let changed=false;
+            if(['CREATED','RUNNING'].includes(record.status)){
+                record.status='INTERRUPTED';record.error='服务重启，讨论中断；源码未变时可重试未完成步骤。';
+                for(const call of record.calls||[])if(call.status==='RUNNING')call.status='INTERRUPTED';
+                changed=true;
+            }
+            if(interruptOpenAttempts(record)>0)changed=true;
+            if(recoverBudget(record))changed=true;
+            if(changed)this.save(record);
+        }
+    }
     draft(id,input){const record=this.store.read('discussions',id);return input?saveDraft(this.store,record,input):readDraft(this.store,record);}
     compare(id,decision){const record=this.store.read('discussions',id);return record.parentId?comparePlans(this.store.read('discussions',record.parentId),record,decision):null;}
     retry(id,input){
@@ -90,6 +104,7 @@ class PlanningWorkflow{
             feature:text(config.feature||'需求优化方案'),idea:text(config.idea),scope:text(config.scope||'自有源码、测试和配置'),members,
             timeoutSeconds,parentId:parent?.id||null,feedback:parent?text(config.feedback):'',parentContext:parent?{idea:parent.idea,decisions:parent.decision,proposals:parent.members.flatMap(m=>m.proposal?.proposals||[])}:null,
             status:'CREATED',phase:'INVESTIGATE',createdAt:now(),calls:[],questions:[],snapshot:null,error:''};
+        ensureBudget(record, config.budget);
         this.save(record);return record;
     }
     launch(record){
@@ -100,12 +115,21 @@ class PlanningWorkflow{
             try{
                 if(lease)await lease;
                 if(controller.signal.aborted)throw new Error('RUN_CANCELLED');
+                startActiveTracking(record);
                 record.status='RUNNING';record.error='';this.save(record);
                 await this.drive(record,controller.signal);
             }catch(err){
-                record.status=controller.signal.aborted?'STOPPED':'FAILED';record.error=err.message;this.save(record);
+                if(err.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(err.message)){
+                    record.status='STOPPED';
+                    record.pauseReason='BUDGET_EXHAUSTED';
+                    record.allowedActions=['INCREASE_BUDGET','MANUAL_RESUME'];
+                    record.error=err.message;
+                } else {
+                    record.status=controller.signal.aborted?'STOPPED':'FAILED';record.error=err.message;
+                }
+                this.save(record);
             }
-        })().finally(()=>{this.active?.lease?.release?.();this.active=null;this.emit('planning_idle',{id:record.id});});return record;
+        })().finally(()=>{stopActiveTracking(record);this.active?.lease?.release?.();this.active=null;this.emit('planning_idle',{id:record.id});});return record;
     }
     async check(record,signal){if(await this.snapshot(record.workspaceRoot,signal)!==record.snapshot)throw new Error('PLANNING_SOURCE_CHANGED');if(signal?.aborted)throw new Error('RUN_CANCELLED');}
     async call(record,member,role,instructions,signal){
@@ -116,18 +140,33 @@ Idea: ${record.idea}\nScope: ${record.scope}\nYour role: ${member.name}\nRole in
 Previous discussion: ${JSON.stringify(record.parentContext)}\nHuman refinement: ${record.feedback}
 ${instructions}`;
         fs.writeFileSync(file('prompt.txt'),prompt);
+        const meta={stepId:`planning:${call.id}`,role,phase:record.phase,provider:member.provider,model:member.model,reasoningEffort:member.reasoningEffort,sessionId:call.sessionId};
         try{
-            const answer=await this.agent({...member,workspaceRoot:record.workspaceRoot,role,prompt,sessionId:call.sessionId,sessionDirectory:path.join(this.store.root,'sessions')},
-                {signal,timeoutMs:record.timeoutSeconds*1000,onSpawn:p=>{call.activePid=p.pid;this.save(record);},onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[方案 ${member.name}] ${value}`,type,time:now()});}});
-            fs.writeFileSync(file('response.txt'),answer);call.responseArtifact=`${call.id}.response.txt`;await this.check(record,signal);
-            call.validating=true;
-            const result=role==='plan-investigate'?investigation(answer,record.workspaceRoot):role==='plan-propose'?proposals(answer,member):challenge(answer,record.members.flatMap(m=>m.proposal.proposals).filter(p=>p.memberId!==member.id).map(p=>p.id));
+            const result=await trackedCall(record,meta,{
+                signal,
+                persist:()=>this.save(record),
+                invoke:async()=>{
+                    let answer;
+                    try{
+                        answer=await this.agent({...member,workspaceRoot:record.workspaceRoot,role,prompt,sessionId:call.sessionId,sessionDirectory:path.join(this.store.root,'sessions')},
+                            {signal,timeoutMs:record.timeoutSeconds*1000,onSpawn:p=>{call.activePid=p.pid;this.save(record);},onOutput:(value,type)=>{fs.appendFileSync(file('log.txt'),value);this.emit('log',{message:`[方案 ${member.name}] ${value}`,type,time:now()});}});
+                    }finally{call.activePid=null;}
+                    if(signal?.aborted)throw new Error('RUN_CANCELLED');
+                    fs.writeFileSync(file('response.txt'),answer);call.responseArtifact=`${call.id}.response.txt`;
+                    return answer;
+                },
+                accept:async answer=>{
+                    await this.check(record,signal);
+                    call.validating=true;
+                    return role==='plan-investigate'?investigation(answer,record.workspaceRoot):role==='plan-propose'?proposals(answer,member):challenge(answer,record.members.flatMap(m=>m.proposal.proposals).filter(p=>p.memberId!==member.id).map(p=>p.id));
+                }
+            });
             call.status='COMPLETED';delete call.validating;return result;
         }catch(error){call.status=signal.aborted?'STOPPED':call.validating?'INVALID_RESPONSE':/TIMEOUT/.test(error.message)?'TIMED_OUT':'FAILED';delete call.validating;call.error=error.message;throw error;}
         finally{call.activePid=null;call.finishedAt=now();this.save(record);}
     }
     async pool(record,task,signal){let cursor=0,failure;await Promise.allSettled(Array.from({length:Math.min(3,record.members.length)},async()=>{
-        while(cursor<record.members.length&&!signal.aborted&&!failure){const member=record.members[cursor++];try{await task(member);}catch(error){failure||=error;}}
+        while(cursor<record.members.length&&!signal.aborted&&!failure&&!record.pauseReason){const member=record.members[cursor++];try{await task(member);}catch(error){failure||=error;}}
     }));if(failure)throw failure;if(signal.aborted)throw new Error('RUN_CANCELLED');}
     async drive(record,signal){
         try{
@@ -145,7 +184,17 @@ ${instructions}`;
                 `Investigation: ${JSON.stringify(record.investigation)}\nOther proposals: ${JSON.stringify(others)}\nReview EVERY listed proposal independently. Return ONLY JSON {"reviews":[{"proposalId":"exact provided ID","position":"SUPPORT|CONCERN|NEEDS_INFO","reason":"specific evidence, tradeoff or unresolved assumption"}],"questions":["questions for the human"]}. Support is not approval; preserve disagreements.`,signal);this.save(record);},signal);
             record.questions=[...new Set([...record.investigation.questions,...record.members.flatMap(m=>[...m.proposal.questions,...m.challenge.questions])])].map((question,i)=>({id:`Q-${i+1}`,question}));
             await this.check(record,signal);record.status='READY';record.phase='HUMAN_DECISION';
-        }catch(error){record.status=error.message==='PLANNING_SOURCE_CHANGED'?'INVALIDATED':signal.aborted?'STOPPED':'FAILED';record.error=error.message;}
+        }catch(error){
+            if(error.code==='BUDGET_EXHAUSTED'||/BUDGET_EXHAUSTED/.test(error.message)){
+                record.status='STOPPED';
+                record.pauseReason='BUDGET_EXHAUSTED';
+                record.allowedActions=['INCREASE_BUDGET','MANUAL_RESUME'];
+                record.error=error.message;
+            } else {
+                record.status=error.message==='PLANNING_SOURCE_CHANGED'?'INVALIDATED':signal.aborted?'STOPPED':'FAILED';
+                record.error=error.message;
+            }
+        }
         finally{this.save(record);}return record;
     }
     preview(id,input){const record=this.store.read('discussions',id);liveCalls(record);checkDraft(this.store,record,input);const decision=compileDecision(record,input);return {...decision,comparison:this.compare(id,decision)};}

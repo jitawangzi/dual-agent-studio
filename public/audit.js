@@ -176,9 +176,11 @@
     if(busy||starting)return;
     starting=true;updateButtons();saveDrafts();if(typeof saveUserPreferences==='function')saveUserPreferences();
     try{
+      const budget = window.ExecutionBudgetUI ? window.ExecutionBudgetUI.getBudgetConfig() : null;
       const created=await request('/api/audits',{workspaceRoot:getWorkspace(),feature:$('featureName').value.trim()||'并行工程审核',
         commonPrompt:$('auditCommonPrompt').value.trim(),scope:$('auditScope').value.trim(),concurrency:Number($('auditConcurrency').value),
-        timeoutSeconds:Number($('timeoutSeconds').value),reviewers:drafts});
+        timeoutSeconds:Number($('timeoutSeconds').value),reviewers:drafts,
+        ...(budget ? { budget } : {})});
       selectedId=created.auditId;chosen.clear();renderedVersion='';workspace=getWorkspace();
       updateRunningState(true);switchTab('audit');await refresh();showToast('并行审核已启动。','success');
     }catch(error){showToast(error.message,'error');}finally{starting=false;updateButtons();}
@@ -188,6 +190,7 @@
     record=null;renderedVersion='';supplementChosen.clear();supplementStamp='';$('auditGaps').replaceChildren();$('auditRelated').replaceChildren();chosen.clear();verifyChosen.clear();triageDrafts.clear();$('auditAcceptPartial').checked=false;$('findingVerifyPartial').checked=false;
     $('findingVerificationProgress').textContent='';$('findingFilterSummary').textContent='';
     $('auditSummary').textContent='尚无审核报告。';
+    $('auditBudgetBox')?.replaceChildren();
     for(const id of ['auditReviewerResults','auditFindings','auditArtifacts','auditRepairLinks'])$(id).replaceChildren();
     $('auditRepairBox').hidden=true;$('auditFindingCount').textContent='';updateButtons();
   }
@@ -231,6 +234,12 @@
     $('auditSummary').textContent=`${labels[next.status]||next.status} · ${completed}/${next.reviewers.length} 位审核员完成 · ${next.findings.length} 项发现\n`+
       `${next.error || (next.status==='COMPLETED'?'审核范围已按各审核员报告完成，请根据证据判断问题。':'本次审核尚未完整结束，已有报告仅代表已完成的检查。')}\n公共范围：${next.scope}\n公共要求：${next.commonPrompt}`+
       (next.preflight?'\n启动环境检查：\n'+healthText(next.preflight):'');
+    if ($('auditBudgetBox') && window.ExecutionBudgetUI) {
+      $('auditBudgetBox').innerHTML =
+        window.ExecutionBudgetUI.renderBudgetPauseBanner(next, 'audit', () => refresh()) +
+        window.ExecutionBudgetUI.renderBudgetSummaryHtml(next) +
+        window.ExecutionBudgetUI.renderCallAttemptsHtml(next.callLedger?.calls);
+    }
     renderSupplement();
     $('auditReviewerResults').innerHTML=next.reviewers.map(r=>`<article class="audit-reviewer-card">
       <h4>${escape(r.name)} · ${escape(labels[r.status]||r.status)}</h4>

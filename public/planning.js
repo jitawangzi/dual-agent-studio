@@ -111,8 +111,14 @@
   function render(){
     for(const id of ['planningDecision','planningApproval','planningRefinement'])$(id).hidden=true;
     preview=null;$('planningReport').replaceChildren();comparisonHtml(null);
-    if(!record){$('planningStatus').textContent='尚未发起讨论。';buttons();return;}
+    if(!record){$('planningStatus').textContent='尚未发起讨论。';$('planningBudgetBox')?.replaceChildren();buttons();return;}
     $('planningStatus').textContent=`${labels[record.status]||record.status} · ${phases[record.phase]||record.phase} · ${Number(!!record.investigation)+record.members.filter(m=>m.proposal).length+record.members.filter(m=>m.challenge).length}/${1+2*record.members.length} 个步骤通过 · 共 ${record.calls.length} 次尝试${record.error?'\n'+(errors[record.error]||record.error):''}`;
+    if ($('planningBudgetBox') && window.ExecutionBudgetUI) {
+      $('planningBudgetBox').innerHTML =
+        window.ExecutionBudgetUI.renderBudgetPauseBanner(record, 'planning', () => refresh()) +
+        window.ExecutionBudgetUI.renderBudgetSummaryHtml(record) +
+        window.ExecutionBudgetUI.renderCallAttemptsHtml(record.callLedger?.calls);
+    }
     const inv=record.investigation,all=record.members.flatMap(m=>m.proposal?.proposals||[]);
     $('planningReport').innerHTML=`<p>需求：${esc(record.idea)}</p><p>范围：${esc(record.scope)}</p>
       <details><summary>本次团队与模型配置</summary>${record.members.map(m=>`<p>${esc(m.name)} · ${esc(m.provider)} / ${esc(m.model||'CLI 默认模型')} / ${esc(m.reasoningEffort||'默认思考强度')}<br>${esc(m.prompt)}</p>`).join('')}</details>
@@ -149,7 +155,8 @@
     const target=ws(),parent=refine?record:null;
     if(!target||(!parent&&!$('vaguePrompt').value.trim()))throw new Error('请填写工程路径和初步想法。');
     if(refine&&!$('planningFeedback').value.trim())throw new Error('请填写补充意见。');
-    const result=await request('/api/planning',{workspaceRoot:target,idea:parent?.idea||$('vaguePrompt').value,feature:parent?.feature||$('featureName').value||'需求优化方案',scope:$('auditScope').value,members:team,timeoutSeconds:Number($('timeoutSeconds').value),...(parent?{parentId:parent.id,feedback:$('planningFeedback').value}:{})});
+    const budget = window.ExecutionBudgetUI ? window.ExecutionBudgetUI.getBudgetConfig() : null;
+    const result=await request('/api/planning',{workspaceRoot:target,idea:parent?.idea||$('vaguePrompt').value,feature:parent?.feature||$('featureName').value||'需求优化方案',scope:$('auditScope').value,members:team,timeoutSeconds:Number($('timeoutSeconds').value),...(parent?{parentId:parent.id,feedback:$('planningFeedback').value}:{}), ...(budget ? { budget } : {})});
     if(target!==ws())return;workspace=target;selection=result.discussionId;stamp='';$('planningFeedback').value='';updateRunningState(true,true);switchTab('discussion');await refresh();
   });}
   window.planningApp={start,refresh,setBusy:value=>{busy=value;buttons();}};

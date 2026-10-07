@@ -1429,6 +1429,7 @@ async function startLoop(overrides = {}) {
     cleanRoundsRequired: Number(document.getElementById('cleanRoundsRequired').value),
     maxNoProgressRounds: Number(document.getElementById('maxNoProgressRounds').value),
     timeoutSeconds: Number(document.getElementById('timeoutSeconds').value),
+    budget: (window.ExecutionBudgetUI ? window.ExecutionBudgetUI.getBudgetConfig() : null) || undefined,
     ...overrides
   };
 
@@ -1593,7 +1594,21 @@ function renderRun(run) {
     }).catch(()=>{});
   }
   resume.disabled = !run || isRunning || !['STOPPED', 'FAILED', 'INTERRUPTED'].includes(run.status);
-  if (!run) { summary.textContent = '暂无运行记录。'; ledger.replaceChildren(); document.getElementById('runArtifacts').replaceChildren(); document.getElementById('runReviewProgress').replaceChildren(); return; }
+  const budgetBox = document.getElementById('runBudgetBox');
+  if (!run) {
+    summary.textContent = '暂无运行记录。';
+    if (budgetBox) budgetBox.replaceChildren();
+    ledger.replaceChildren();
+    document.getElementById('runArtifacts').replaceChildren();
+    document.getElementById('runReviewProgress').replaceChildren();
+    return;
+  }
+  if (budgetBox && window.ExecutionBudgetUI) {
+    budgetBox.innerHTML =
+      window.ExecutionBudgetUI.renderBudgetPauseBanner(run, 'run', () => refreshRuns()) +
+      window.ExecutionBudgetUI.renderBudgetSummaryHtml(run) +
+      window.ExecutionBudgetUI.renderCallAttemptsHtml(run.callLedger?.calls);
+  }
   const statusLabels = { RUNNING: '运行中', APPROVED: '已完成验收', FAILED: '执行失败', STOPPED: '已停止',
     INTERRUPTED: '服务中断', NEEDS_ATTENTION: '等待人工决策', REJECTED_MAX_ROUNDS: '轮数用尽，尚未完成' };
   const pending = run.bugs.filter(b => b.status !== 'VERIFIED_CLOSED').length;

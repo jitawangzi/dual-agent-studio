@@ -36,10 +36,12 @@ function validateRecord(kind, raw, expectedId = null) {
     } else if (expectedId && raw.id !== expectedId) {
         errors.push({ path: 'id', code: 'ID_MISMATCH' });
     }
-    const hasWsKey = typeof raw.workspaceKey === 'string' && raw.workspaceKey.trim().length > 0;
-    const hasWsRoot = typeof raw.workspaceRoot === 'string' && raw.workspaceRoot.trim().length > 0;
-    if (!hasWsKey && !hasWsRoot) {
-        errors.push({ path: 'workspaceKey', code: 'MISSING_WORKSPACE' });
+    if (kind !== 'health') {
+        const hasWsKey = typeof raw.workspaceKey === 'string' && raw.workspaceKey.trim().length > 0;
+        const hasWsRoot = typeof raw.workspaceRoot === 'string' && raw.workspaceRoot.trim().length > 0;
+        if (!hasWsKey && !hasWsRoot) {
+            errors.push({ path: 'workspaceKey', code: 'MISSING_WORKSPACE' });
+        }
     }
     if (raw.findings !== undefined && !Array.isArray(raw.findings)) {
         errors.push({ path: 'findings', code: 'INVALID_FINDINGS' });

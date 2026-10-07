@@ -204,6 +204,39 @@
 - 数据：未篡改已有业务数据；严格保留未跟踪 `commit.cmd`。
 - 运行状态：临时测试目录已清理，无残留进程。
 
+## 2026-10-07 / 2.11 / 调用预算与资源使用 (全量 4 个任务闭环)
+
+- **本次目标**：全面实施版本 2.11（调用预算与资源使用）的 4 个任务，完成模型调用追踪、并发安全硬限制、提供方错误分类与人工恢复、启动估算与前端预算交互全链路。
+- **基线**：分支 `codex/parallel-audit`，未跟踪 `commit.cmd` 严格保留，Node v22.22.1，PowerShell 7.6.6。
+- **已完成任务**：
+  1. **Task 1（统一调用记录与真实/未知数据区分）**：
+     - 新建 `engine/call-ledger.js`：实现 `beginAttempt`, `markResponded`, `finishAttempt`, `interruptOpenAttempts`, `summarizeCalls`, `normalizeUsage`, `trackedCall`；
+     - 接入 `engine/workflow.js`, `engine/audit-workflow.js`, `engine/planning-workflow.js`, `engine/finding-verification.js`, `engine/agent-health.js`；
+     - 存储扩展：`health` kind 作为无 workspace 安全存储合法化；
+     - 新建 `tests/call-ledger.tests.js`（12 项测试通过）。
+  2. **Task 2（并发安全的次数与时间硬预算）**：
+     - 新建 `engine/execution-budget.js`：实现 `normalizeBudget`, `ensureBudget`, `reserveAttempt`, `markAttemptStarted`, `settleAttempt`, `cancelReservation`, `remainingBudget`, `adjustBudget`, `startActiveTracking`, `checkpointActiveTracking`, `stopActiveTracking`, `recoverBudget`, `currentActiveSeconds`；
+     - `trackedCall` 接入同步互斥预算预留与启动结算，无论成功、失败或格式非法，只要启动一律消耗额度；
+     - 工作流超额自动暂停并设置 `pauseReason: 'BUDGET_EXHAUSTED'` 与 `allowedActions`；
+     - 新建 `tests/execution-budget.tests.js`（8 项测试通过）。
+  3. **Task 3（额度错误分类与人工恢复）**：
+     - 新建 `engine/provider-errors.js`：实现 `classifyProviderError`，支持 `AUTH_REQUIRED`, `MODEL_UNAVAILABLE`, `RATE_LIMIT`, `QUOTA_EXHAUSTED`, `TIMEOUT`, `CLI_UPGRADE_REQUIRED`, `UNKNOWN` 错误代码分类；
+     - `server.js` 接入 `POST /api/executions/:kind/:id/budget` 和 `POST /api/executions/:kind/:id/resume-budget` 端点；安全处理工作区路径，严格校验版本并提供乐观锁冲突保护（409）；
+     - 新建 `tests/provider-errors.tests.js`（6 项测试通过）与 `tests/budget-api.tests.js`（13 项测试通过）。
+  4. **Task 4（启动估算、预算 UI 与验收）**：
+     - 新建 `engine/execution-estimate.js`：实现 `estimateExecution(kind, config)`，纯静态计算尝试次数范围与预估假设，严禁调用 CLI 或模型；
+     - `server.js` 接入 `POST /api/estimate` 端点；
+     - 新建 `public/execution-budget.js`：提供预设选择器、自适应输入控件、实时估算渲染、预算看板与统计展示（杜绝显示 0 元费用，明确标注“未提供”）、预算耗尽暂停提示与原地追加额度恢复面板；
+     - 更新 `public/index.html`, `public/app.js`, `public/audit.js`, `public/planning.js`, `public/style.css`，为 Dual-Agent Loop、并行审核及团队讨论三大执行流程全量接入预算看板与恢复交互；
+     - 更新 `tests/frontend-contract.tests.js` 验证新增 DOM 契约与函数绑定；
+     - 更新 `scripts/browser-acceptance.cjs`：加入 2.11 场景端到端浏览器验收（1上限2审核员预算暂停、刷新计数保留、源码变更拦截 409、追加预算后恢复未完成审核员并完成）。
+- **验证结果**：
+  - `node scripts/browser-acceptance.cjs`：14 项浏览器端到端检查全部 PASS，退出码 0；
+  - `npm test`：包含全部 33 个测试套件、服务器测试、前端契约测试、PowerShell 适配器与 orchestrator 编排测试，全量 PASS，退出码 0。
+- **版本更新**：`package.json` 版本升级至 `2.11.0`。
+- **数据与文件状态**：未篡改已有业务数据；严格保留根目录未跟踪的 `commit.cmd`。
+
+
 
 
 

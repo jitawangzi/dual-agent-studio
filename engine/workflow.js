@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execute, invokeAgent } = require('./process-runner');
+const { trackedCall, interruptOpenAttempts } = require('./call-ledger');
+const { ensureBudget, startActiveTracking, stopActiveTracking, recoverBudget } = require('./execution-budget');
 const { hash, now, workspaceKey } = require('./run-store');
 const {trackProgress,parseTargetedReview}=require('./review-progress');
 
@@ -138,10 +140,14 @@ class Workflow {
     }
     recover() {
         for (const run of this.store.list('runs')) {
+            let changed = false;
             if (['RUNNING', 'CREATED'].includes(run.status)) {
                 run.status = 'INTERRUPTED'; run.error = '服务重启；恢复时会重新测试和审查当前代码。';
-                this.save(run, 'interrupted');
+                interruptOpenAttempts(run);
+                changed = true;
             }
+            if (recoverBudget(run)) changed = true;
+            if (changed) this.save(run, 'interrupted');
         }
     }
     save(run, type, detail = {}) {
@@ -187,6 +193,7 @@ class Workflow {
             approval: plan ? { planId: plan.id, ...plan.approval } : null, failures: 0,
             acceptanceCriteria:plan?.requirements||[],planSourceSnapshot:plan?.sourceSnapshot||null,
             createdAt: now(), error: '', lastReview: null };
+        ensureBudget(run, config.budget);
         this.save(run, 'created');
         return run;
     }
@@ -202,13 +209,23 @@ class Workflow {
                 if (lease) await lease;
                 if (controller.signal.aborted) throw new Error('RUN_CANCELLED');
 
+                startActiveTracking(run);
                 this.save(run, 'started');
                 await this.drive(run, controller.signal);
             } catch (err) {
-                run.status = controller.signal.aborted ? 'STOPPED' : 'FAILED'; run.error = err.message;
-                this.save(run, 'failed');
+                if (err.code === 'BUDGET_EXHAUSTED' || /BUDGET_EXHAUSTED/.test(err.message)) {
+                    run.status = 'STOPPED';
+                    run.pauseReason = 'BUDGET_EXHAUSTED';
+                    run.allowedActions = ['INCREASE_BUDGET', 'MANUAL_RESUME'];
+                    run.error = err.message;
+                    this.save(run, 'budget_exhausted');
+                } else {
+                    run.status = controller.signal.aborted ? 'STOPPED' : 'FAILED'; run.error = err.message;
+                    this.save(run, 'failed');
+                }
             }
         })().finally(() => {
+            stopActiveTracking(run);
             this.active?.lease?.release?.();
             this.active = null; this.emit('run_idle', { id: run.id });
         });
@@ -256,7 +273,7 @@ class Workflow {
         this.save(run, 'human_decision', { note });
         return this.launch(run);
     }
-    async call(run, role, prompt, signal) {
+    async call(run, role, prompt, signal, accept = value => value) {
         if (signal.aborted) throw new Error('RUN_CANCELLED');
         const prefix = role === 'review' ? 'review' : 'dev';
         const invocation = `${run.round}-${role}-${crypto.randomUUID()}`;
@@ -265,17 +282,23 @@ class Workflow {
         const request = { provider: run.config[`${prefix}Provider`], model: run.config[`${prefix}Model`],
             reasoningEffort: run.config[`${prefix}ReasoningEffort`], sessionId: run[`${prefix}SessionId`],
             workspaceRoot: run.workspaceRoot, role, prompt, sessionDirectory: path.join(this.store.root, 'sessions') };
-        let response;
-        try { response = await this.agent(request, { signal, timeoutMs: run.config.timeoutSeconds * 1000,
-            onOutput: (text, stream) => {
-                fs.appendFileSync(artifact('log.txt'), text);
-                this.emit('log', { time: now(), type: stream, message: text, runId: run.id });
-            }, onSpawn: proc => { run.activePid = proc.pid; this.save(run, 'process_started', { pid: proc.pid, invocation }); } });
-        } finally { run.activePid = null; }
-        if (signal.aborted) throw new Error('RUN_CANCELLED');
-        fs.writeFileSync(artifact('response.txt'), response);
-        run.lastResponseArtifact=path.basename(artifact('response.txt'));
-        return response;
+        // Ledger checkpoints: before the provider, after output, after validation (accept).
+        const meta = { stepId: `round-${run.round}:${run.phase}`, role, phase: run.phase, provider: request.provider,
+            model: request.model, reasoningEffort: request.reasoningEffort, sessionId: request.sessionId };
+        return trackedCall(run, meta, { signal, accept, persist: () => this.save(run, 'call_ledger'),
+            invoke: async () => {
+                let response;
+                try { response = await this.agent(request, { signal, timeoutMs: run.config.timeoutSeconds * 1000,
+                    onOutput: (text, stream) => {
+                        fs.appendFileSync(artifact('log.txt'), text);
+                        this.emit('log', { time: now(), type: stream, message: text, runId: run.id });
+                    }, onSpawn: proc => { run.activePid = proc.pid; this.save(run, 'process_started', { pid: proc.pid, invocation }); } });
+                } finally { run.activePid = null; }
+                if (signal.aborted) throw new Error('RUN_CANCELLED');
+                fs.writeFileSync(artifact('response.txt'), response);
+                run.lastResponseArtifact=path.basename(artifact('response.txt'));
+                return response;
+            } });
     }
     reviewPrompt(run, snapshot) {
         return `You are the independent reviewer. Read the actual project files in ${run.workspaceRoot}.
@@ -329,7 +352,7 @@ ${JSON.stringify(run.bugs.filter(b => b.status !== CLOSED))}
 Last independent review: ${JSON.stringify(run.lastReview)}
 Last test evidence: ${JSON.stringify(run.testGate)}
 Return ONLY JSON {"summary":"changes and validation","needsDecision":false,"fixes":[{"id":"BUG-0001","summary":"fix or disagreement evidence"}]}.`;
-                    const submission = parseObject(await this.call(run, 'dev', prompt, signal));
+                    const submission = await this.call(run, 'dev', prompt, signal, parseObject);
                     requiredText(submission.summary, 'developer summary');
                     if (typeof submission.needsDecision !== 'boolean' || (!submission.needsDecision && !Array.isArray(submission.fixes))) throw new Error('INVALID_DEV_SCHEMA');
                     run.currentDevSubmission = submission;
@@ -393,7 +416,7 @@ Git diff against HEAD (at most 32000 characters; untracked files are not include
 ${changes}
 ${evidenceInstructions}
 Return ONLY JSON {"summary":"checks and limitations","verifications":[{"id":"BUG-0001","result":"RESOLVED|UNRESOLVED|DISPUTED","evidence":"concrete source/test evidence for this acceptance condition"}]}. Include every requested ID exactly once. No new issue IDs in this step.`;
-                    const report=parseTargetedReview(parseObject(await this.call(run,'review',prompt,signal)),pending,run.testGate,before);
+                    const report=await this.call(run,'review',prompt,signal,text=>parseTargetedReview(parseObject(text),pending,run.testGate,before));
                     if(before!==await this.snapshot(run.workspaceRoot,signal))throw new Error('SOURCE_CHANGED_DURING_REVIEW');
                     if(report.verifications.some(v=>v.result==='RESOLVED')&&run.testGate.status!=='PASS')throw new Error('UNVERIFIED_BUG_CLOSURE');
                     run.targetedReview={...report,responseArtifact:run.lastResponseArtifact,snapshot:before,round:run.round,at:now()};
@@ -411,7 +434,7 @@ Return ONLY JSON {"summary":"checks and limitations","verifications":[{"id":"BUG
                 if (run.phase === 'REVIEW') {
                     const before = await this.snapshot(run.workspaceRoot, signal);
                     if (before !== run.testGate.snapshot) throw new Error('SOURCE_CHANGED_AFTER_TEST');
-                    const report = parseObject(await this.call(run, 'review', this.reviewPrompt(run, before), signal));
+                    const report = await this.call(run, 'review', this.reviewPrompt(run, before), signal, parseObject);
                     if (before !== await this.snapshot(run.workspaceRoot, signal)) throw new Error('SOURCE_CHANGED_DURING_REVIEW');
                     if(run.sourceAudit){
                         for(const check of report.verifications||[])if(check.result==='RESOLVED'&&run.bugs.some(b=>b.id===check.id&&b.status!==CLOSED)){
@@ -450,7 +473,14 @@ Return ONLY JSON {"summary":"checks and limitations","verifications":[{"id":"BUG
                 }
             }
         } catch (error) {
-            run.status = signal.aborted ? 'STOPPED' : 'FAILED'; run.error = error.message;
+            if (error.code === 'BUDGET_EXHAUSTED' || /BUDGET_EXHAUSTED/.test(error.message)) {
+                run.status = 'STOPPED';
+                run.pauseReason = 'BUDGET_EXHAUSTED';
+                run.allowedActions = ['INCREASE_BUDGET', 'MANUAL_RESUME'];
+                run.error = error.message;
+            } else {
+                run.status = signal.aborted ? 'STOPPED' : 'FAILED'; run.error = error.message;
+            }
         } finally {
             if (signal.aborted && run.status !== 'APPROVED') run.status = 'STOPPED';
             this.save(run, 'finished', { status: run.status, error: run.error });

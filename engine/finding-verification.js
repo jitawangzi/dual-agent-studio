@@ -1,5 +1,6 @@
 'use strict';
 const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const {trackedCall}=require('./call-ledger');
 const {parseObject}=require('./workflow');
 const {now}=require('./run-store');
 const {normalizeReviewer}=require('./audit-config');
@@ -86,13 +87,38 @@ async function driveVerification(engine,record,run,signal){
                 const prompt=promptFor(record,run,finding),prefix=item.findingId;
                 item.promptArtifact=path.basename(file(`${prefix}.prompt.txt`));
                 fs.writeFileSync(file(`${prefix}.prompt.txt`),prompt);
-                const answer=await engine.agent({...run.verifier,prompt,role:'verify-finding',workspaceRoot:record.workspaceRoot,sessionId:item.sessionId,
-                    sessionDirectory:path.join(engine.store.root,'sessions')},{signal,timeoutMs:run.timeoutSeconds*1000,
-                    onSpawn:proc=>{item.activePid=proc.pid;save();},onOutput:(value,type)=>{
-                        fs.appendFileSync(file(`${prefix}.log.txt`),value);engine.emit('log',{message:`[验证 ${finding.id}] ${value}`,type,time:now()});
-                    }});
-                fs.writeFileSync(file(`${prefix}.response.txt`),answer);item.responseArtifact=path.basename(file(`${prefix}.response.txt`));await snapshotCheck();
-                item.report=parseVerification(answer,run.reproduction,finding.category);item.status='COMPLETED';
+                const meta={
+                    stepId:`verification:${run.id}:${item.findingId}`,
+                    role:'verify-finding',
+                    phase:'verification',
+                    childId:run.id,
+                    provider:run.verifier.provider,
+                    model:run.verifier.model,
+                    reasoningEffort:run.verifier.reasoningEffort,
+                    sessionId:item.sessionId
+                };
+                item.report=await trackedCall(record,meta,{
+                    signal,
+                    persist:save,
+                    invoke:async()=>{
+                        let answer;
+                        try{
+                            answer=await engine.agent({...run.verifier,prompt,role:'verify-finding',workspaceRoot:record.workspaceRoot,sessionId:item.sessionId,
+                                sessionDirectory:path.join(engine.store.root,'sessions')},{signal,timeoutMs:run.timeoutSeconds*1000,
+                                onSpawn:proc=>{item.activePid=proc.pid;save();},onOutput:(value,type)=>{
+                                    fs.appendFileSync(file(`${prefix}.log.txt`),value);engine.emit('log',{message:`[验证 ${finding.id}] ${value}`,type,time:now()});
+                                }});
+                        }finally{item.activePid=null;}
+                        if(signal?.aborted)throw new Error('RUN_CANCELLED');
+                        fs.writeFileSync(file(`${prefix}.response.txt`),answer);item.responseArtifact=path.basename(file(`${prefix}.response.txt`));
+                        return answer;
+                    },
+                    accept:async answer=>{
+                        await snapshotCheck();
+                        return parseVerification(answer,run.reproduction,finding.category);
+                    }
+                });
+                item.status='COMPLETED';
             }catch(error){item.error=error.message;item.status=signal.aborted?'STOPPED':'FAILED';if(error.message==='AUDIT_SOURCE_CHANGED')throw error;}
             finally{item.activePid=null;item.finishedAt=now();save();}
         }

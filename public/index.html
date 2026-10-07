@@ -123,6 +123,30 @@
               <input type="number" id="maxSelfHealAttempts" min="1" max="10" value="3">
             </div>
           </div>
+
+          <div class="form-row" style="margin-top: 10px;">
+            <div class="form-group flex-1">
+              <label for="budgetPreset">调用预算与硬限制 (Execution Budget)</label>
+              <select id="budgetPreset" onchange="ExecutionBudgetUI.onBudgetPresetChange()">
+                <option value="unlimited" selected>不设硬限制 (默认兼容)</option>
+                <option value="conservative">保守预算 (5 次调用 / 300 秒)</option>
+                <option value="standard">标准预算 (10 次调用 / 900 秒)</option>
+                <option value="generous">宽松预算 (20 次调用 / 1800 秒)</option>
+                <option value="custom">自定义硬预算</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" id="budgetCustomInputs" style="display: none; margin-top: 8px;">
+            <div class="form-group flex-1">
+              <label for="budgetMaxAttempts">最大调用次数上限 (Max Attempts)</label>
+              <input type="number" id="budgetMaxAttempts" min="1" max="10000" placeholder="例如 10">
+            </div>
+            <div class="form-group flex-1">
+              <label for="budgetMaxActiveSeconds">最大活跃时长上限 (秒, Max Active Seconds)</label>
+              <input type="number" id="budgetMaxActiveSeconds" min="1" max="86400" placeholder="例如 900">
+            </div>
+          </div>
+          <div id="budgetEstimateBox" style="margin-top: 10px;"></div>
         </div>
 
         <!-- 3. DEV AGENT CONFIG (2 Rows + Custom Model ID) -->
@@ -294,6 +318,7 @@
                 <button id="btnResumeRun" class="btn btn-sm btn-secondary" onclick="resumeRun()" disabled>恢复运行</button>
               </div>
               <div id="runSummary" aria-live="polite">每次运行独立保存；恢复时先测试、复核当前代码。</div>
+              <div id="runBudgetBox"></div>
               <div id="runDecision" hidden>
                 <label for="runDecisionText">人工决策 / 争议处理依据（保留原 Bug 台账）</label>
                 <textarea id="runDecisionText" rows="3" placeholder="说明采用哪个方案、争议处理依据或下一步要求。"></textarea>
@@ -375,6 +400,7 @@
                 <button id="btnRetryAudit" class="btn btn-sm btn-secondary" type="button" disabled>重试未完成审核员</button>
               </div>
               <div id="auditSummary" class="audit-summary" aria-live="polite">尚无报告。审核完成表示检查结束，不代表工程绝对没有 Bug。</div>
+              <div id="auditBudgetBox"></div>
               <section id="auditClosureBox" class="audit-verifier-box" hidden>
                 <h4>审核闭环总览与人工验收</h4>
                 <p class="audit-help">关联原审核、补审和修复记录。检查完成不等于没有 Bug；源码变化后需刷新证据。原报告保持原状态。</p>
@@ -465,6 +491,7 @@
                 <label for="planningHistory">讨论记录</label><select id="planningHistory"></select>
               </div>
               <p id="planningStatus" role="status">尚未发起讨论。</p>
+              <div id="planningBudgetBox"></div>
               <div id="planningReport"></div>
               <details id="planningComparison" hidden><summary>与上一版方案对比</summary><div id="planningComparisonBody"></div></details>
               <section id="planningDecision" hidden>
@@ -633,6 +660,7 @@
   </div>
 
   <script src="review-evidence.js"></script>
+  <script src="execution-budget.js"></script>
   <script src="app.js"></script>
   <script src="audit.js"></script>
   <script src="audit-closure.js"></script>

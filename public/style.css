@@ -1217,3 +1217,37 @@ body {
 .planning-criterion { padding: 10px; margin: 8px 0; background: #111827; border-radius: 6px; }
 .planning-plan { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 550px; overflow: auto; padding: 16px; background: #111827; border: 1px solid #334155; border-radius: 8px; }
 #planningPanel section[hidden], #planningPanel div[hidden], #planningPanel button[hidden] { display: none; }
+
+/* 2.11 Execution Budget & Accounting Styles */
+.budget-estimate-card { background: rgba(30, 41, 59, 0.7); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 12px; font-size: 13px; }
+.budget-estimate-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; color: var(--text-main, #f1f5f9); }
+.budget-estimate-title strong { color: #38bdf8; }
+.budget-estimate-assumptions { display: flex; flex-direction: column; gap: 4px; }
+.assumption-tag { font-size: 11px; color: #94a3b8; line-height: 1.4; }
+
+.budget-summary-panel { margin: 14px 0; background: var(--bg-dark, #0f172a); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 14px; }
+.budget-metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.budget-metric { display: flex; flex-direction: column; gap: 3px; background: rgba(30, 41, 59, 0.5); padding: 10px 12px; border-radius: 6px; }
+.metric-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+.metric-value { font-size: 14px; font-weight: 600; color: #f8fafc; }
+.metric-sub { font-size: 11px; color: #38bdf8; }
+.budget-warn-badge { margin-top: 10px; padding: 6px 10px; background: rgba(234, 179, 8, 0.15); border: 1px solid #eab308; border-radius: 4px; font-size: 12px; color: #fef08a; }
+
+.call-attempts-table-container { margin: 12px 0; overflow-x: auto; border: 1px solid var(--border-color, #334155); border-radius: 6px; }
+.call-attempts-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.call-attempts-table th, .call-attempts-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border-color, #334155); }
+.call-attempts-table th { background: rgba(30, 41, 59, 0.8); color: #94a3b8; font-weight: 600; }
+.call-attempts-table tr:last-child td { border-bottom: none; }
+.status-pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.status-pill.badge-success { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid #22c55e; }
+.status-pill.badge-info { background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #0284c7; }
+.status-pill.badge-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #ef4444; }
+.status-pill.badge-secondary { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; border: 1px solid #64748b; }
+
+.budget-pause-alert { background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.pause-header h4 { margin: 0 0 6px 0; color: #f87171; font-size: 15px; }
+.pause-header p { margin: 0 0 12px 0; font-size: 12px; color: #cbd5e1; line-height: 1.5; }
+.pause-body .form-row { display: flex; gap: 12px; margin-bottom: 10px; }
+.pause-body label { display: block; font-size: 12px; margin-bottom: 4px; color: #94a3b8; }
+.pause-body input { background: var(--bg-input, #1e293b); color: var(--text-main, #f1f5f9); border: 1px solid var(--border-color, #334155); border-radius: 6px; padding: 6px 10px; font-size: 13px; width: 100%; box-sizing: border-box; }
+.pause-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }

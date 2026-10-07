@@ -262,6 +262,94 @@ function ok(desc) {
         await page.locator('#auditClosureBox').screenshot({ path: path.join(outputDir, 'deferred.png') });
         ok('Finding triage with deferred reason and XSS boundary escaping work correctly');
 
+        // --- 6. Execution Budget & Resource Accounting Acceptance (2.11) ---
+        const budgetAudit = auditEngine.create({
+            workspaceRoot: workspace,
+            feature: '2.11 Budget Acceptance',
+            commonPrompt: 'Budget test',
+            scope: 'app.js',
+            budget: { maxAttempts: 1 },
+            reviewers: [
+                { provider: 'mock', name: '审核员一' },
+                { provider: 'mock', name: '审核员二' }
+            ]
+        });
+        auditEngine.launch(budgetAudit);
+        await auditEngine.active.promise;
+
+        const auditAfterRun = store.read('audits', budgetAudit.id);
+        assert.equal(auditAfterRun.status, 'STOPPED');
+        assert.equal(auditAfterRun.pauseReason, 'BUDGET_EXHAUSTED');
+        assert.equal(auditAfterRun.reviewers.filter(r => r.status === 'COMPLETED').length, 1);
+        assert.equal(auditAfterRun.reviewers.filter(r => r.status === 'STOPPED' && r.pauseReason === 'BUDGET_EXHAUSTED').length, 1);
+
+        await page.locator('#btnRefreshAudits').click();
+        await page.locator(`#auditHistory option[value="${budgetAudit.id}"]`).waitFor({ state: 'attached' });
+        await page.locator('#auditHistory').selectOption(budgetAudit.id);
+
+        await page.locator('#auditBudgetBox').filter({ hasText: '已用 1 次' }).waitFor();
+        const budgetBoxText = await page.locator('#auditBudgetBox').innerText();
+        assert(budgetBoxText.includes('上限 1 次'));
+        assert(budgetBoxText.includes('剩余: 0 次'));
+        assert(budgetBoxText.includes('未提供 (无外部计费适配器)'));
+        assert(!budgetBoxText.includes('0 元') && !budgetBoxText.includes('0.00'));
+        assert(budgetBoxText.includes('BUDGET_EXHAUSTED'));
+
+        // Refresh keeps counts
+        await page.locator('#btnRefreshAudits').click();
+        await page.locator('#auditBudgetBox').filter({ hasText: '已用 1 次' }).waitFor();
+        ok('Budget exhaustion pauses execution, preserves attempt counts on refresh, and displays non-zero unknown cost');
+
+        // Test source change rejection on resume-budget
+        const appJsPath = path.join(workspace, 'app.js');
+        const origAppContent = fs.readFileSync(appJsPath, 'utf8');
+        try {
+            fs.writeFileSync(appJsPath, 'const modified = true;\n', 'utf8');
+            const postResume = await fetch(`${base}/api/executions/audit/${budgetAudit.id}/resume-budget`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspaceRoot: workspace, version: auditAfterRun.version })
+            });
+            assert.equal(postResume.status, 409);
+            const errJson = await postResume.json();
+            assert.equal(errJson.error, 'AUDIT_SOURCE_CHANGED');
+            ok('Resume after budget adjustment strictly rejects modified source with 409 AUDIT_SOURCE_CHANGED');
+        } finally {
+            fs.writeFileSync(appJsPath, origAppContent, 'utf8');
+        }
+
+        // Adjust budget and resume remaining unfinished reviewer
+        const postAdjust = await fetch(`${base}/api/executions/audit/${budgetAudit.id}/budget`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workspaceRoot: workspace,
+                version: store.read('audits', budgetAudit.id).version,
+                budget: { maxAttempts: 2 },
+                reason: '追加 1 次额度以完成第二位审核员'
+            })
+        });
+        assert.equal(postAdjust.status, 200);
+
+        const reloadedAudit = store.read('audits', budgetAudit.id);
+        for (const r of reloadedAudit.reviewers) {
+            if (r.status === 'STOPPED' && r.pauseReason === 'BUDGET_EXHAUSTED') {
+                r.status = 'QUEUED';
+                delete r.pauseReason;
+                r.error = '';
+            }
+        }
+        delete reloadedAudit.pauseReason;
+        delete reloadedAudit.allowedActions;
+        auditEngine.launch(reloadedAudit);
+        await auditEngine.active.promise;
+
+        const finalAudit = store.read('audits', budgetAudit.id);
+        assert.equal(finalAudit.status, 'COMPLETED');
+        assert.equal(finalAudit.reviewers.filter(r => r.status === 'COMPLETED').length, 2);
+        assert.equal(finalAudit.budget.reservations.filter(r => r.status === 'SETTLED').length, 2);
+        ok('Resumed audit only executes previously unfinished reviewers and completes cleanly within new budget');
+
         // Ensure no uncaught browser page errors
         assert.deepEqual(errors, []);
         ok('No uncaught browser console/script errors encountered throughout run');
